@@ -1,0 +1,417 @@
+# ==========================================================================
+# IA / Reg-Management  —  JOINED-DATASET EDA
+# --------------------------------------------------------------------------
+# This reconstructs the THREE final joined datasets exactly as the collation
+# notebook builds them, lands each as a DataFrame, then runs one consistent
+# structured EDA (`explore`) on every joined frame — because downstream you
+# work on the joined tables, not the base tables.
+#
+#   A) RAPID2  -> single BQ query (all joins server-side), per jurisdiction,
+#                 then concatenated into the full 3-jurisdiction table.
+#   C) Helios  -> single BQ query (risk + bridge + L1 + L2), per country.
+#   B) Regmap  -> the exact pandas join chain (join4 / join5 / join6b).
+#
+# SQL keywords are capitalised; all heavy joins execute in BigQuery.
+# Frame profiling is pandas (frames are small once joined).
+# Read-only. `# %%` markers = notebook cells.
+# ==========================================================================
+
+# %% [markdown]
+# ## 0. Setup
+
+# %%
+import os
+import numpy as np
+import pandas as pd
+from google.cloud import bigquery
+
+pd.set_option("display.max_columns", None)
+pd.set_option("display.width", 220)
+
+ANALYTICS_PROJECT = "hsbc-12211200-cmlpwb-prod"
+DATA_PROJECT      = "hsbc-11545401-cmpdatcwrs1-prod"
+DATASET           = "rc_curated_prod"
+LOCATION          = "europe-west2"
+
+os.environ["GOOGLE_CLOUD_PROJECT"] = ANALYTICS_PROJECT
+bq_client = bigquery.Client(project=ANALYTICS_PROJECT, location=LOCATION)
+
+def bq(sql: str) -> pd.DataFrame:
+    return bq_client.query(sql).to_dataframe(create_bqstorage_client=False)
+
+
+# ==========================================================================
+# %% [markdown]
+# ## The EDA driver — one function, run on every joined frame
+# For a given frame it reports: shape/memory, dtype mix, per-column
+# null+distinct profile, grain/duplicate check, datetime spans, categorical
+# distributions, free-text length stats. Returns the profile table so you
+# can keep it; prints the rest for quick reading.
+# ==========================================================================
+
+# %%
+def explore(df: pd.DataFrame, name: str,
+            grain_keys: list[str] | None = None,
+            datetime_cols: list[str] | None = None,
+            categorical_cols: list[str] | None = None,
+            text_cols: list[str] | None = None,
+            cat_card_threshold: int = 50,
+            top_n: int = 15) -> pd.DataFrame:
+
+    line = "=" * 78
+    print(f"\n{line}\n {name}\n{line}")
+
+    # --- shape / memory ----------------------------------------------------
+    mem_mb = df.memory_usage(deep=True).sum() / 1024**2
+    print(f"shape: {df.shape[0]:,} rows x {df.shape[1]} cols   |   memory: {mem_mb:,.1f} MB")
+
+    # --- dtype mix ---------------------------------------------------------
+    print("\ndtype counts:")
+    print(df.dtypes.value_counts().to_string())
+
+    # --- per-column null + distinct profile --------------------------------
+    n = len(df)
+    profile = pd.DataFrame({
+        "dtype":    df.dtypes.astype(str),
+        "nulls":    df.isna().sum(),
+        "null_pct": (100 * df.isna().mean()).round(2),
+        "distinct": df.nunique(dropna=True),
+    })
+    profile["distinct_pct"] = (100 * profile["distinct"] / n).round(2)
+    profile.index.name = "column"
+    print("\ncolumn profile:")
+    print(profile.to_string())
+
+    # --- grain / duplicate check ------------------------------------------
+    if grain_keys:
+        distinct_keys = df.drop_duplicates(subset=grain_keys).shape[0]
+        dup_rows = n - distinct_keys
+        print(f"\ngrain check on {grain_keys}:")
+        print(f"  rows={n:,}  distinct_key_combos={distinct_keys:,}  "
+              f"duplicate_rows={dup_rows:,}  is_unique_grain={n == distinct_keys}")
+        if dup_rows:
+            worst = (df.groupby(grain_keys).size()
+                       .sort_values(ascending=False).head(5))
+            print("  worst fan-out (top 5 key combos by row count):")
+            print(worst.to_string())
+
+    # --- datetime spans ----------------------------------------------------
+    if datetime_cols:
+        print("\ndatetime spans:")
+        for c in datetime_cols:
+            if c in df.columns:
+                s = pd.to_datetime(df[c], errors="coerce")
+                print(f"  {c}: {s.min()} -> {s.max()}  (nulls={s.isna().sum():,})")
+
+    # --- categorical distributions ----------------------------------------
+    if categorical_cols is None:
+        categorical_cols = [
+            c for c in df.columns
+            if df[c].dtype == object and df[c].nunique(dropna=True) <= cat_card_threshold
+        ]
+    print("\ncategorical distributions:")
+    for c in categorical_cols:
+        if c in df.columns:
+            vc = df[c].value_counts(dropna=False).head(top_n)
+            print(f"\n  [{c}]  (distinct={df[c].nunique(dropna=True)})")
+            print(vc.to_string())
+
+    # --- free-text length stats -------------------------------------------
+    if text_cols:
+        print("\nfree-text length (chars):")
+        rows = []
+        for c in text_cols:
+            if c in df.columns:
+                ln = df[c].astype(str).str.len().where(df[c].notna())
+                rows.append({"column": c,
+                             "min": ln.min(), "mean": round(ln.mean(), 1),
+                             "median": ln.median(), "max": ln.max()})
+        if rows:
+            print(pd.DataFrame(rows).to_string(index=False))
+
+    return profile
+
+
+# ==========================================================================
+# %% [markdown]
+# ## A. RAPID2 — reconstruct the full joined table
+# Exact query from the collation notebook (all joins + both STRING_AGG
+# subqueries), parametrised on jurisdiction, then concatenated across the
+# three Data-Visa-approved jurisdictions into the full analytical table.
+# ==========================================================================
+
+# %%
+def load_rapid2(juris: str,
+                start: str = "2020-01-01",
+                end: str = "2025-12-31",
+                category: str = "REGDEV") -> pd.DataFrame:
+    """Return the RAPID2 joined dataset for one jurisdiction (24 columns)."""
+    sql = f"""
+    SELECT
+        r.record_id            AS RECORD_ID,
+        r.orign_alert_id       AS ALERT_ID,
+        H.INGEST_RULE_TYPE     AS INGEST_RULE_TYPE,
+        r.jris_cde             AS RECORD_JURISDICTION_CODE,
+        c.name                 AS RECORD_JURISDICTION_NAME,
+        r.created_on_dtm       AS RECORD_START_DATE,
+        r.updated_on_dtm       AS RECORD_END_DATE,
+        r.is_actv_ind          AS ACTIVE_INDICATOR,
+        r.record_cat_cde       AS RECORD_CATEGORY_CODE,
+        r.stat_cde             AS RECORD_STATUS_CODE,
+        b.name                 AS RECORD_STATUS,
+        r.rglt_bdy_cde         AS REGULATOR_CODE,
+        r.risk_stwrd_area_cde  AS RISK_STEWARD_AREA_CODE,
+        e.name                 AS RISK_STEWARD_AREA_NAME,
+        theme.theme_code       AS RECORD_THEME_CODES,
+        theme.theme_desc       AS RECORD_THEMES,
+        risk_txnmy.risk_txnmy_lvl_1 AS LEVEL_1_RISK_TAXONOMY,
+        risk_txnmy.risk_txnmy_lvl_2 AS LEVEL_2_RISK_TAXONOMY,
+        risk_txnmy.risk_txnmy_lvl_3 AS LEVEL_3_RISK_TAXONOMY,
+        r.title                AS TITLE,
+        r.summ_contnt          AS SUMM_CONTENT,
+        r.summ_updt            AS SUMM_UPDATE,
+        r.srce_url             AS URL_TEXT,
+        r.intro                AS INTRO_TEXT
+    FROM `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_hzn_record` r
+    LEFT JOIN `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_reg_ref_jris` c
+           ON r.jris_cde = c.jris_cde
+    LEFT JOIN `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_reg_ref_risk_stwrd_area` e
+           ON r.risk_stwrd_area_cde = e.risk_stwrd_area_cde
+    LEFT JOIN `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_hzn_ref_stat` b
+           ON r.stat_cde = b.stat_cde
+    LEFT JOIN `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_hzn_alert` H
+           ON R.ORIGN_ALERT_ID = H.ALERT_ID
+    LEFT JOIN (
+        SELECT t.record_id AS theme_recid,
+               STRING_AGG(t.theme_cde, '|' ORDER BY t.record_id) AS theme_code,
+               STRING_AGG(rt.name,     '|' ORDER BY t.record_id) AS theme_desc
+        FROM `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_hzn_record_theme_map` t
+        LEFT JOIN `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_hzn_ref_theme` rt
+               ON t.theme_cde = rt.theme_cde
+        GROUP BY t.record_id
+    ) theme ON r.record_id = theme.theme_recid
+    LEFT JOIN (
+        SELECT x.record_id AS taxn_recid,
+               STRING_AGG(x.risk_txnmy_lvl_1, '|' ORDER BY x.record_id) AS risk_txnmy_lvl_1,
+               STRING_AGG(x.risk_txnmy_lvl_2, '|' ORDER BY x.record_id) AS risk_txnmy_lvl_2,
+               STRING_AGG(x.risk_txnmy_lvl_3, '|' ORDER BY x.record_id) AS risk_txnmy_lvl_3
+        FROM `{DATA_PROJECT}.{DATASET}.aa_hsbc_rapid2_hzn_record_risk_txnmy` x
+        GROUP BY x.record_id
+    ) risk_txnmy ON r.record_id = risk_txnmy.taxn_recid
+    WHERE r.created_on_dtm >= '{start}'
+      AND r.created_on_dtm <= '{end}'
+      AND c.name = "{juris}"
+      AND r.record_cat_cde = '{category}'
+    """
+    return bq(sql)
+
+
+# %% A.1 — load all three approved jurisdictions and stack into the full table
+RAPID2_JURIS = [
+    "United States Of America",
+    "United Kingdom (Ring-Fenced Bank)",
+    "Hong Kong (HSBC)",
+]
+rapid2_full = pd.concat(
+    [load_rapid2(j) for j in RAPID2_JURIS], ignore_index=True
+)
+print("per-jurisdiction rows:")
+print(rapid2_full["RECORD_JURISDICTION_NAME"].value_counts().to_string())
+
+# %% A.2 — full structured EDA on the joined RAPID2 table
+rapid2_profile = explore(
+    rapid2_full, "RAPID2 (joined, all 3 jurisdictions)",
+    grain_keys=["RECORD_ID"],                          # <- catches join fan-out
+    datetime_cols=["RECORD_START_DATE", "RECORD_END_DATE"],
+    categorical_cols=[
+        "RECORD_JURISDICTION_NAME", "INGEST_RULE_TYPE", "ACTIVE_INDICATOR",
+        "RECORD_CATEGORY_CODE", "RECORD_STATUS", "REGULATOR_CODE",
+        "RISK_STEWARD_AREA_NAME",
+    ],
+    text_cols=["TITLE", "SUMM_CONTENT", "SUMM_UPDATE", "URL_TEXT", "INTRO_TEXT"],
+)
+
+# %% A.3 — taxonomy coverage on the joined table (pipe-delimited multi-value)
+# LEVEL_*_RISK_TAXONOMY are STRING_AGG'd, so treat as multi-valued: explode.
+for lvl in ["LEVEL_1_RISK_TAXONOMY", "LEVEL_2_RISK_TAXONOMY", "LEVEL_3_RISK_TAXONOMY"]:
+    exploded = (rapid2_full[lvl].dropna().str.split("|").explode().str.strip())
+    print(f"\n[{lvl}] distinct atomic values = {exploded.nunique()}; top 10:")
+    print(exploded.value_counts().head(10).to_string())
+
+# %% A.4 — theme coverage (also multi-valued)
+themes = rapid2_full["RECORD_THEMES"].dropna().str.split("|").explode().str.strip()
+print(f"\ndistinct themes = {themes.nunique()}; top 15:")
+print(themes.value_counts().head(15).to_string())
+
+
+# ==========================================================================
+# %% [markdown]
+# ## C. Helios — reconstruct the joined table
+# risk (a) + bridge (b) + L1 control (c) + L2 control (d). The notebook used
+# SELECT DISTINCT * ... LIMIT 10; here we drop the LIMIT so we see the true
+# joined table, keep the DISTINCT, and keep the taxonomy filter parametrised.
+# ==========================================================================
+
+# %%
+def load_helios(country: str = "us",
+                l1_filter: list[str] | None = ("Financial Crime",)) -> pd.DataFrame:
+    l1_ctrl = f"{country}_hsbc_helios_l1_control"
+    l2_ctrl = f"{country}_hsbc_helios_l2_control"
+    risk    = f"{country}_hsbc_helios_risk"
+    mapping = "aa_hsbc_helios_rtcl"
+
+    where_tax = ""
+    if l1_filter:
+        vals = ", ".join(f"'{v}'" for v in l1_filter)
+        where_tax = f"WHERE a.risk_taxonomy_l1 IN UNNEST([{vals}])"
+
+    sql = f"""
+    SELECT DISTINCT * FROM (
+        SELECT
+            a.library_risk_id,
+            a.risk_taxonomy_l1_id, a.risk_taxonomy_l1,
+            a.risk_taxonomy_l2_id, a.risk_taxonomy_l2,
+            a.risk_taxonomy_l3_id, a.risk_taxonomy_l3,
+            c.l1_library_control_id, c.l1_library_control_title, c.l1_library_control_description,
+            d.l2_library_control_id, d.l2_library_control_title, d.l2_library_control_description,
+            c.name AS l1_control_id, c.l1_control_title_alias, c.description AS l1_control_description,
+            d.name AS l2_control_id, d.l2_control_title_alias, d.description AS l2_control_description
+        FROM `{DATA_PROJECT}.{DATASET}.{risk}` a
+        LEFT JOIN `{DATA_PROJECT}.{DATASET}.{mapping}` b
+               ON a.library_risk_id = b.risk_library_id
+        LEFT JOIN `{DATA_PROJECT}.{DATASET}.{l1_ctrl}` c
+               ON b.l1_control_library_id = c.l1_library_control_id
+        LEFT JOIN `{DATA_PROJECT}.{DATASET}.{l2_ctrl}` d
+               ON b.l2_control_library_id = d.l2_library_control_id
+        {where_tax}
+    ) e
+    WHERE e.l1_library_control_id IS NOT NULL
+    """
+    return bq(sql)
+
+
+# %% C.1 — load + explore the joined Helios table (US, Financial Crime)
+helios_full = load_helios(country="us", l1_filter=("Financial Crime",))
+helios_profile = explore(
+    helios_full, "HELIOS (joined, US, Financial Crime)",
+    grain_keys=["library_risk_id", "l1_library_control_id", "l2_library_control_id"],
+    categorical_cols=[
+        "risk_taxonomy_l1", "risk_taxonomy_l2", "risk_taxonomy_l3",
+    ],
+    text_cols=[
+        "l1_library_control_title", "l1_library_control_description",
+        "l2_library_control_title", "l2_library_control_description",
+    ],
+)
+# NOTE: swap country='uk'/'hk' and/or widen l1_filter=None to profile the rest.
+
+
+# ==========================================================================
+# %% [markdown]
+# ## B. Regmap — reconstruct the joined tables (exact pandas chain)
+# Faithful reproduction of the notebook's join_tables helpers and the
+# join1->join4 sequential chain + join5 + join6a/join6b, then EDA on the
+# three frames the notebook ultimately produces: join4, join5, join6b.
+# ==========================================================================
+
+# %% B.0 — load extracts (local tactical files from IT)
+INPUT_PATH = "./regmap_extracts/"   # <-- point at the local DSW-1261 extracts
+_files = {
+    "e1": "Extract1_INTERNAL.xlsx",
+    "e2": "Extract2 US Summaries and Taxonomy 1 (1)_INTERNAL.xlsx",
+    "e3": "Extract3 US Summaries and Library Controls 1_INTERNAL.xlsx",
+    "e4": "Extract4 US Summaries and Applicabilities 2_INTERNAL.xlsx",
+    "e5": "Extract5 US Summaries and Risk & Controls 2_INTERNAL.xlsx",
+    "e6": "Extract6 US Obligations 3_INTERNAL.xlsx",
+    "e7": "Extract7 US Assessments 1_INTERNAL.xlsx",
+}
+e1, e2, e3, e4, e5, e6, e7 = (pd.read_excel(f"{INPUT_PATH}{_files[k]}")
+                              for k in ["e1","e2","e3","e4","e5","e6","e7"])
+
+# %% B.1 — join helpers (reproduced exactly; validation stays commented out
+#          so the reconstructed frames match downstream byte-for-byte)
+def join_tables(left_df, right_df, join_keys, join_name,
+                join_type="left", validation="one_to_many"):
+    print(f"\nStarting {join_name}")
+    output = pd.merge(left_df, right_df, how=join_type, on=join_keys,
+                      suffixes=("", "_drop"))  # validate=validation
+    print(f"Completed {join_name}")
+    return output
+
+def join_tables_diff_fields(left_df, right_df, join_keys1, join_keys2, join_name,
+                            join_type="left", validation="one_to_many"):
+    print(f"\nStarting {join_name}")
+    output = pd.merge(left_df, right_df, how=join_type,
+                      left_on=join_keys1, right_on=join_keys2,
+                      suffixes=("", "_drop"))  # validate=validation
+    print(f"Completed {join_name}")
+    return output
+
+# %% B.2 — key lists (from the notebook)
+E2_E1_KEYS = [
+    "Regulation Jurisdiction", "Regulation ID", "Regulation Status",
+    "Regulation Version", "Regulation Summary ID",
+    "Regulation Summary Status", "Regulation Summary Version",
+]
+E3_E2_KEYS = E2_E1_KEYS + [
+    "Regulation Summary Library Risk ID Number",
+    "Regulation Summary Risk Taxonomy L1",
+    "Regulation Summary Risk Taxonomy L2",
+    "Regulation Summary Risk Taxonomy L3",
+]
+E4_E2_KEYS = E2_E1_KEYS + [
+    "Regulation Summary Risk Taxonomy L1",
+    "Regulation Summary Risk Taxonomy L2",
+    "Regulation Summary Risk Taxonomy L3",
+]
+E4_E3_KEYS = E4_E2_KEYS + ["Regulation Summary Applicability Unique Key"]
+E5_E4_KEYS = E4_E3_KEYS + ["Risk ID", "Risk Instance Applicable?"]
+E6_E2_KEYS = E2_E1_KEYS.copy()
+E7_E1_KEYS = ["Regulation Jurisdiction", "Regulation ID",
+              "Regulation Status", "Regulation Version"]
+E7_E6_KEYS_LEFT  = E7_E1_KEYS + ["Obligation ID"]
+E7_E6_KEYS_RIGHT = E7_E1_KEYS + ["Obligation Evaluation Obligation ID"]
+
+_DROP2 = ["#_drop", "Regulation Summary Control Mapping Approach_drop"]
+
+# %% B.3 — the join chain (exact)
+join1 = join_tables(e1, e2, E2_E1_KEYS, "Extract 2 -> Extract 1")
+join2 = join_tables(join1.drop(columns=_DROP2), e3, E3_E2_KEYS, "Extract 3 -> Extract 2")
+join3 = join_tables(join2.drop(columns=_DROP2), e4, E4_E3_KEYS, "Extract 4 -> Extract 2,3")
+join4 = join_tables(join3.drop(columns=_DROP2), e5, E5_E4_KEYS, "Extract 5 -> Extract 4")
+
+join5  = join_tables(e2, e6, E6_E2_KEYS, "Extract 6 -> Extract 2")
+join6a = join_tables(e1, e6, E2_E1_KEYS, "Extract 6 -> Extract 1")
+join6b = join_tables_diff_fields(join6a.drop(columns=["#_drop"]), e7,
+                                 E7_E6_KEYS_LEFT, E7_E6_KEYS_RIGHT,
+                                 "Extract 7 -> Extract 1,6")
+
+print("\nfinal shapes:", join4.shape, join5.shape, join6b.shape)
+
+# %% B.4 — EDA on the three joined Regmap frames.
+# grain_keys use the last-stage key list; if is_unique_grain is False the
+# merge fan-out (the thing `validate=` would have caught) is real.
+regmap_join4_profile = explore(
+    join4, "REGMAP join4 (e1->e2->e3->e4->e5, main summary+risk+control chain)",
+    grain_keys=E5_E4_KEYS,
+)
+# %%
+regmap_join5_profile = explore(
+    join5, "REGMAP join5 (e2->e6, obligations)",
+    grain_keys=E6_E2_KEYS,
+)
+# %%
+regmap_join6b_profile = explore(
+    join6b, "REGMAP join6b (e1->e6->e7, assessments)",
+    grain_keys=E7_E6_KEYS_LEFT,
+)
+
+# %% [markdown]
+# ### Watch-list after this run
+# 1. RAPID2 A.2 grain check: if duplicate_rows > 0 on RECORD_ID, the alert
+#    join (ORIGN_ALERT_ID = ALERT_ID) is fanning out — the (1607,24) slice
+#    assumed uniqueness. Confirm before treating RECORD_ID as the key.
+# 2. Regmap B.4: any is_unique_grain=False means silent merge inflation.
+#    That is where you decide dedupe-upstream vs correct the key list.
+# 3. Taxonomy vocabularies (RAPID2 A.3 vs Helios risk_taxonomy_l* vs Regmap
+#    Risk Taxonomy L1/2/3) must align before any cross-source mapping.
