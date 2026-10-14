@@ -1,0 +1,249 @@
+@prefix rc: <https://ontology.hsbc.internal/regcompliance#> .
+@prefix rcs: <https://ontology.hsbc.internal/regcompliance/shapes#> .
+@prefix rcv: <https://ontology.hsbc.internal/regcompliance/vocab#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+rcs:AIAssertionNeedsRun a sh:NodeShape ;
+    rdfs:comment "AI-produced assertions must name the model run (model, prompt version) for replay." ;
+    sh:severity sh:Violation ;
+    sh:sparql [ sh:message "AI assertion has no model run" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this WHERE { $this rc:hasMethod ?m . FILTER(?m IN (rcv:LLM_JUDGE, rcv:EMBEDDING)) FILTER NOT EXISTS { $this rc:producedBy ?r } }" ] ;
+    sh:targetClass rc:LinkAssertion ;
+    rc:profile "ai-governance" .
+
+rcs:BitemporalShape a sh:NodeShape ;
+    rdfs:comment "Curated reference data must carry business validity (bitemporal replay)." ;
+    sh:property [ sh:datatype xsd:date ;
+            sh:minCount 1 ;
+            sh:path rc:validFrom ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:Control,
+        rc:LibraryControl,
+        rc:LibraryRisk,
+        rc:PolicyRequirement,
+        rc:Regulation,
+        rc:RegulatoryObligation,
+        rc:RegulatorySummary ;
+    rc:profile "core" .
+
+rcs:ClosedAssessmentShape a sh:NodeShape ;
+    rdfs:comment "A CLOSED assessment needs steward sign-off and a computed blast radius." ;
+    sh:severity sh:Violation ;
+    sh:sparql [ sh:message "Closed assessment missing sign-off or blast radius" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this WHERE { $this rc:assessmentStatus \"CLOSED\" . FILTER (NOT EXISTS { $this rc:signedOffBy ?p } || NOT EXISTS { $this rc:hasBlastRadius ?b }) }" ] ;
+    sh:targetClass rc:ImpactAssessment ;
+    rc:profile "impact" .
+
+rcs:ControlShape a sh:NodeShape ;
+    rdfs:comment "Control instance belongs to exactly one library control and has an owner." ;
+    sh:property [ sh:minCount 1 ;
+            sh:path rc:sourceId ],
+        [ sh:message "Control has no owner" ;
+            sh:minCount 1 ;
+            sh:path rc:ownedBy ;
+            sh:severity sh:Warning ],
+        [ sh:class rc:LibraryControl ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:instanceOf ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:Control ;
+    rc:profile "core" .
+
+rcs:EvidenceShape a sh:NodeShape ;
+    rdfs:comment "Exactly one verbatim quote, one source, one subject." ;
+    sh:property [ sh:in ( "SUBJECT" "OBJECT" ) ;
+            sh:maxCount 1 ;
+            sh:path rc:evidenceSide ],
+        [ sh:maxCount 1 ;
+            sh:maxLength 4000 ;
+            sh:minCount 1 ;
+            sh:minLength 1 ;
+            sh:path rc:verbatimText ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:extractedFrom ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path [ sh:inversePath rc:hasEvidence ] ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:EvidenceOccurrence ;
+    rc:profile "evidence" .
+
+rcs:FindingShape a sh:NodeShape ;
+    rdfs:comment "No orphan findings: each derives from at least one assertion." ;
+    sh:property [ sh:class rc:LinkAssertion ;
+            sh:minCount 1 ;
+            sh:path rc:derivedFrom ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:concerns ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:ImpactFinding ;
+    rc:profile "impact" .
+
+rcs:GapShape a sh:NodeShape ;
+    rdfs:comment "Gap names its requirement and coverage level." ;
+    sh:property [ sh:in ( rcv:FULL rcv:PARTIAL rcv:NONE ) ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasCoverage ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:onRequirement ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:Gap ;
+    rc:profile "impact" .
+
+rcs:ImpactOnlyFromConfirmed a sh:NodeShape ;
+    rdfs:comment "Impact edges are materialised only from LINKED + CONFIRMED assertions (on the change or an alert reporting it)." ;
+    sh:severity sh:Violation ;
+    sh:sparql [ sh:message "Impact edge has no confirmed link assertion behind it" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this ?value WHERE { $this ?p ?value . FILTER(?p IN (rc:affectsSummary, rc:affectsObligation, rc:impactsControl, rc:impactsPolicyRequirement)) FILTER NOT EXISTS { ?la rc:assertionObject ?value ; rc:hasDecision rcv:LINKED ; rc:hasSMEStatus rcv:CONFIRMED ; rc:assertionSubject ?s . FILTER(?s = $this || EXISTS { ?s rc:reportsChange $this }) } }" ] ;
+    sh:targetClass rc:RegulatoryChange ;
+    rc:profile "ai-governance" .
+
+rcs:LinkAssertionShape a sh:NodeShape ;
+    rdfs:comment "Every AI or curated link is a fully described, typed assertion." ;
+    sh:property [ sh:in ( rcv:RGL rcv:RSM rcv:ROB rcv:LR rcv:L1C rcv:CONTROL_1C rcv:POLICY_REQ rcv:PROC_STEP ) ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasGranularity ],
+        [ sh:in ( rcv:LINKED rcv:NOT_LINKED rcv:INSUFFICIENT_EVIDENCE ) ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasDecision ],
+        [ sh:maxCount 1 ;
+            sh:maxInclusive 10 ;
+            sh:minInclusive 0 ;
+            sh:path rc:relevanceScore ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:assertionSubject ],
+        [ sh:maxCount 1 ;
+            sh:maxInclusive 5 ;
+            sh:minInclusive 1 ;
+            sh:path rc:confidenceScore ],
+        [ sh:in ( rcv:UNREVIEWED rcv:CONFIRMED rcv:REJECTED rcv:MODIFIED ) ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasSMEStatus ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:assertionObject ],
+        [ sh:in ( rcv:CURATED_SOURCE rcv:LLM_JUDGE rcv:EMBEDDING rcv:RULE rcv:SME_MANUAL rcv:GOLDEN_IMPORT ) ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasMethod ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:LinkAssertion ;
+    rc:profile "ai-governance" .
+
+rcs:LinkedNeedsBothSidesEvidence a sh:NodeShape ;
+    rdfs:comment "A LINKED decision must quote evidence from both the subject and the object text." ;
+    sh:severity sh:Violation ;
+    sh:sparql [ sh:message "LINKED assertion lacks evidence from both sides" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this WHERE { $this rc:hasDecision rcv:LINKED . FILTER (NOT EXISTS { $this rc:hasEvidence/rc:evidenceSide \"SUBJECT\" } || NOT EXISTS { $this rc:hasEvidence/rc:evidenceSide \"OBJECT\" }) FILTER NOT EXISTS { $this rc:hasMethod rcv:CURATED_SOURCE } }" ] ;
+    sh:targetClass rc:LinkAssertion ;
+    rc:profile "ai-governance" .
+
+rcs:NoRegulationLevelExplosion a sh:NodeShape ;
+    rdfs:comment "A regulation-level (RGL) link may not target a control unless fan-out is explicitly approved — prevents golden-style over-mapping." ;
+    sh:severity sh:Violation ;
+    sh:sparql [ sh:message "Regulation-level link targets a control without approval" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this WHERE { $this rc:hasGranularity rcv:RGL ; rc:assertionObject ?c . ?c a rc:Control . FILTER NOT EXISTS { $this rc:explosionApproved true } }" ] ;
+    sh:targetClass rc:LinkAssertion ;
+    rc:profile "ai-governance" .
+
+rcs:ObligationShape a sh:NodeShape ;
+    rdfs:comment "Obligation identity, parent summary, modality." ;
+    sh:property [ sh:class rc:RegulatorySummary ;
+            sh:minCount 1 ;
+            sh:path rc:derivedFromSummary ],
+        [ sh:in ( rcv:MUST rcv:MUST_NOT rcv:MAY rcv:SHOULD ) ;
+            sh:maxCount 1 ;
+            sh:path rc:hasModality ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:sourceId ;
+            sh:pattern "^ROB-\\d+$" ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:RegulatoryObligation ;
+    rc:profile "core" .
+
+rcs:OrphanControlWarning a sh:NodeShape ;
+    rdfs:comment "A control that satisfies no requirement is a coverage-mapping gap." ;
+    sh:severity sh:Warning ;
+    sh:sparql [ sh:message "Control satisfies no requirement" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this WHERE { FILTER NOT EXISTS { $this rc:satisfies ?r } }" ] ;
+    sh:targetClass rc:Control ;
+    rc:profile "warning" .
+
+rcs:PolicyRequirementShape a sh:NodeShape ;
+    rdfs:comment "Policy requirement sits in exactly one policy; modality from the controlled list." ;
+    sh:property [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path [ sh:inversePath rc:hasRequirement ] ],
+        [ sh:in ( rcv:MUST rcv:MUST_NOT rcv:MAY rcv:SHOULD ) ;
+            sh:maxCount 1 ;
+            sh:path rc:hasModality ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:PolicyRequirement ;
+    rc:profile "core" .
+
+rcs:RegulationShape a sh:NodeShape ;
+    rdfs:comment "RegMap regulation identity." ;
+    sh:property [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:sourceId ;
+            sh:pattern "^RGL-\\d+$" ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:Regulation ;
+    rc:profile "core" .
+
+rcs:SummaryShape a sh:NodeShape ;
+    rdfs:comment "Summary identity and parent regulation." ;
+    sh:property [ sh:class rc:Regulation ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:partOfRegulation ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:sourceId ;
+            sh:pattern "^RSM-\\d+$" ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:RegulatorySummary ;
+    rc:profile "core" .
+
+rcs:UncoveredAffectedObligationWarning a sh:NodeShape ;
+    rdfs:comment "Affected obligation with no control, step or policy requirement — candidate gap." ;
+    sh:severity sh:Warning ;
+    sh:sparql [ sh:message "Affected obligation is uncovered" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this ?value WHERE { $this rc:affectsObligation ?value . FILTER NOT EXISTS { ?x rc:satisfies ?value } FILTER NOT EXISTS { ?p rc:implementsObligation ?value } }" ] ;
+    sh:targetClass rc:RegulatoryChange ;
+    rc:profile "warning" .
+
+rcs:UnremediatedGapWarning a sh:NodeShape ;
+    rdfs:comment "A gap with no coverage should have a remediation action or a recorded risk acceptance." ;
+    sh:severity sh:Warning ;
+    sh:sparql [ sh:message "Gap with NONE coverage has no remediation" ;
+            sh:prefixes rcs:prefixes ;
+            sh:select "SELECT $this WHERE { $this rc:hasCoverage rcv:NONE . FILTER NOT EXISTS { $this rc:remediatedBy ?a } }" ] ;
+    sh:targetClass rc:Gap ;
+    rc:profile "warning" .
+
+rcs:prefixes sh:declare [ sh:namespace "https://ontology.hsbc.internal/regcompliance#"^^xsd:anyURI ;
+            sh:prefix "rc" ],
+        [ sh:namespace "https://ontology.hsbc.internal/regcompliance/vocab#"^^xsd:anyURI ;
+            sh:prefix "rcv" ] .
+
