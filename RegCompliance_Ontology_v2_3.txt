@@ -668,7 +668,10 @@ select(start);
 .lv-q{border-left:3px solid var(--accent);background:var(--sunk);padding:6px 9px;border-radius:0 6px 6px 0;font-style:italic}
 .lv-q.to{border-left-color:var(--lineage)}
 .lv-q small{display:block;font-style:normal;color:var(--muted);margin-top:2px}
-.lv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.5;max-height:230px;overflow:auto;background:var(--sunk);padding:8px 10px;border-radius:6px}
+/* panel items must keep their height (the panel is a flex column that
+   otherwise squeezes long text to one line) */
+#lv-ex>*{flex-shrink:0}
+.lv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.55;max-height:320px;min-height:3em;overflow:auto;background:var(--sunk);padding:10px 12px;border-radius:6px;resize:vertical}
 .lv-stats .stat b{font-size:22px}
 .lv-stats .stat.wide{grid-column:span 2}
 </style>
