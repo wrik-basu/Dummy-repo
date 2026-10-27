@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Impact Ontology Explorer</title>
+<!--
+  Regulatory Impact Ontology v2.2 - demo explorer
+  - Fully offline: no external libraries, fonts or network calls.
+  - Load data with the "Load data" button (or drag the JSON onto the page).
+    Expected file: ontology_demo_data.json produced by Step 3.
+  - Two views:
+      Ontology  : the class model. Classes with data are active,
+                  classes without data are shown but disabled.
+      Data graph: the real sample, alert by alert, with the evidence
+                  behind every AI link.
+-->
+<style>
+  :root {
+    --red: #DB0011;
+    --ink: #1F1F1F;
+    --muted: #6B6B6B;
+    --line: #DADADA;
+    --bg: #F7F6F3;
+    --card: #FFFFFF;
+    --agree: #2E7D32;
+    --disagree: #C62828;
+    --uncertain: #8D8D8D;
+    --struct: #A9A9A9;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: "Segoe UI", Arial, Helvetica, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- Header ---------- */
+  header {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 16px; background: #fff; border-bottom: 3px solid var(--red);
+  }
+  .brand { font-weight: 700; font-size: 16px; margin-right: 8px; }
+  .brand span { color: var(--red); }
+  button, select, input[type=text] {
+    font: inherit; font-size: 13px; padding: 6px 10px;
+    border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink);
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--ink); }
+  button.primary { background: var(--red); color: #fff; border-color: var(--red); }
+  button:disabled, input:disabled { opacity: .45; cursor: not-allowed; }
+  .seg { display: inline-flex; }
+  .seg button { border-radius: 0; }
+  .seg button:first-child { border-radius: 4px 0 0 4px; }
+  .seg button:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+  .seg button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .spacer { flex: 1; }
+  .ask { display: inline-flex; gap: 4px; }
+  .ask input { width: 240px; }
+  #status { font-size: 12px; color: var(--muted); width: 100%; }
+  .pulse { animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(219,0,17,.2); } }
+
+  /* ---------- Main canvas ---------- */
+  main { flex: 1; position: relative; overflow: hidden; }
+  svg#canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg#canvas.dragging { cursor: grabbing; }
+  .node { cursor: pointer; }
+  .node rect.box { fill: #fff; stroke: #CFCFCF; }
+  .node:hover rect.box { stroke: var(--ink); }
+  .node.sel rect.box { stroke: var(--red); stroke-width: 2.5; }
+  .node.gap rect.box { stroke: var(--disagree); stroke-dasharray: 4 3; fill: #FFF6F6; }
+  .node text { font-size: 12px; pointer-events: none; }
+  .node text.sub { font-size: 10px; fill: var(--muted); }
+  .dim { opacity: .15; }
+  .edge { fill: none; stroke-width: 1.6; }
+  .edge.AI_LINK { stroke: #555; }
+  .edge.STRUCTURAL { stroke: var(--struct); stroke-dasharray: 2 3; }
+  .edge.DERIVED { stroke: var(--disagree); stroke-dasharray: 6 4; }
+  .edge.v-agree { stroke: var(--agree); }
+  .edge.v-disagree { stroke: var(--disagree); }
+  .edge.v-uncertain { stroke: var(--uncertain); }
+  .edge.hl { stroke-width: 3.2; }
+  .edge-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
+  .lane-bg { fill: #fff; stroke: #E6E4DF; }
+  .lane-title { font-size: 13px; font-weight: 700; fill: var(--muted); }
+  .col-title { font-size: 11px; fill: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+
+  /* Schema view */
+  .cls { cursor: pointer; }
+  .cls rect { fill: #fff; stroke: #BDBDBD; }
+  .cls:hover rect { stroke: var(--ink); }
+  .cls.sel rect { stroke: var(--red); stroke-width: 2.5; }
+  .cls.off { cursor: not-allowed; }
+  .cls.off rect { fill: #EFEFEF; stroke: #C9C9C9; stroke-dasharray: 4 3; }
+  .cls.off text { fill: #9A9A9A; }
+  .cls text { font-size: 13px; pointer-events: none; }
+  .cls text.cnt { font-size: 11px; fill: var(--muted); }
+  .sedge { stroke: #7A7A7A; stroke-width: 1.4; fill: none; }
+  .sedge.off { stroke: #CFCFCF; stroke-dasharray: 4 4; }
+  .slabel { font-size: 10.5px; fill: #555; paint-order: stroke; stroke: var(--bg); stroke-width: 4px; }
+  .slabel.off { fill: #ABABAB; }
+
+  /* ---------- Overlays: stats, legend, empty hint ---------- */
+  .overlay {
+    position: absolute; background: rgba(255,255,255,.95); border: 1px solid var(--line);
+    border-radius: 6px; font-size: 12px; padding: 8px 10px;
+  }
+  #stats { top: 10px; left: 10px; max-width: 70%; }
+  #stats b { color: var(--ink); }
+  #legend { bottom: 10px; left: 10px; line-height: 1.7; }
+  .sw { display: inline-block; width: 22px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+  #empty { top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; padding: 18px 22px; font-size: 14px; }
+  #zoom { right: 10px; bottom: 10px; padding: 4px; display: flex; gap: 4px; }
+
+  /* ---------- Side panel (slides in from the right) ---------- */
+  aside {
+    position: absolute; top: 0; right: 0; bottom: 0; width: min(460px, 92vw);
+    background: #fff; border-left: 1px solid var(--line); box-shadow: -6px 0 18px rgba(0,0,0,.08);
+    transform: translateX(105%); transition: transform .25s ease; overflow-y: auto; padding: 16px 18px 40px;
+  }
+  aside.open { transform: translateX(0); }
+  #closePanel { position: sticky; top: 0; float: right; }
+  .chip {
+    display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    color: #fff; margin-right: 6px; font-weight: 600;
+  }
+  .link-chip {
+    display: inline-block; font-size: 12px; padding: 3px 8px; margin: 3px 4px 3px 0;
+    border: 1px solid var(--line); border-radius: 12px; cursor: pointer; background: #fff;
+  }
+  .link-chip:hover { border-color: var(--ink); }
+  h2 { font-size: 17px; margin: 8px 0 6px; }
+  h3 { font-size: 13px; margin: 18px 0 6px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+  .text { white-space: pre-wrap; font-size: 13px; line-height: 1.45; max-height: 220px; overflow-y: auto;
+          background: var(--bg); padding: 8px 10px; border-radius: 4px; }
+  .proof { border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin: 8px 0; font-size: 13px; }
+  .proof .row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+  .proof .row b { color: var(--ink); }
+  .quote { border-left: 3px solid var(--red); padding: 4px 8px; margin: 6px 0; font-style: italic; background: #FFF8F8; }
+  .quote.to { border-left-color: #3E5C8A; background: #F5F8FC; }
+  .verdict { font-weight: 700; }
+  .verdict.agree { color: var(--agree); }
+  .verdict.disagree { color: var(--disagree); }
+  .verdict.uncertain { color: var(--uncertain); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .conn { font-size: 12px; margin: 3px 0; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+
+<!-- =================================================================
+     HEADER: load, view switch, alert filter, search, Q&A (inactive)
+     ================================================================= -->
+<header>
+  <div class="brand">Regulatory Impact <span>Ontology</span> v2.2</div>
+  <button id="loadBtn" class="primary pulse">Load data</button>
+  <input type="file" id="fileInput" multiple>
+  <div class="seg">
+    <button id="viewSchema" class="on">Ontology</button>
+    <button id="viewGraph" disabled>Data graph</button>
+  </div>
+  <select id="alertSelect" disabled><option>No data loaded</option></select>
+  <input type="text" id="search" placeholder="Find ID or title…" disabled>
+  <div class="spacer"></div>
+  <div class="ask" title="Question answering over the graph - planned for the next version">
+    <input type="text" placeholder="Ask the graph (coming in v2.3)" disabled>
+    <button disabled>Ask</button>
+  </div>
+  <div id="status">No data loaded. Click "Load data" and choose ontology_demo_data.json.</div>
+</header>
+
+<!-- =================================================================
+     MAIN: SVG canvas + overlays + sliding side panel
+     ================================================================= -->
+<main id="main">
+  <svg id="canvas"><g id="viewport"></g></svg>
+
+  <div id="stats" class="overlay" hidden></div>
+
+  <div id="legend" class="overlay"></div>
+
+  <div id="zoom" class="overlay">
+    <button id="zoomIn" title="Zoom in">+</button>
+    <button id="zoomOut" title="Zoom out">−</button>
+    <button id="fitBtn" title="Fit to screen">Fit</button>
+  </div>
+
+  <div id="empty" class="overlay">
+    <b>The ontology is shown without data.</b><br>
+    Every class is greyed out until you load the sample.<br><br>
+    <button class="primary" onclick="document.getElementById('fileInput').click()">Load ontology_demo_data.json</button>
+    <div class="muted" style="margin-top:8px">or drag the file onto this page</div>
+  </div>
+
+  <aside id="panel">
+    <button id="closePanel" title="Close">✕</button>
+    <div id="panelBody"></div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+
+/* =====================================================================
+   1. ONTOLOGY DEFINITION
+   ---------------------------------------------------------------------
+   TYPES       : classes that can hold data (node "type" in the JSON).
+   SCHEMA_*    : the full class model, including classes with no data
+                 yet (shown disabled).
+   ===================================================================== */
+
+// Older OCR'd names / aliases mapped to the canonical type.
+const TYPE_ALIAS = { IC: "1C", LIC: "L1C" };
+
+const TYPES = {
+  Alert:     { label: "Regulatory alert",   color: "#DB0011", lane: "mid", col: 0,
+               desc: "An incoming regulatory change notice (RAPID2). Every impact assessment starts here." },
+  RGL:       { label: "Regulation",         color: "#3E5C8A", lane: "reg", col: 1,
+               desc: "A regulation recorded in RegMap." },
+  RSM:       { label: "Regulation summary", color: "#4F75A8", lane: "reg", col: 2,
+               desc: "A summarised part of a regulation in RegMap." },
+  ROB:       { label: "Obligation",         color: "#2F7F8C", lane: "reg", col: 3,
+               desc: "A specific requirement the bank must meet, recorded in RegMap." },
+  Policy:    { label: "Policy",             color: "#6A4C93", lane: "reg", col: 4,
+               desc: "A GPPS policy: states WHAT the bank must do to meet the obligation." },
+  Procedure: { label: "Procedure",          color: "#9370C2", lane: "reg", col: 4,
+               desc: "A GPPS procedure: states HOW the obligation is carried out day to day." },
+  LR:        { label: "Library risk",       color: "#B26A00", lane: "ctl", col: 1,
+               desc: "A standard risk in the Helios risk library." },
+  L1C:       { label: "Library control",    color: "#C98A1B", lane: "ctl", col: 2,
+               desc: "A standard control in the Helios library, designed to mitigate library risks." },
+  "1C":      { label: "Control instance",   color: "#5C8A3A", lane: "ctl", col: 3,
+               desc: "A library control as actually operated by a specific business." },
+  Gap:       { label: "Gap finding",        color: "#C62828", lane: "parent", col: 5,
+               desc: "A rule-based finding: something the chain expects is missing (e.g. an obligation with a policy but no procedure)." },
+};
+
+const REL_LABEL = {
+  impacts_regulation:       "impacts regulation",
+  impacts_summary:          "impacts summary",
+  impacts_obligation:       "impacts obligation",
+  impacts_risk:             "impacts risk",
+  impacts_control:          "impacts control",
+  impacts_control_instance: "impacts control instance",
+  implemented_by_policy:    "implemented by policy",
+  implemented_by_procedure: "operationalised by procedure",
+  has_summary:              "has summary",
+  has_obligation:           "has obligation",
+  mitigated_by:             "mitigated by",
+  instantiated_as:          "instantiated as",
+  has_gap:                  "has gap",
+};
+
+const KIND_LABEL = {
+  AI_LINK:    "AI link (model decision, with evidence)",
+  STRUCTURAL: "Structural link (from RegMap / Helios)",
+  DERIVED:    "Derived finding (rule)",
+};
+
+// Full class model. x / y = position in the Ontology view.
+const SCHEMA_NODES = [
+  { id: "Regulator",        label: "Regulator",            x: 40,   y: 60,
+    desc: "The authority that issues regulations and alerts." },
+  { id: "RGL",  x: 260, y: 60 },
+  { id: "RSM",  x: 480, y: 60 },
+  { id: "ROB",  x: 700, y: 60 },
+  { id: "Policy",    x: 920, y: 10 },
+  { id: "Procedure", x: 920, y: 110 },
+  { id: "PolicySection",    label: "Policy section",       x: 1140, y: 10,
+    desc: "A section of a policy. Section references are already captured on obligation-to-policy links; modelled as its own class in the next version." },
+  { id: "Alert", x: 40, y: 300 },
+  { id: "Jurisdiction",     label: "Jurisdiction",         x: 40,   y: 480,
+    desc: "Where a regulation or alert applies." },
+  { id: "LinkAssertion",    label: "Link assertion",       x: 480,  y: 300,
+    desc: "Every AI link is stored as an assertion with its score, confidence, evidence quotes, reasoning and independent judge verdict. Nothing is a black box." },
+  { id: "SMEReview",        label: "SME review",           x: 700,  y: 300,
+    desc: "Human confirmation or rejection of an AI link. Planned: SME review packs are prepared; their outcomes load here." },
+  { id: "ImpactAssessment", label: "Impact assessment",    x: 920,  y: 300,
+    desc: "The signed-off assessment of an alert: what changed, what is touched, what is missing." },
+  { id: "Gap", x: 1140, y: 300 },
+  { id: "LR",  x: 260, y: 540 },
+  { id: "L1C", x: 480, y: 540 },
+  { id: "1C",  x: 700, y: 540 },
+  { id: "BusinessUnit",     label: "Business / legal entity", x: 920, y: 500,
+    desc: "The business or legal entity that operates a control instance." },
+  { id: "ControlOwner",     label: "Control owner",        x: 920,  y: 600,
+    desc: "The accountable person for a control instance." },
+];
+
+const SCHEMA_EDGES = [
+  ["Regulator", "RGL", "issues"],
+  ["RGL", "RSM", "has summary"],
+  ["RSM", "ROB", "has obligation"],
+  ["ROB", "Policy", "implemented by"],
+  ["ROB", "Procedure", "operationalised by"],
+  ["Policy", "PolicySection", "has section"],
+  ["Alert", "RGL", "impacts"],
+  ["Alert", "LR", "impacts"],
+  ["Alert", "Jurisdiction", "applies in"],
+  ["Alert", "LinkAssertion", "asserts"],
+  ["LinkAssertion", "SMEReview", "reviewed by"],
+  ["Alert", "ImpactAssessment", "assessed in"],
+  ["ImpactAssessment", "Gap", "raises"],
+  ["LR", "L1C", "mitigated by"],
+  ["L1C", "1C", "instantiated as"],
+  ["1C", "BusinessUnit", "operated by"],
+  ["1C", "ControlOwner", "owned by"],
+];
+
+const SCHEMA_W = 180, SCHEMA_H = 56;
+
+
+/* =====================================================================
+   2. STATE
+   ===================================================================== */
+
+let DATA = null;            // { meta, nodes, edges }
+let nodeById = {};          // id -> node
+let inEdges = {};           // id -> [edge]
+let outEdges = {};          // id -> [edge]
+let view = "schema";        // "schema" | "graph"
+let currentAlert = "ALL";   // "ALL" or "ALERT-xxxx"
+let selected = null;        // { kind: "node"|"edge"|"class", id }
+let positions = {};         // node id -> {x, y} in the data graph
+let T = { x: 0, y: 0, k: 1 };   // pan / zoom transform
+
+const $ = (id) => document.getElementById(id);
+const svg = $("canvas"), vp = $("viewport");
+
+
+/* =====================================================================
+   3. SMALL HELPERS
+   ===================================================================== */
+
+function esc(v) {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) v = v.join(" | ");
+  return String(v).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function short(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function blank(v) { return v === null || v === undefined || v === "" || String(v).toLowerCase() === "nan"; }
+
+function verdictClass(v) {
+  const s = String(v || "").toUpperCase();
+  if (["AGREE", "CONFIRMED"].includes(s)) return "agree";
+  if (["DISAGREE", "DISPUTED"].includes(s)) return "disagree";
+  if (["UNCERTAIN", "NEEDS_SME"].includes(s)) return "uncertain";
+  return "";
+}
+function verdictText(v) {
+  return { agree: "Judge confirms", disagree: "Judge disputes", uncertain: "Judge unsure → SME" }[verdictClass(v)]
+         || "Not judged";
+}
+function typeColor(t) { return (TYPES[t] || {}).color || "#777"; }
+function typeLabel(t) { return (TYPES[t] || {}).label || t; }
+
+
+/* =====================================================================
+   4. LOADING
+   ---------------------------------------------------------------------
+   Browsers cannot read a local folder on their own, so the user picks
+   the JSON file (button or drag-and-drop). If the page is served from
+   the same folder, it also tries to fetch the file automatically.
+   ===================================================================== */
+
+$("loadBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = (e) => readFiles(e.target.files);
+
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) readFiles(e.dataTransfer.files);
+});
+
+// Accepts ONE whole JSON file, or ALL split parts selected together
+// (e.g. ontology_demo_data.json.part01 ... part03). Parts are joined in
+// file-name order, so the part numbers must sort correctly (01, 02, ...).
+function readFiles(fileList) {
+  const files = [...fileList].sort((a, b) => a.name.localeCompare(b.name));
+  if (!files.length) return;
+  Promise.all(files.map((f) => f.text()))
+    .then((texts) => {
+      try { loadData(JSON.parse(texts.join(""))); }
+      catch (err) {
+        alert("Could not read the data.\n\nIf you loaded split parts, select ALL parts together.\n\n" + err.message);
+      }
+    });
+}
+
+// Silent attempt when served over http (fails harmlessly under file://).
+fetch("ontology_demo_data.json")
+  .then((r) => (r.ok ? r.json() : null))
+  .then((d) => { if (d) loadData(d); })
+  .catch(() => {});
+
+function loadData(d) {
+  if (!d || !Array.isArray(d.nodes) || !Array.isArray(d.edges)) {
+    alert("This file does not look like ontology_demo_data.json (needs 'nodes' and 'edges').");
+    return;
+  }
+
+  // --- Normalise types and index the graph ---------------------------
+  d.nodes.forEach((n) => { n.type = TYPE_ALIAS[n.type] || n.type; });
+  d.edges.forEach((e, i) => { e._i = i; });
+  DATA = d;
+  nodeById = {}; inEdges = {}; outEdges = {};
+  d.nodes.forEach((n) => { nodeById[n.id] = n; inEdges[n.id] = []; outEdges[n.id] = []; });
+  d.edges = d.edges.filter((e) => nodeById[e.source] && nodeById[e.target]);
+  d.edges.forEach((e) => { outEdges[e.source].push(e); inEdges[e.target].push(e); });
+
+  // --- Alert filter ---------------------------------------------------
+  const alerts = d.nodes.filter((n) => n.type === "Alert");
+  const sel = $("alertSelect");
+  sel.innerHTML = `<option value="ALL">All showcase alerts (${alerts.length})</option>` +
+    alerts.map((a) => `<option value="${esc(a.id)}">${esc(a.title)} – ${esc(short(a.text, 50))}</option>`).join("");
+  sel.disabled = false;
+  $("search").disabled = false;
+  $("viewGraph").disabled = false;
+  $("loadBtn").classList.remove("pulse");
+  $("empty").hidden = true;
+
+  const ai = d.edges.filter((e) => e.kind === "AI_LINK").length;
+  $("status").textContent =
+    `Loaded ${d.nodes.length} nodes · ${d.edges.length} links (${ai} AI links with evidence)` +
+    (d.meta && d.meta.generated ? ` · generated ${d.meta.generated}` : "") +
+    " · sample of real data";
+
+  selected = null;
+  closePanel();
+  setView("graph");
+}
+
+
+/* =====================================================================
+   5. VIEW SWITCHING
+   ===================================================================== */
+
+$("viewSchema").onclick = () => setView("schema");
+$("viewGraph").onclick = () => setView("graph");
+$("alertSelect").onchange = (e) => { currentAlert = e.target.value; selected = null; closePanel(); render(true); };
+
+function setView(v) {
+  view = v;
+  $("viewSchema").classList.toggle("on", v === "schema");
+  $("viewGraph").classList.toggle("on", v === "graph");
+  $("alertSelect").style.visibility = v === "graph" ? "visible" : "hidden";
+  render(true);
+}
+
+function render(fitAfter) {
+  if (view === "schema") renderSchema(); else renderGraph();
+  renderLegend();
+  if (fitAfter) requestAnimationFrame(fit);
+}
+
+
+/* =====================================================================
+   6. ONTOLOGY (CLASS) VIEW
+   ===================================================================== */
+
+function classInfo(id) {
+  const base = SCHEMA_NODES.find((s) => s.id === id) || {};
+  const t = TYPES[id];
+  let count = 0;
+  if (DATA) {
+    if (id === "LinkAssertion") count = DATA.edges.filter((e) => e.kind === "AI_LINK").length;
+    else count = DATA.nodes.filter((n) => n.type === id).length;
+  }
+  return {
+    id,
+    label: base.label || (t ? t.label : id),
+    desc: base.desc || (t ? t.desc : ""),
+    color: t ? t.color : (id === "LinkAssertion" ? "#555" : "#999"),
+    count,
+    active: count > 0,
+  };
+}
+
+function renderSchema() {
+  $("stats").hidden = true;
+  const info = Object.fromEntries(SCHEMA_NODES.map((s) => [s.id, classInfo(s.id)]));
+  const pos = Object.fromEntries(SCHEMA_NODES.map((s) => [s.id, s]));
+  let html = "";
+
+  // --- Relations (drawn first, under the boxes) ----------------------
+  SCHEMA_EDGES.forEach(([a, b, label]) => {
+    const A = pos[a], B = pos[b];
+    const x1 = A.x + SCHEMA_W / 2, y1 = A.y + SCHEMA_H / 2;
+    const x2 = B.x + SCHEMA_W / 2, y2 = B.y + SCHEMA_H / 2;
+    const on = info[a].active && info[b].active;
+    html += `<line class="sedge ${on ? "" : "off"}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#arrow)"/>`;
+    html += `<text class="slabel ${on ? "" : "off"}" x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 4}" text-anchor="middle">${esc(label)}</text>`;
+  });
+
+  // --- Classes: active ones are clickable, inactive ones are not -----
+  SCHEMA_NODES.forEach((s) => {
+    const c = info[s.id];
+    const isSel = selected && selected.kind === "class" && selected.id === s.id;
+    html += `<g class="cls ${c.active ? "" : "off"} ${isSel ? "sel" : ""}" ${c.active ? `data-class="${s.id}"` : ""}
+                transform="translate(${s.x},${s.y})">
+      <title>${esc(c.desc)}</title>
+      <rect width="${SCHEMA_W}" height="${SCHEMA_H}" rx="6"/>
+      ${c.active ? `<rect width="6" height="${SCHEMA_H}" rx="2" fill="${c.color}" stroke="none"/>` : ""}
+      <text x="16" y="23" font-weight="600">${esc(c.label)}</text>
+      <text class="cnt" x="16" y="41">${c.active ? `${c.count} in sample` : "no data linked yet"}</text>
+    </g>`;
+  });
+
+  vp.innerHTML = arrowDefs() + html;
+}
+
+function arrowDefs() {
+  return `<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7"
+           orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8A8A8A"/></marker></defs>`;
+}
+
+
+/* =====================================================================
+   7. DATA GRAPH VIEW
+   ---------------------------------------------------------------------
+   Layout: two lanes.
+     Regulatory chain (top) : Alert | RGL | RSM | ROB | Policy+Procedure | Gaps
+     Risk & control (bottom): Alert | LR  | L1C | 1C  |                  | Gaps
+   Within a column, nodes are ordered next to their parents to keep
+   lines short. The alert sits between the two lanes.
+   ===================================================================== */
+
+const COL_W = 270, ROW_H = 36, NODE_W = 220, NODE_H = 28, LANE_GAP = 90, TOP = 50;
+
+function visibleSet() {
+  if (!DATA) return new Set();
+  if (currentAlert === "ALL") return new Set(DATA.nodes.map((n) => n.id));
+  // Everything reachable from the alert along outgoing links.
+  const seen = new Set([currentAlert]);
+  const queue = [currentAlert];
+  while (queue.length) {
+    const id = queue.shift();
+    (outEdges[id] || []).forEach((e) => {
+      if (!seen.has(e.target)) { seen.add(e.target); queue.push(e.target); }
+    });
+  }
+  return seen;
+}
+
+function laneOf(id) {
+  const n = nodeById[id];
+  if (n.type === "Gap") {
+    const parent = (inEdges[id] || [])[0];
+    return parent ? laneOf(parent.source) : "reg";
+  }
+  return (TYPES[n.type] || { lane: "reg" }).lane;
+}
+
+// Edges actually drawn: hide Alert -> X when X already hangs off another
+// parent in view (the proof stays available in the side panel).
+function drawnEdges(vis) {
+  return DATA.edges.filter((e) => {
+    if (!vis.has(e.source) || !vis.has(e.target)) return false;
+    if (nodeById[e.source].type !== "Alert") return true;
+    return !(inEdges[e.target] || []).some(
+      (p) => vis.has(p.source) && nodeById[p.source].type !== "Alert");
+  });
+}
+
+function layoutGraph(vis, edges) {
+  positions = {};
+  const cols = {};                    // "lane|col" -> [ids]
+  const alerts = [];
+  vis.forEach((id) => {
+    const n = nodeById[id];
+    if (n.type === "Alert") { alerts.push(id); return; }
+    const key = laneOf(id) + "|" + ((TYPES[n.type] || {}).col ?? 5);
+    (cols[key] = cols[key] || []).push(id);
+  });
+
+  // Parent order index, used to sort children near their parents.
+  const order = {};
+  alerts.sort().forEach((id, i) => { order[id] = i / Math.max(1, alerts.length); });
+  const parentsOf = (id) => edges.filter((e) => e.target === id).map((e) => e.source);
+  const typeRank = { Policy: 0, Procedure: 1 };
+
+  ["reg", "ctl"].forEach((lane) => {
+    for (let c = 1; c <= 5; c++) {
+      const list = cols[lane + "|" + c];
+      if (!list) continue;
+      const bary = (id) => {
+        const ps = parentsOf(id).filter((p) => p in order);
+        return ps.length ? ps.reduce((s, p) => s + order[p], 0) / ps.length : 1;
+      };
+      list.sort((a, b) =>
+        (typeRank[nodeById[a].type] ?? 0) - (typeRank[nodeById[b].type] ?? 0) ||
+        bary(a) - bary(b) ||
+        String(nodeById[a].title).localeCompare(String(nodeById[b].title)));
+      list.forEach((id, i) => { order[id] = i / list.length; });
+    }
+  });
+
+  // Lane heights and y positions (each column centred in its lane).
+  const laneHeight = (lane) => Math.max(1, ...[1, 2, 3, 4, 5].map((c) => (cols[lane + "|" + c] || []).length)) * ROW_H;
+  const regH = laneHeight("reg"), ctlH = laneHeight("ctl");
+  const regTop = TOP, ctlTop = TOP + regH + LANE_GAP;
+  const lanes = { reg: { top: regTop, h: regH }, ctl: { top: ctlTop, h: ctlH } };
+
+  Object.entries(cols).forEach(([key, list]) => {
+    const [lane, c] = key.split("|");
+    const L = lanes[lane];
+    const offset = (L.h - list.length * ROW_H) / 2;
+    list.forEach((id, i) => { positions[id] = { x: 40 + Number(c) * COL_W, y: L.top + offset + i * ROW_H }; });
+  });
+
+  const midY = regTop + regH + LANE_GAP / 2 - NODE_H / 2;
+  alerts.forEach((id, i) => {
+    positions[id] = { x: 40, y: midY - ((alerts.length - 1) / 2) * ROW_H * 1.3 + i * ROW_H * 1.3 };
+  });
+
+  return { cols, lanes };
+}
+
+function renderGraph() {
+  if (!DATA) { renderSchema(); return; }
+  const vis = visibleSet();
+  const edges = drawnEdges(vis);
+  const { cols, lanes } = layoutGraph(vis, edges);
+
+  // --- Highlight set for the current selection ------------------------
+  let focus = null;
+  if (selected && selected.kind === "node" && vis.has(selected.id)) {
+    focus = new Set([selected.id]);
+    [...(inEdges[selected.id] || []), ...(outEdges[selected.id] || [])]
+      .forEach((e) => { focus.add(e.source); focus.add(e.target); });
+  } else if (selected && selected.kind === "edge") {
+    const e = DATA.edges[selected.id];
+    focus = new Set([e.source, e.target]);
+  }
+
+  let html = arrowDefs();
+
+  // --- Lane backgrounds and titles -------------------------------------
+  const width = 40 + 6 * COL_W;
+  [["reg", "Regulatory chain · RegMap + GPPS"], ["ctl", "Risk & control chain · Helios"]].forEach(([lane, title]) => {
+    const L = lanes[lane];
+    html += `<rect class="lane-bg" x="${COL_W - 30}" y="${L.top - 34}" width="${width - COL_W + 10}" height="${L.h + 50}" rx="8"/>`;
+    html += `<text class="lane-title" x="${COL_W - 14}" y="${L.top - 14}">${title}</text>`;
+    for (let c = 1; c <= 5; c++) {
+      const list = cols[lane + "|" + c];
+      if (!list) continue;
+      const types = [...new Set(list.map((id) => typeLabel(nodeById[id].type)))].join(" / ");
+      html += `<text class="col-title" x="${40 + c * COL_W}" y="${L.top - 14}" dx="${c === 1 ? 260 - COL_W + 160 : 0}">${esc(c === 1 ? "" : types)}</text>`;
+    }
+  });
+
+  // --- Edges (with a wide invisible hit area for clicking) -------------
+  edges.forEach((e) => {
+    const a = positions[e.source], b = positions[e.target];
+    if (!a || !b) return;
+    const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
+    const dx = Math.max(40, (x2 - x1) / 2);
+    const d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+    const v = e.kind === "AI_LINK" ? verdictClass(e.judge_verdict) : "";
+    const dim = focus && !(focus.has(e.source) && focus.has(e.target)) ? "dim" : "";
+    const hl = selected && selected.kind === "edge" && selected.id === e._i ? "hl" : "";
+    html += `<path class="edge ${e.kind} ${v ? "v-" + v : ""} ${dim} ${hl}" d="${d}"/>`;
+    html += `<path class="edge-hit" data-edge="${e._i}" d="${d}"><title>${esc(REL_LABEL[e.relation] || e.relation)}</title></path>`;
+  });
+
+  // --- Nodes ------------------------------------------------------------
+  vis.forEach((id) => {
+    const n = nodeById[id], p = positions[id];
+    if (!p) return;
+    const dim = focus && !focus.has(id) ? "dim" : "";
+    const sel = selected && selected.kind === "node" && selected.id === id ? "sel" : "";
+    const gap = n.type === "Gap" ? "gap" : "";
+    // Verdict dot: judge result on the alert's direct link to this node.
+    const ai = (inEdges[id] || []).find((e) => e.kind === "AI_LINK" && vis.has(e.source) && !blank(e.judge_verdict));
+    const vc = ai ? verdictClass(ai.judge_verdict) : "";
+    const label = n.title && n.title !== id ? n.title : id;
+    const w = n.type === "Alert" ? NODE_W : NODE_W;
+    html += `<g class="node ${dim} ${sel} ${gap}" data-node="${esc(id)}" transform="translate(${p.x},${p.y})">
+      <title>${esc(typeLabel(n.type))}: ${esc(id)}${n.title && n.title !== id ? "\n" + esc(n.title) : ""}</title>
+      <rect class="box" width="${w}" height="${NODE_H}" rx="5"/>
+      <rect width="5" height="${NODE_H}" rx="2" fill="${typeColor(n.type)}"/>
+      <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${esc(short(label, 30))}</text>
+      ${vc ? `<circle cx="${w - 10}" cy="${NODE_H / 2}" r="5" fill="var(--${vc})"/>` : ""}
+    </g>`;
+  });
+
+  vp.innerHTML = html;
+  renderStats(vis);
+}
+
+function renderStats(vis) {
+  const counts = {};
+  vis.forEach((id) => { const t = nodeById[id].type; counts[t] = (counts[t] || 0) + 1; });
+  const ai = DATA.edges.filter((e) => e.kind === "AI_LINK" && vis.has(e.source) && vis.has(e.target));
+  const v = { agree: 0, disagree: 0, uncertain: 0, "": 0 };
+  ai.forEach((e) => { v[verdictClass(e.judge_verdict)]++; });
+  const order = ["Alert", "RGL", "RSM", "ROB", "Policy", "Procedure", "LR", "L1C", "1C", "Gap"];
+  $("stats").innerHTML =
+    order.filter((t) => counts[t]).map((t) => `${typeLabel(t)} <b>${counts[t]}</b>`).join(" · ") +
+    `<br>AI links <b>${ai.length}</b>: ` +
+    `<span class="verdict agree">${v.agree} confirmed</span> · ` +
+    `<span class="verdict disagree">${v.disagree} disputed</span> · ` +
+    `<span class="verdict uncertain">${v.uncertain} to SME</span> · ${v[""]} not judged`;
+  $("stats").hidden = false;
+}
+
+function renderLegend() {
+  if (view === "schema") {
+    $("legend").innerHTML =
+      `<b>Ontology view</b><br>Coloured class = data in the sample (click it)<br>` +
+      `Grey dashed class = defined, no data linked yet`;
+    return;
+  }
+  $("legend").innerHTML =
+    `<span class="sw" style="border-color:var(--agree)"></span>AI link · judge confirms<br>` +
+    `<span class="sw" style="border-color:var(--disagree)"></span>AI link · judge disputes<br>` +
+    `<span class="sw" style="border-color:#555"></span>AI link · not judged<br>` +
+    `<span class="sw" style="border-color:var(--struct);border-top-style:dotted"></span>Structural (RegMap / Helios)<br>` +
+    `<span class="sw" style="border-color:var(--disagree);border-top-style:dashed"></span>Gap finding (rule)<br>` +
+    `<span class="muted">Click any box or line to see the evidence</span>`;
+}
+
+
+/* =====================================================================
+   8. SIDE PANEL: node, link (proof) and class details
+   ===================================================================== */
+
+function openPanel(html) { $("panelBody").innerHTML = html; $("panel").classList.add("open"); }
+function closePanel() { $("panel").classList.remove("open"); }
+$("closePanel").onclick = () => { selected = null; closePanel(); render(false); };
+
+function proofCard(e) {
+  const src = nodeById[e.source], tgt = nodeById[e.target];
+  const vc = verdictClass(e.judge_verdict);
+  let h = `<div class="proof">
+    <div><b>${esc(src.title || src.id)}</b> → <i>${esc(REL_LABEL[e.relation] || e.relation)}</i> → <b>${esc(tgt.title || tgt.id)}</b></div>
+    <div class="muted">${esc(KIND_LABEL[e.kind] || e.kind)}</div>`;
+  if (e.kind === "AI_LINK") {
+    h += `<div class="row" style="margin-top:6px">
+      ${!blank(e.score) ? `<span>Score <b>${esc(e.score)}</b>/10</span>` : ""}
+      ${!blank(e.confidence) ? `<span>Confidence <b>${esc(e.confidence)}</b></span>` : ""}
+      <span class="verdict ${vc}">${verdictText(e.judge_verdict)}</span>
+      ${!blank(e.grounding) ? `<span>Grounding <b>${esc(e.grounding)}</b></span>` : ""}
+      ${!blank(e.route) ? `<span>Route <b>${esc(e.route)}</b></span>` : ""}
+      ${!blank(e.tier) ? `<span>Tier <b>${esc(e.tier)}</b></span>` : ""}
+    </div>`;
+    if (!blank(e.sections)) h += `<div class="row"><span>Linked sections <b>${esc(e.sections)}</b></span></div>`;
+    if (!blank(e.evidence_from)) h += `<div class="quote">“${esc(e.evidence_from)}”<div class="muted">from ${esc(typeLabel(src.type).toLowerCase())}</div></div>`;
+    if (!blank(e.evidence_to)) h += `<div class="quote to">“${esc(e.evidence_to)}”<div class="muted">from ${esc(typeLabel(tgt.type).toLowerCase())}</div></div>`;
+    if (!blank(e.reasoning)) h += `<div style="margin-top:6px"><b>Reasoning.</b> ${esc(e.reasoning)}</div>`;
+  }
+  return h + `</div>`;
+}
+
+function showNode(id) {
+  const n = nodeById[id];
+  const ins = inEdges[id] || [], outs = outEdges[id] || [];
+  const why = ins.filter((e) => e.kind === "AI_LINK");
+  const conn = (e, dir) => {
+    const other = nodeById[dir === "in" ? e.source : e.target];
+    return `<div class="conn">${dir === "in" ? "←" : "→"} ${esc(REL_LABEL[e.relation] || e.relation)}
+      <span class="link-chip" data-goto="${esc(other.id)}">${esc(short(other.title || other.id, 40))}</span>
+      ${e.kind === "AI_LINK" ? `<span class="link-chip" data-proof="${e._i}">evidence</span>` : ""}</div>`;
+  };
+  let h = `<span class="chip" style="background:${typeColor(n.type)}">${esc(typeLabel(n.type))}</span>
+    <span class="muted">${esc(n.id)}</span>
+    <h2>${esc(n.title || n.id)}</h2>`;
+  if (!blank(n.text)) h += `<div class="text">${esc(n.text)}</div>`;
+  else h += `<div class="muted">${esc((TYPES[n.type] || {}).desc || "")}</div>`;
+  if (why.length) h += `<h3>Why this is linked</h3>` + why.map(proofCard).join("");
+  if (outs.length) h += `<h3>Links onward (${outs.length})</h3>` + outs.map((e) => conn(e, "out")).join("");
+  const otherIns = ins.filter((e) => e.kind !== "AI_LINK");
+  if (otherIns.length) h += `<h3>Sits under</h3>` + otherIns.map((e) => conn(e, "in")).join("");
+  openPanel(h);
+}
+
+function showEdge(i) {
+  const e = DATA.edges[i];
+  openPanel(`<h2>Link evidence</h2>` + proofCard(e) +
+    `<h3>Ends</h3><span class="link-chip" data-goto="${esc(e.source)}">${esc(nodeById[e.source].title || e.source)}</span>
+     <span class="link-chip" data-goto="${esc(e.target)}">${esc(nodeById[e.target].title || e.target)}</span>`);
+}
+
+function showClass(id) {
+  const c = classInfo(id);
+  const rel = SCHEMA_EDGES.filter(([a, b]) => a === id || b === id)
+    .map(([a, b, l]) => `<div class="conn">${esc(classInfo(a).label)} → <i>${esc(l)}</i> → ${esc(classInfo(b).label)}</div>`).join("");
+  let h = `<span class="chip" style="background:${c.color}">Class</span><h2>${esc(c.label)}</h2>
+    <div>${esc(c.desc)}</div><h3>Relations</h3>${rel}`;
+  if (DATA && id !== "LinkAssertion") {
+    const inst = DATA.nodes.filter((n) => n.type === id);
+    h += `<h3>In the sample (${inst.length})</h3>` +
+      inst.slice(0, 80).map((n) => `<span class="link-chip" data-goto="${esc(n.id)}">${esc(short(n.title || n.id, 40))}</span>`).join("");
+  }
+  if (id === "LinkAssertion" && DATA) {
+    h += `<h3>In the sample</h3><div>${c.count} AI links, each with score, evidence quotes, reasoning and judge verdict. Open the data graph and click any line.</div>`;
+  }
+  openPanel(h);
+}
+
+// Clicks inside the panel: jump to a node, or open a link's evidence.
+$("panelBody").addEventListener("click", (ev) => {
+  const g = ev.target.closest("[data-goto]");
+  const p = ev.target.closest("[data-proof]");
+  if (g) gotoNode(g.dataset.goto);
+  else if (p) { selected = { kind: "edge", id: Number(p.dataset.proof) }; showEdge(Number(p.dataset.proof)); render(false); }
+});
+
+function gotoNode(id) {
+  if (view !== "graph") setView("graph");
+  if (!visibleSet().has(id)) { currentAlert = "ALL"; $("alertSelect").value = "ALL"; }
+  selected = { kind: "node", id };
+  render(false);
+  showNode(id);
+  centerOn(id);
+}
+
+
+/* =====================================================================
+   9. CANVAS INTERACTION: click, pan, zoom, fit, search
+   ===================================================================== */
+
+let drag = null, moved = false;
+
+svg.addEventListener("pointerdown", (e) => {
+  drag = { x: e.clientX, y: e.clientY, tx: T.x, ty: T.y };
+  moved = false;
+});
+window.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) { moved = true; svg.classList.add("dragging"); }
+  if (moved) { T.x = drag.tx + dx; T.y = drag.ty + dy; applyT(); }
+});
+window.addEventListener("pointerup", () => { drag = null; svg.classList.remove("dragging"); });
+
+svg.addEventListener("click", (e) => {
+  if (moved) return;                       // it was a pan, not a click
+  const n = e.target.closest("[data-node]");
+  const ed = e.target.closest("[data-edge]");
+  const c = e.target.closest("[data-class]");
+  if (n) { selected = { kind: "node", id: n.dataset.node }; showNode(n.dataset.node); }
+  else if (ed) { selected = { kind: "edge", id: Number(ed.dataset.edge) }; showEdge(Number(ed.dataset.edge)); }
+  else if (c) { selected = { kind: "class", id: c.dataset.class }; showClass(c.dataset.class); }
+  else { selected = null; closePanel(); }
+  render(false);
+});
+
+svg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
+
+function zoomAt(mx, my, f) {
+  const k = Math.min(3, Math.max(0.15, T.k * f));
+  T.x = mx - (mx - T.x) * (k / T.k);
+  T.y = my - (my - T.y) * (k / T.k);
+  T.k = k;
+  applyT();
+}
+function applyT() { vp.setAttribute("transform", `translate(${T.x},${T.y}) scale(${T.k})`); }
+
+function fit() {
+  const bb = vp.getBBox(), r = svg.getBoundingClientRect();
+  if (!bb.width || !bb.height) return;
+  const k = Math.min((r.width - 60) / bb.width, (r.height - 60) / bb.height, 1.3);
+  T = { k, x: (r.width - bb.width * k) / 2 - bb.x * k, y: (r.height - bb.height * k) / 2 - bb.y * k };
+  applyT();
+}
+function centerOn(id) {
+  const p = positions[id];
+  if (!p) return;
+  const r = svg.getBoundingClientRect();
+  const k = Math.max(T.k, 0.9);
+  T = { k, x: r.width * 0.4 - (p.x + NODE_W / 2) * k, y: r.height / 2 - (p.y + NODE_H / 2) * k };
+  applyT();
+}
+
+$("zoomIn").onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.25); };
+$("zoomOut").onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 0.8); };
+$("fitBtn").onclick = fit;
+window.addEventListener("resize", () => fit());
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { selected = null; closePanel(); render(false); } });
+
+$("search").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !DATA) return;
+  const q = e.target.value.trim().toLowerCase();
+  if (!q) return;
+  const hit = DATA.nodes.find((n) => n.id.toLowerCase().includes(q)) ||
+              DATA.nodes.find((n) => String(n.title || "").toLowerCase().includes(q));
+  if (hit) gotoNode(hit.id); else alert("No node matches: " + q);
+});
+
+
+/* =====================================================================
+   10. START: show the ontology with every class disabled until loaded
+   ===================================================================== */
+render(true);
+</script>
+</body>
+</html>
