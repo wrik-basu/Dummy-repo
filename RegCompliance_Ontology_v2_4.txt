@@ -1,0 +1,1909 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>RegCompliance Ontology v2.4</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: working console — sticky tab bar, one panel at a time, tables scroll inside their own frames */
+:root{
+  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eceef2; --fg:#16191e; --muted:#5a6270; --line:#d9dde3;
+  --accent:#c4000f; --accent-soft:#fbe9ea; --ok:#1d7a4f; --ok-soft:#e3f3ea; --warn:#9a5b00; --warn-soft:#fbf0dc; --bad:#b3261e; --bad-soft:#fae6e4;
+  --lineage:#2f6fd6; --impact:#d0452f; --context:#7c8a2e; --prov:#7b8494;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Arial,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#121417; --surface:#1a1d22; --sunk:#22262c; --fg:#e7e9ee; --muted:#9aa2b0; --line:#30353d;
+  --accent:#ff5a63; --accent-soft:#3a1c1f; --ok:#5bc48f; --ok-soft:#173226; --warn:#e8b053; --warn-soft:#3a2d14; --bad:#ff7b72; --bad-soft:#3d1d1b;
+  --lineage:#6f9dff; --impact:#ff7a62; --context:#b6c45a; --prov:#9aa3b2; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#121417; --surface:#1a1d22; --sunk:#22262c; --fg:#e7e9ee; --muted:#9aa2b0; --line:#30353d;
+  --accent:#ff5a63; --accent-soft:#3a1c1f; --ok:#5bc48f; --ok-soft:#173226; --warn:#e8b053; --warn-soft:#3a2d14; --bad:#ff7b72; --bad-soft:#3d1d1b;
+  --lineage:#6f9dff; --impact:#ff7a62; --context:#b6c45a; --prov:#9aa3b2; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);margin:0}
+.wrap{max-width:1240px;margin:0 auto;padding-inline:20px;padding-block:20px 48px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 24px;padding-block:8px 16px}
+h1{font-size:26px;margin:0;letter-spacing:-.3px;text-wrap:balance}
+h1 small{font:500 15px var(--mono);color:var(--accent);margin-left:8px}
+.sub{color:var(--muted);margin:2px 0 0;max-width:70ch}
+nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line);display:flex;gap:2px;overflow-x:auto;margin-bottom:20px}
+nav button{font:600 14px var(--sans);color:var(--muted);background:none;border:0;border-bottom:2px solid transparent;padding:10px 12px;cursor:pointer;white-space:nowrap}
+nav button[aria-selected="true"]{color:var(--fg);border-color:var(--accent)}
+nav button:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+section[role="tabpanel"]{display:flex;flex-direction:column;gap:18px}
+h2{font-size:19px;margin:0;text-wrap:balance}
+h3{font-size:15px;margin:0}
+p{margin:0;max-width:75ch}
+.muted{color:var(--muted)}
+.mono{font-family:var(--mono);font-size:13px}
+.eyebrow{font:600 12px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.stat b{display:block;font:600 26px var(--mono);font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:13px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.panel ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.chain{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.chain span{font:500 13px var(--sans);padding:6px 10px;border-radius:6px;background:var(--sunk)}
+.chain span.hub{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.chain i{color:var(--muted);font-style:normal}
+.pill{display:inline-block;font:600 11px var(--sans);letter-spacing:.04em;padding:2px 7px;border-radius:999px;white-space:nowrap}
+.p-AVAILABLE,.p-PASS,.p-core{background:var(--ok-soft);color:var(--ok)}
+.p-PARTIAL,.p-Warning,.p-warning{background:var(--warn-soft);color:var(--warn)}
+.p-MISSING,.p-Violation{background:var(--bad-soft);color:var(--bad)}
+.p-DERIVED,.p-evidence,.p-impact,.p-ai-governance,.p-MUST,.p-SHOULD,.p-COULD{background:var(--sunk);color:var(--fg)}
+.p-MUST{background:var(--accent-soft);color:var(--accent)}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--muted);background:var(--sunk);position:sticky;top:0}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums}
+input[type=search]{width:100%;max-width:420px;font:14px var(--sans);padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:500 12px var(--sans);border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:999px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:6px}
+.chip[aria-pressed="false"]{opacity:.4}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.mapwrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface);max-height:72vh}
+svg text{font-family:var(--sans)}
+.node{cursor:pointer}
+.node:focus-visible rect{stroke-width:3}
+.maptools{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}
+.crumb{font:600 13px var(--sans);background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
+.crumb.here{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.sep{color:var(--muted)}
+.inh{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+
+.mapgrid{position:relative;overflow:hidden;border-radius:8px}
+.mapgrid .mapwrap{height:calc(100vh - 120px);min-height:620px;max-height:none;transition:padding-right .38s cubic-bezier(.22,.8,.28,1)}
+@media (min-width:901px){.mapgrid.open .mapwrap{padding-right:min(420px,92%)}}
+.explain{position:absolute;top:0;right:0;bottom:0;width:min(420px,92%);z-index:20;background:var(--surface);border-left:1px solid var(--line);padding:18px 18px 18px 22px;display:flex;flex-direction:column;gap:10px;overflow:auto;box-shadow:-14px 0 32px rgba(0,0,0,.18);transform:translateX(105%);transition:transform .38s cubic-bezier(.22,.8,.28,1);visibility:hidden}
+.mapgrid.open .explain{transform:translateX(0);visibility:visible}
+.mapgrid:not(.open) .explain{transition:transform .38s cubic-bezier(.22,.8,.28,1),visibility 0s .38s}
+.ex-close{position:absolute;top:10px;right:10px;font:600 16px var(--sans);background:var(--sunk);color:var(--fg);border:0;border-radius:6px;width:30px;height:30px;cursor:pointer}
+.ex-toggle{font:600 13px var(--sans);background:var(--accent);color:#fff;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.zoom{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.zoom button{font:600 13px var(--sans);background:var(--surface);color:var(--fg);border:0;border-left:1px solid var(--line);padding:7px 12px;cursor:pointer;min-width:38px}
+.zoom button:first-child{border-left:0}.zoom button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+#svg.fitall{width:100%;height:100%;display:block}
+.mapgrid.full{position:fixed;inset:8px;z-index:50;background:var(--bg)}.mapgrid.full .mapwrap{height:100%}
+.fs-exit{display:none;position:absolute;top:10px;left:10px;z-index:30;font:600 13px var(--sans);background:var(--fg);color:var(--bg);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.2)}
+.mapgrid.full .fs-exit{display:inline-flex}
+@media (max-width:900px){.mapgrid .mapwrap{height:70vh;min-height:420px}.explain{top:auto;left:0;width:100%;height:60%;border-left:0;border-top:1px solid var(--line);transform:translateY(105%)}.mapgrid.open .explain{transform:translateY(0)}}
+.explain h3{font-size:17px}.explain h4{font-size:13px;margin:6px 0 0;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;display:flex;gap:8px;align-items:center}
+.explain .count{font:600 12px var(--mono);background:var(--sunk);color:var(--fg);border-radius:999px;padding:1px 8px}
+.ex-head{display:flex;align-items:center;gap:8px;font-size:13px}
+.sent{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.sent li{display:flex;gap:10px;padding:7px 8px;border-radius:6px;font-size:14px;line-height:1.45;cursor:default}
+.sent li:hover,.sent li.lit,.sent li:focus-visible{background:var(--sunk)}
+.kbar{flex:none;width:3px;border-radius:2px;align-self:stretch}
+.verb{font-weight:600;color:var(--fg);background:color-mix(in srgb,var(--kc) 16%,transparent);border-bottom:2px solid var(--kc);padding:0 4px;border-radius:3px}
+.via,.note{display:block;font-size:12.5px;color:var(--muted)}
+.lnk{font:600 14px var(--sans);color:var(--accent);background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.legend-v{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}.legend-v span{display:flex;align-items:center;gap:8px}
+.legend-v i{width:24px;border-top:2.5px solid}.legend-v i.dash{border-top:2px dashed var(--muted)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{font:600 13px var(--sans);background:var(--surface);color:var(--muted);border:0;padding:7px 14px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+.lbl.lit rect{stroke-width:2.6}
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px}
+.fstep{flex:1 1 150px;min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:4px;font-size:13px}
+.fstep b{font-size:14px}.fstep span:last-child{color:var(--muted)}
+.fstep.hub{border-color:var(--accent);background:var(--accent-soft)}
+.farrow{align-self:center;color:var(--muted);font-size:18px}
+@media (max-width:900px){.farrow{display:none}}
+.askrow{display:flex;gap:8px;flex-wrap:wrap}.askrow input{flex:1 1 280px;max-width:none;font-size:15px;padding:10px 12px}
+.askrow button,.btn2{font:600 14px var(--sans);background:var(--accent);color:#fff;border:0;border-radius:6px;padding:10px 18px;cursor:pointer}
+.btn2{background:var(--sunk);color:var(--fg);padding:7px 12px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.steps{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;counter-reset:s}
+.steps li{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--muted);transition:background .2s,border-color .2s}
+.steps li b{color:var(--fg);font-size:14px}
+.steps li.on{border-color:var(--accent);background:var(--accent-soft)}
+.steps li.done{border-color:var(--ok);background:var(--ok-soft)}
+.ares{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);padding-top:14px}
+.answer{font-size:17px;line-height:1.5;max-width:80ch}
+.meta,.cite,.arow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px}
+.tag{font:500 12px var(--mono);background:var(--sunk);border-radius:4px;padding:2px 6px}
+.nores{border:1px dashed var(--line);border-radius:8px;padding:12px 14px;font-size:14px}
+.nores ul{margin:6px 0 0;padding-left:18px}
+details.panel summary{font-weight:600;color:var(--fg)}
+#svg.fit{width:100%;height:auto;min-width:900px;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;color:var(--muted)}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:22px;height:0;border-top:2px solid}
+.detail{min-height:90px}
+.cq{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.cq header{padding:0;display:flex;gap:10px;align-items:center;justify-content:flex-start}
+.cq header b{font:600 13px var(--mono);color:var(--muted)}
+details summary{cursor:pointer;color:var(--muted);font-size:13px}
+pre{font:12.5px/1.5 var(--mono);background:var(--sunk);border-radius:6px;padding:10px;overflow-x:auto;white-space:pre;margin:6px 0 0}
+.verdict{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.verdict .panel h3{display:flex;align-items:center;gap:8px}
+.res{font-size:13.5px;display:flex;gap:8px;align-items:baseline}
+</style>
+
+<div class="wrap">
+<header>
+  <div><h1>Regulatory Compliance Ontology <small id="ver"></small></h1>
+  <p class="sub">From a regulatory alert to the obligations, risks, controls, policies and people it affects. AI-made links are recorded with evidence and only count once a human confirms them.</p></div>
+</header>
+<nav role="tablist" id="tabs"></nav>
+<main id="panels"></main>
+</div>
+
+<script>
+const D = {"version":"2.4","modules":{"REG":{"n":"Regulatory Source","c":"#2f6fd6"},"SEM":{"n":"Requirement Semantics","c":"#7a4fd0"},"CHG":{"n":"Regulatory Change","c":"#d0452f"},"IMP":{"n":"Impact Assessment","c":"#c9821b"},"RSK":{"n":"Risk","c":"#b83280"},"CTL":{"n":"Control","c":"#1f9d6b"},"GOV":{"n":"Policy & Procedure","c":"#0f8a9a"},"BUS":{"n":"Business Context","c":"#5b6b2f"},"ACC":{"n":"Accountability","c":"#6b5b45"},"PRV":{"n":"Provenance & AI Governance","c":"#64748b"}},"classes":[{"id":"Entity","m":"PRV","l":"Entity","parent":null,"src":"—","status":"DERIVED","d":"Abstract root of every node. Carries identity, source system and bitemporal validity (validFrom/validTo, recordedAt).","cqs":[],"align":"","note":"NEW","guide":""},{"id":"Requirement","m":"SEM","l":"Requirement","parent":"Entity","src":"—","status":"DERIVED","d":"Abstract superclass for any binding or advisory statement (regulatory obligation or internal policy requirement). Strength is carried by hasModality (MUST, MUST_NOT, MAY, SHOULD).","cqs":["CQ01","CQ05","CQ09"],"align":"","note":"NEW","guide":""},{"id":"Regulator","m":"REG","l":"Regulator","parent":"Entity","src":"Rapid2 REGULATOR_CODE","status":"AVAILABLE","d":"Authority that issues or enforces regulation (FCA, PRA, HKMA, MAS, EU Commission…).","cqs":["CQ12"],"align":"","note":"","guide":""},{"id":"Jurisdiction","m":"REG","l":"Jurisdiction","parent":"Entity","src":"Rapid2 RECORD_JURISDICTION_NAME","status":"AVAILABLE","d":"Legal territory a regulation applies in; hierarchical via broaderJurisdiction (Global > Region > Country).","cqs":["CQ07","CQ12"],"align":"","note":"","guide":""},{"id":"Regulation","m":"REG","l":"Regulation (RGL)","parent":"Entity","src":"RegMap REG_ID","status":"AVAILABLE","d":"Canonical regulatory instrument tracked in RegMap; anchor of structural lineage.","cqs":["CQ01","CQ12","CQ16"],"align":"","note":"Structured instrument, not a text mention","guide":""},{"id":"RegulatorySummary","m":"REG","l":"Regulation Summary (RSM)","parent":"Entity","src":"RegMap SUM_ID","status":"AVAILABLE","d":"Business summary of a coherent part of a regulation; the correct granularity for alert linkage.","cqs":["CQ01","CQ02"],"align":"","note":"","guide":""},{"id":"RegulatoryObligation","m":"REG","l":"Regulatory Obligation (ROB)","parent":"Requirement","src":"RegMap ROB_ID","status":"AVAILABLE","d":"Atomic, testable duty derived from a regulation summary. The hub that controls, policy requirements and procedure steps satisfy.","cqs":["CQ01","CQ02","CQ03","CQ04","CQ05","CQ09"],"align":"","note":"Now a Requirement subclass","guide":"Classify modality from verbs: must/shall → MUST; must not/shall not/may not → MUST_NOT; may/is permitted → MAY; should/is expected → SHOULD. One obligation per testable duty."},{"id":"Provision","m":"REG","l":"Provision / Article","parent":"Entity","src":"Regulatory text","status":"PARTIAL","d":"Article, rule or paragraph of the source legal text an obligation cites.","cqs":["CQ16"],"align":"","note":"","guide":""},{"id":"RegulatoryDocument","m":"REG","l":"Regulatory Document","parent":"Entity","src":"Source PDF / URL","status":"PARTIAL","d":"Published text (rulebook, consultation paper, guidance, Dear CEO letter).","cqs":["CQ16"],"align":"","note":"","guide":""},{"id":"DefinedTerm","m":"REG","l":"Defined Term","parent":"Entity","src":"Glossary / Provision","status":"PARTIAL","d":"A term formally defined in regulation; used for entity resolution across texts.","cqs":["CQ16"],"align":"","note":"Renamed from Definition","guide":"Emit only for explicit 'means / is defined as' text. Store headword in term, gloss in definitionText."},{"id":"Condition","m":"SEM","l":"Condition","parent":"Entity","src":"LLM extraction from ROB text","status":"DERIVED","d":"Criterion evaluated before an obligation applies (threshold, risk class, status). Gates applicability; not an event.","cqs":["CQ06"],"align":"","note":"","guide":"Condition is a test that is evaluated (if/where/provided that). An event that happens is a Trigger."},{"id":"Trigger","m":"SEM","l":"Trigger","parent":"Entity","src":"LLM extraction / Rapid2","status":"DERIVED","d":"Business or regulatory event that initiates an obligation or an assessment. A regulatory alert is a Trigger.","cqs":["CQ01"],"align":"","note":"NEW","guide":"A Trigger happens (receipt, publication, alert). If it is a yes/no criterion, use Condition."},{"id":"Exception","m":"SEM","l":"Exception / Exemption","parent":"Entity","src":"LLM extraction from ROB text","status":"DERIVED","d":"Documented carve-out that disapplies or overrides a requirement.","cqs":["CQ06"],"align":"","note":"Gains overrides / exempts","guide":"Link with overrides to the Requirement it carves out from."},{"id":"TemporalConstraint","m":"SEM","l":"Temporal Constraint","parent":"Entity","src":"LLM extraction / RegMap dates","status":"DERIVED","d":"Deadline, duration, recurrence, effective or transition period attached to a requirement or control.","cqs":["CQ08"],"align":"","note":"Typed via TemporalType vocabulary","guide":""},{"id":"ApplicabilityScope","m":"SEM","l":"Applicability Scope","parent":"Entity","src":"Rule / LLM extraction","status":"PARTIAL","d":"Machine-evaluable boundary of where a requirement applies: jurisdictions, legal entities, businesses, products, processes, customer segments.","cqs":["CQ07","CQ11"],"align":"","note":"Links to mastered business data, not free text","guide":""},{"id":"RegulatoryAlert","m":"CHG","l":"Regulatory Alert","parent":"Trigger","src":"Rapid2 RECORD_ID","status":"AVAILABLE","d":"Incoming vendor or regulator notification of change. A Trigger that initiates impact assessment. At intake it is standardised: tested for applicability (Yes/No), given a category (RD, Consultation, News, Fine) and contextualised by ML classifiers (risk steward, theme, risk taxonomy L1–L3, line of business, legal entity).","cqs":["CQ01","CQ02","CQ13"],"align":"","note":"Now a Trigger subclass · v2.4: intake standardisation and contextualisation","guide":""},{"id":"RegulatoryChange","m":"CHG","l":"Regulatory Change","parent":"Entity","src":"Derived (alert de-duplication)","status":"DERIVED","d":"Normalised change event behind one or more alerts; carries change type and effective date.","cqs":["CQ01","CQ08","CQ13"],"align":"","note":"","guide":""},{"id":"RegulatoryTheme","m":"CHG","l":"Regulatory Theme","parent":"Entity","src":"Intake ML classifier","status":"AVAILABLE","d":"Subject-matter theme of an alert (Insurance, Consumer Protection, Licensing…), tagged at intake. Used to route and to narrow the impact search.","cqs":["CQ13"],"align":"","note":"NEW in v2.4","guide":""},{"id":"ImpactAssessment","m":"IMP","l":"Impact Assessment","parent":"Entity","src":"IA workflow","status":"DERIVED","d":"Assessment case opened for a regulatory change; holds findings, gaps, blast radius and sign-off.","cqs":["CQ10","CQ11","CQ15"],"align":"","note":"","guide":""},{"id":"ImpactFinding","m":"IMP","l":"Impact Finding","parent":"Entity","src":"Pipeline + SME","status":"DERIVED","d":"One impacted artefact (obligation, control, policy requirement, procedure step) with rationale. Always derived from link assertions.","cqs":["CQ10","CQ15"],"align":"","note":"","guide":""},{"id":"Gap","m":"IMP","l":"Gap","parent":"Entity","src":"Computed + SME","status":"DERIVED","d":"Affected requirement with no or partial coverage by controls, policy requirements or procedure steps.","cqs":["CQ05","CQ10"],"align":"","note":"","guide":""},{"id":"RemediationAction","m":"IMP","l":"Remediation Action","parent":"Entity","src":"Action tracker","status":"MISSING","d":"Change to a control, policy or procedure needed to close a gap; owned and dated.","cqs":["CQ10"],"align":"","note":"","guide":""},{"id":"BlastRadius","m":"IMP","l":"Blast Radius","parent":"Entity","src":"Computed","status":"DERIVED","d":"Roll-up of an assessment's footprint: counts of obligations, controls, policies, legal entities and businesses touched.","cqs":["CQ11"],"align":"","note":"","guide":""},{"id":"RiskTaxonomyNode","m":"RSK","l":"Risk Taxonomy (L1–L3)","parent":"Entity","src":"US_Risk LEVEL_1_RISK_TAXONOMY","status":"AVAILABLE","d":"Node in HSBC's non-financial risk taxonomy; hierarchical via broaderRisk.","cqs":["CQ04","CQ13"],"align":"","note":"","guide":""},{"id":"LibraryRisk","m":"RSK","l":"Library Risk (LR)","parent":"Entity","src":"US_Risk / RTCL","status":"AVAILABLE","d":"Standard risk statement in the risk library, classified in the taxonomy and mitigated by library controls.","cqs":["CQ04"],"align":"","note":"Renamed from Risk","guide":""},{"id":"LibraryControl","m":"CTL","l":"Library Control (L1C)","parent":"Entity","src":"Helios l1_library_control_id","status":"AVAILABLE","d":"Standard control template in the control library; groups control instances.","cqs":["CQ03","CQ04"],"align":"","note":"","guide":""},{"id":"Control","m":"CTL","l":"Control Instance (1C)","parent":"Entity","src":"Helios control","status":"AVAILABLE","d":"Implemented control operated by a business or function; satisfies requirements.","cqs":["CQ03","CQ05","CQ14","CQ15"],"align":"","note":"Mastered from Helios, not extracted from text","guide":""},{"id":"ControlTest","m":"CTL","l":"Control Test","parent":"Entity","src":"Control testing / CCA","status":"MISSING","d":"Design or operating-effectiveness test result for a control.","cqs":["CQ14"],"align":"","note":"","guide":""},{"id":"ControlIssue","m":"CTL","l":"Control Issue","parent":"Entity","src":"Issue management","status":"MISSING","d":"Open deficiency on a control (audit, self-identified, regulatory).","cqs":["CQ14"],"align":"","note":"","guide":""},{"id":"Policy","m":"GOV","l":"Policy (GPPS)","parent":"Entity","src":"GPPS","status":"PARTIAL","d":"Group policy document setting principles for a risk area.","cqs":["CQ09","CQ17"],"align":"","note":"","guide":""},{"id":"PolicyRequirement","m":"GOV","l":"Policy Requirement","parent":"Requirement","src":"GPPS section","status":"PARTIAL","d":"Mandatory statement within a policy; implements one or more regulatory obligations.","cqs":["CQ05","CQ09"],"align":"","note":"Now a Requirement subclass","guide":"Apply the same modality rules as RegulatoryObligation. First-person aspirational text ('We aim to…') is not a requirement."},{"id":"Procedure","m":"GOV","l":"Procedure","parent":"Entity","src":"Business DMS / GPPS","status":"PARTIAL","d":"Operational process document implementing policy and controls.","cqs":["CQ17"],"align":"","note":"","guide":""},{"id":"ProcedureStep","m":"GOV","l":"Procedure Step","parent":"Entity","src":"LLM extraction from procedures","status":"PARTIAL","d":"An operational action or ordered step in a procedure that satisfies a requirement (the 'how').","cqs":["CQ17"],"align":"","note":"NEW","guide":"Ordered list items carry stepOrder; unordered actions leave it empty. One node per span."},{"id":"LegalEntity","m":"BUS","l":"Legal Entity","parent":"Entity","src":"Entity master","status":"PARTIAL","d":"Regulated legal entity (HSBC UK Bank plc, HBAP…).","cqs":["CQ07","CQ11"],"align":"","note":"v2.4: tagged on alerts at intake","guide":""},{"id":"BusinessUnit","m":"BUS","l":"Global Business / Line of Business","parent":"Entity","src":"Org master","status":"AVAILABLE","d":"WPB, CMB, GBM, functions and sub-lines; hierarchical.","cqs":["CQ07","CQ11"],"align":"","note":"v2.4: tagged on alerts at intake","guide":""},{"id":"Product","m":"BUS","l":"Product / Service","parent":"Entity","src":"Product master","status":"MISSING","d":"Product or service offered.","cqs":["CQ07"],"align":"","note":"","guide":""},{"id":"Process","m":"BUS","l":"Business Process","parent":"Entity","src":"Process taxonomy","status":"MISSING","d":"End-to-end business process (onboarding, payments, trade reporting).","cqs":["CQ07"],"align":"","note":"","guide":""},{"id":"System","m":"BUS","l":"System / Application","parent":"Entity","src":"CMDB","status":"MISSING","d":"Technology asset that automates a control or supports a process.","cqs":["CQ17"],"align":"","note":"","guide":""},{"id":"Actor","m":"ACC","l":"Actor","parent":"Entity","src":"—","status":"DERIVED","d":"Abstract responsible party: person, role or team.","cqs":["CQ15"],"align":"","note":"NEW","guide":""},{"id":"Person","m":"ACC","l":"Person","parent":"Actor","src":"HR / Helios / GPPS owner fields","status":"PARTIAL","d":"Named individual accountable for an artefact or decision.","cqs":["CQ15"],"align":"","note":"","guide":""},{"id":"Role","m":"ACC","l":"Role","parent":"Actor","src":"Org data","status":"AVAILABLE","d":"Function or title (Risk Steward, Control Owner, Policy Owner, SME Reviewer, SMF holder).","cqs":["CQ15"],"align":"","note":"v2.4: risk steward tagged on alerts at intake","guide":""},{"id":"Team","m":"ACC","l":"Team / Function","parent":"Actor","src":"Org data","status":"PARTIAL","d":"Owning team (Compliance, Risk Stewardship, BU CCO).","cqs":["CQ15"],"align":"","note":"","guide":""},{"id":"LinkAssertion","m":"PRV","l":"Link Assertion","parent":"Entity","src":"Pipeline verdicts / golden / SME","status":"AVAILABLE","d":"Reified inferred link between any two entities (alert→summary, alert→control, obligation→policy requirement…) with decision, scores, granularity, method, evidence and SME status. Impact edges are materialised only from CONFIRMED assertions.","cqs":["CQ02","CQ03","CQ18","CQ19","CQ20"],"align":"","note":"Core differentiator — unchanged in intent, tightened rules","guide":""},{"id":"EvidenceOccurrence","m":"PRV","l":"Evidence Occurrence","parent":"Entity","src":"Pipeline","status":"AVAILABLE","d":"One verbatim, source-grounded quote supporting an assertion or entity: text, document, section, offsets, reliability tier.","cqs":["CQ18"],"align":"","note":"Renamed from Evidence; gains offsets and reliability","guide":""},{"id":"ModelRun","m":"PRV","l":"Model Run","parent":"Entity","src":"Run manifest","status":"AVAILABLE","d":"One pipeline execution: model, prompt version, schema, candidate route, quality-gate status and failure rate.","cqs":["CQ18","CQ20"],"align":"","note":"Gains quality gates","guide":""},{"id":"SMEValidation","m":"PRV","l":"SME Validation","parent":"Entity","src":"Review queue","status":"MISSING","d":"Human decision on an assertion: CONFIRMED, REJECTED or MODIFIED, with comment.","cqs":["CQ19","CQ20"],"align":"","note":"","guide":""},{"id":"CompetencyQuestion","m":"PRV","l":"Competency Question","parent":"Entity","src":"Ontology governance","status":"DERIVED","d":"A question the graph must answer, with priority, owner and the SPARQL that answers it. Every class traces to at least one.","cqs":[],"align":"","note":"NEW — method traceability","guide":""}],"rels":[{"f":"Regulator","r":"issues","t":"Regulation","card":"0..*","k":"S","n":"","align":"","inv":"issuedBy"},{"f":"Regulator","r":"enforcesIn","t":"Jurisdiction","card":"1..*","k":"C","n":"","align":"","inv":""},{"f":"Regulation","r":"appliesInJurisdiction","t":"Jurisdiction","card":"1..*","k":"C","n":"","align":"","inv":""},{"f":"Regulation","r":"publishedAs","t":"RegulatoryDocument","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"Regulation","r":"amends","t":"Regulation","card":"0..*","k":"S","n":"Instrument lineage","align":"","inv":"amendedBy"},{"f":"Regulation","r":"supersedes","t":"Regulation","card":"0..*","k":"S","n":"","align":"","inv":"supersededBy"},{"f":"RegulatoryDocument","r":"hasProvision","t":"Provision","card":"0..*","k":"S","n":"","align":"","inv":"provisionOf"},{"f":"RegulatorySummary","r":"partOfRegulation","t":"Regulation","card":"1","k":"S","n":"RSM → RGL","align":"","inv":"hasSummary"},{"f":"RegulatoryObligation","r":"derivedFromSummary","t":"RegulatorySummary","card":"1..*","k":"S","n":"ROB → RSM","align":"","inv":"decomposesTo"},{"f":"RegulatoryObligation","r":"citesProvision","t":"Provision","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"Provision","r":"definesTerm","t":"DefinedTerm","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"Requirement","r":"hasCondition","t":"Condition","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"Exception","r":"overrides","t":"Requirement","card":"0..*","k":"S","n":"Carve-out","align":"","inv":"overriddenBy"},{"f":"Exception","r":"exempts","t":"ProcedureStep","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"Requirement","r":"hasTemporalConstraint","t":"TemporalConstraint","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"Requirement","r":"appliesToScope","t":"ApplicabilityScope","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"Requirement","r":"responsibleParty","t":"Actor","card":"0..*","k":"C","n":"Who the duty falls on","align":"","inv":""},{"f":"Trigger","r":"initiates","t":"Requirement","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"ApplicabilityScope","r":"scopesJurisdiction","t":"Jurisdiction","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"ApplicabilityScope","r":"scopesLegalEntity","t":"LegalEntity","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"ApplicabilityScope","r":"scopesBusiness","t":"BusinessUnit","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"ApplicabilityScope","r":"scopesProduct","t":"Product","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"ApplicabilityScope","r":"scopesProcess","t":"Process","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"RegulatoryObligation","r":"givesRiseTo","t":"LibraryRisk","card":"0..*","k":"S","n":"Risk of non-compliance","align":"","inv":"arisesFrom"},{"f":"LibraryRisk","r":"classifiedAs","t":"RiskTaxonomyNode","card":"1","k":"S","n":"L1–L3","align":"","inv":""},{"f":"RiskTaxonomyNode","r":"broaderRisk","t":"RiskTaxonomyNode","card":"0..1","k":"S","n":"Hierarchy","align":"","inv":"narrowerRisk"},{"f":"LibraryRisk","r":"mitigatedBy","t":"LibraryControl","card":"0..*","k":"S","n":"RTCL","align":"","inv":"mitigates"},{"f":"Control","r":"instanceOf","t":"LibraryControl","card":"1","k":"S","n":"1C → L1C (Helios)","align":"","inv":"hasInstance"},{"f":"Control","r":"satisfies","t":"Requirement","card":"0..*","k":"S","n":"Baseline coverage ('how' satisfies 'what')","align":"","inv":"satisfiedBy"},{"f":"ProcedureStep","r":"satisfies","t":"Requirement","card":"0..*","k":"S","n":"","align":"","inv":"satisfiedBy"},{"f":"PolicyRequirement","r":"implementsObligation","t":"RegulatoryObligation","card":"0..*","k":"S","n":"Obligation → policy linkage lane","align":"","inv":"implementedByPolicy"},{"f":"Requirement","r":"governsActivity","t":"ProcedureStep","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"Policy","r":"hasRequirement","t":"PolicyRequirement","card":"1..*","k":"S","n":"","align":"","inv":"requirementOf"},{"f":"Procedure","r":"hasStep","t":"ProcedureStep","card":"1..*","k":"S","n":"","align":"","inv":"stepOf"},{"f":"Procedure","r":"implementsPolicy","t":"Policy","card":"0..*","k":"S","n":"","align":"","inv":""},{"f":"ProcedureStep","r":"leadsTo","t":"ProcedureStep","card":"0..1","k":"S","n":"Sequence","align":"","inv":""},{"f":"ProcedureStep","r":"performedBy","t":"Role","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"ProcedureStep","r":"usesSystem","t":"System","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"Control","r":"operatedIn","t":"BusinessUnit","card":"1..*","k":"C","n":"","align":"","inv":""},{"f":"Control","r":"operatedFor","t":"LegalEntity","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"Control","r":"automatedBy","t":"System","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"Control","r":"hasTest","t":"ControlTest","card":"0..*","k":"S","n":"","align":"","inv":"testOf"},{"f":"Control","r":"hasIssue","t":"ControlIssue","card":"0..*","k":"S","n":"","align":"","inv":"issueOf"},{"f":"BusinessUnit","r":"partOfBusiness","t":"BusinessUnit","card":"0..1","k":"C","n":"","align":"","inv":""},{"f":"LegalEntity","r":"licensedIn","t":"Jurisdiction","card":"1..*","k":"C","n":"","align":"","inv":""},{"f":"RegulatoryAlert","r":"reportsChange","t":"RegulatoryChange","card":"1","k":"I","n":"Alert de-duplication","align":"","inv":"reportedBy"},{"f":"RegulatoryAlert","r":"issuedByRegulator","t":"Regulator","card":"0..1","k":"C","n":"","align":"","inv":""},{"f":"RegulatoryAlert","r":"inJurisdiction","t":"Jurisdiction","card":"1..*","k":"C","n":"Intake: location of the alert","align":"","inv":""},{"f":"RegulatoryAlert","r":"taggedRisk","t":"RiskTaxonomyNode","card":"0..*","k":"C","n":"Intake: ML-tagged risk taxonomy (L1–L3)","align":"","inv":""},{"f":"RegulatoryChange","r":"initiatesAssessment","t":"ImpactAssessment","card":"0..1","k":"I","n":"","align":"","inv":"assessmentOf"},{"f":"RegulatoryChange","r":"affectsSummary","t":"RegulatorySummary","card":"0..*","k":"I","n":"Materialised from CONFIRMED assertions only","align":"","inv":""},{"f":"RegulatoryChange","r":"affectsObligation","t":"RegulatoryObligation","card":"0..*","k":"I","n":"Materialised from CONFIRMED assertions only","align":"","inv":""},{"f":"RegulatoryChange","r":"impactsControl","t":"Control","card":"0..*","k":"I","n":"Materialised from CONFIRMED assertions only","align":"","inv":""},{"f":"RegulatoryChange","r":"impactsPolicyRequirement","t":"PolicyRequirement","card":"0..*","k":"I","n":"Materialised from CONFIRMED assertions only","align":"","inv":""},{"f":"ImpactAssessment","r":"hasFinding","t":"ImpactFinding","card":"0..*","k":"I","n":"","align":"","inv":""},{"f":"ImpactFinding","r":"concerns","t":"Entity","card":"1","k":"I","n":"Obligation, control, policy requirement or procedure step","align":"","inv":""},{"f":"ImpactAssessment","r":"identifiesGap","t":"Gap","card":"0..*","k":"I","n":"","align":"","inv":""},{"f":"Gap","r":"onRequirement","t":"Requirement","card":"1","k":"I","n":"","align":"","inv":""},{"f":"Gap","r":"remediatedBy","t":"RemediationAction","card":"0..*","k":"I","n":"","align":"","inv":""},{"f":"RemediationAction","r":"changes","t":"Entity","card":"0..*","k":"I","n":"","align":"","inv":""},{"f":"ImpactAssessment","r":"hasBlastRadius","t":"BlastRadius","card":"1","k":"I","n":"","align":"","inv":""},{"f":"ImpactAssessment","r":"assignedTo","t":"Person","card":"1","k":"C","n":"Risk Steward","align":"","inv":""},{"f":"ImpactAssessment","r":"signedOffBy","t":"Person","card":"0..*","k":"P","n":"","align":"","inv":""},{"f":"Person","r":"hasRole","t":"Role","card":"1..*","k":"C","n":"","align":"","inv":""},{"f":"Person","r":"memberOf","t":"Team","card":"0..*","k":"C","n":"","align":"","inv":""},{"f":"Control","r":"ownedBy","t":"Actor","card":"1","k":"C","n":"Control owner","align":"","inv":""},{"f":"Policy","r":"ownedBy","t":"Actor","card":"1","k":"C","n":"Policy owner","align":"","inv":""},{"f":"LibraryRisk","r":"stewardedBy","t":"Actor","card":"1..*","k":"C","n":"Risk Steward","align":"","inv":""},{"f":"LinkAssertion","r":"assertionSubject","t":"Entity","card":"1","k":"P","n":"","align":"","inv":""},{"f":"LinkAssertion","r":"assertionObject","t":"Entity","card":"1","k":"P","n":"","align":"","inv":""},{"f":"LinkAssertion","r":"hasDecision","t":"Vocab:LinkDecision","card":"1","k":"P","n":"","align":"","inv":""},{"f":"LinkAssertion","r":"hasGranularity","t":"Vocab:Granularity","card":"1","k":"P","n":"","align":"","inv":""},{"f":"LinkAssertion","r":"hasMethod","t":"Vocab:LinkMethod","card":"1","k":"P","n":"","align":"","inv":""},{"f":"LinkAssertion","r":"hasSMEStatus","t":"Vocab:SMEStatus","card":"1","k":"P","n":"","align":"","inv":""},{"f":"LinkAssertion","r":"producedBy","t":"ModelRun","card":"0..1","k":"P","n":"Required when method is AI","align":"","inv":""},{"f":"LinkAssertion","r":"validatedBy","t":"SMEValidation","card":"0..*","k":"P","n":"","align":"","inv":""},{"f":"ImpactFinding","r":"derivedFrom","t":"LinkAssertion","card":"1..*","k":"P","n":"No orphan findings","align":"","inv":""},{"f":"SMEValidation","r":"performedBy","t":"Person","card":"1","k":"P","n":"","align":"","inv":""},{"f":"Entity","r":"hasEvidence","t":"EvidenceOccurrence","card":"0..*","k":"P","n":"","align":"","inv":"evidenceFor"},{"f":"EvidenceOccurrence","r":"extractedFrom","t":"Entity","card":"1","k":"P","n":"Source document / record","align":"","inv":""},{"f":"Requirement","r":"hasModality","t":"Vocab:Modality","card":"0..1","k":"S","n":"","align":"","inv":""},{"f":"RegulatoryChange","r":"hasChangeType","t":"Vocab:ChangeType","card":"1","k":"C","n":"","align":"","inv":""},{"f":"Gap","r":"hasCoverage","t":"Vocab:Coverage","card":"1","k":"I","n":"","align":"","inv":""},{"f":"TemporalConstraint","r":"hasTemporalType","t":"Vocab:TemporalType","card":"1","k":"S","n":"","align":"","inv":""},{"f":"EvidenceOccurrence","r":"hasReliabilityTier","t":"Vocab:ReliabilityTier","card":"0..1","k":"P","n":"","align":"","inv":""},{"f":"Control","r":"hasControlNature","t":"Vocab:ControlNature","card":"0..1","k":"C","n":"","align":"","inv":""},{"f":"CompetencyQuestion","r":"answeredUsing","t":"Entity","card":"1..*","k":"P","n":"Class traceability","align":"","inv":""},{"f":"RegulatoryAlert","r":"hasApplicability","t":"Vocab:Applicability","card":"1","k":"C","n":"Intake step 1: is the alert applicable to HSBC?","align":"","inv":""},{"f":"RegulatoryAlert","r":"hasCategory","t":"Vocab:AlertCategory","card":"1","k":"C","n":"Intake step 2: RD, Consultation, News or Fine","align":"","inv":""},{"f":"RegulatoryAlert","r":"taggedSteward","t":"Role","card":"0..*","k":"C","n":"Intake step 3: ML-tagged risk steward","align":"","inv":"stewardOf"},{"f":"RegulatoryAlert","r":"hasTheme","t":"RegulatoryTheme","card":"0..*","k":"C","n":"Intake step 3: ML-tagged theme","align":"","inv":"themeOf"},{"f":"RegulatoryAlert","r":"taggedBusiness","t":"BusinessUnit","card":"0..*","k":"C","n":"Intake step 3: ML-tagged line of business","align":"","inv":""},{"f":"RegulatoryAlert","r":"taggedLegalEntity","t":"LegalEntity","card":"0..*","k":"C","n":"Intake step 3: ML-tagged legal entity","align":"","inv":""},{"f":"RegulatoryAlert","r":"contextualisedBy","t":"ModelRun","card":"0..*","k":"P","n":"Intake classifiers that produced the tags (replayable)","align":"","inv":""},{"f":"Jurisdiction","r":"broaderJurisdiction","t":"Jurisdiction","card":"0..1","k":"C","n":"Hierarchy: Global > Region > Country","align":"","inv":"narrowerJurisdiction"}],"vocabs":{"Modality":{"d":"Normative strength of a requirement","m":["MUST","MUST_NOT","MAY","SHOULD"]},"ChangeType":{"d":"Kind of regulatory change","m":["NEW","AMENDMENT","REPEAL","GUIDANCE","CONSULTATION","ENFORCEMENT"]},"LinkDecision":{"d":"Outcome of a linkage judgement","m":["LINKED","NOT_LINKED","INSUFFICIENT_EVIDENCE"]},"Granularity":{"d":"Level at which an assertion is made","m":["RGL","RSM","ROB","LR","L1C","CONTROL_1C","POLICY_REQ","PROC_STEP"]},"LinkMethod":{"d":"How an assertion was produced","m":["CURATED_SOURCE","LLM_JUDGE","EMBEDDING","RULE","SME_MANUAL","GOLDEN_IMPORT"]},"SMEStatus":{"d":"Human review state of an assertion","m":["UNREVIEWED","CONFIRMED","REJECTED","MODIFIED"]},"Coverage":{"d":"How fully a requirement is covered","m":["FULL","PARTIAL","NONE"]},"TemporalType":{"d":"Kind of time bound","m":["DEADLINE","DURATION","RECURRENCE","EFFECTIVE_PERIOD","TRANSITION_PERIOD"]},"ReliabilityTier":{"d":"How strongly evidence is treated as truth","m":["AUTHORITATIVE","SUPPORTING","SPECULATIVE"]},"ControlNature":{"d":"Control classification","m":["PREVENTIVE","DETECTIVE","CORRECTIVE","DIRECTIVE"]},"AssessmentStatus":{"d":"Lifecycle of an impact assessment","m":["OPEN","IN_REVIEW","CLOSED"]},"CustomerSegment":{"d":"Customer segment qualifier for scope","m":["RETAIL","SME","CORPORATE","INSTITUTIONAL","VULNERABLE"]},"Applicability":{"d":"Intake decision: does the alert apply to HSBC?","m":["YES","NO"]},"AlertCategory":{"d":"Intake category of an alert","m":["RD","CONSULTATION","NEWS","FINE"]}},"dprops":[{"n":"sourceId","dom":"Entity","x":"string","d":"Identifier in the system of record (REG_ID, SUM_ID, ROB_ID, RECORD_ID, Helios id …)."},{"n":"label","dom":"Entity","x":"string","d":"Human-readable name or title."},{"n":"statement","dom":"Entity","x":"string","d":"Full text of a requirement, summary, control or step."},{"n":"sourceSystem","dom":"Entity","x":"string","d":"System of record the node was loaded from."},{"n":"validFrom","dom":"Entity","x":"date","d":"Business-valid start (bitemporal)."},{"n":"validTo","dom":"Entity","x":"date","d":"Business-valid end (bitemporal)."},{"n":"recordedAt","dom":"Entity","x":"dateTime","d":"System time the fact was recorded (bitemporal)."},{"n":"ontologyVersion","dom":"Entity","x":"string","d":"Ontology version the node was written under."},{"n":"effectiveDate","dom":"Entity","x":"date","d":"Date a regulation, change or requirement takes effect."},{"n":"status","dom":"Entity","x":"string","d":"Lifecycle status in the source system (PUBLISHED, RETIRED …)."},{"n":"relevanceScore","dom":"LinkAssertion","x":"decimal","d":"Model relevance 0–10."},{"n":"confidenceScore","dom":"LinkAssertion","x":"integer","d":"Model confidence 1–5."},{"n":"rationale","dom":"Entity","x":"string","d":"Reasoning text for a decision, finding or validation."},{"n":"explosionApproved","dom":"LinkAssertion","x":"boolean","d":"True only when a coarse (RGL) link is explicitly approved to fan out to controls."},{"n":"verbatimText","dom":"EvidenceOccurrence","x":"string","d":"Exact quoted span from the source."},{"n":"charStart","dom":"EvidenceOccurrence","x":"integer","d":"Inclusive start offset in the source text."},{"n":"charEnd","dom":"EvidenceOccurrence","x":"integer","d":"Exclusive end offset in the source text."},{"n":"evidenceSide","dom":"EvidenceOccurrence","x":"string","d":"SUBJECT or OBJECT: which side of an assertion the quote comes from."},{"n":"sectionRef","dom":"EvidenceOccurrence","x":"string","d":"Section, article or field the quote comes from."},{"n":"modelId","dom":"ModelRun","x":"string","d":"Model identifier on the GenAI gateway."},{"n":"promptVersion","dom":"ModelRun","x":"string","d":"Prompt version used."},{"n":"candidateRoute","dom":"ModelRun","x":"string","d":"Candidate-generation route (e.g. RGL→RSM)."},{"n":"configHash","dom":"ModelRun","x":"string","d":"Hash of run configuration for replay."},{"n":"gateStatus","dom":"ModelRun","x":"string","d":"Quality gate result: PASS, FAIL or NOT_MEASURED."},{"n":"validationFailureRate","dom":"ModelRun","x":"decimal","d":"Share of outputs failing schema or SHACL validation."},{"n":"stepOrder","dom":"ProcedureStep","x":"integer","d":"Position of the step in its ordered list."},{"n":"term","dom":"DefinedTerm","x":"string","d":"Headword of a defined term."},{"n":"definitionText","dom":"DefinedTerm","x":"string","d":"Gloss of a defined term."},{"n":"nObligations","dom":"BlastRadius","x":"integer","d":"Count of affected obligations."},{"n":"nControls","dom":"BlastRadius","x":"integer","d":"Count of impacted controls."},{"n":"nPolicyRequirements","dom":"BlastRadius","x":"integer","d":"Count of impacted policy requirements."},{"n":"nLegalEntities","dom":"BlastRadius","x":"integer","d":"Count of legal entities in scope."},{"n":"nBusinesses","dom":"BlastRadius","x":"integer","d":"Count of businesses in scope."},{"n":"assessmentStatus","dom":"ImpactAssessment","x":"string","d":"OPEN, IN_REVIEW or CLOSED."},{"n":"priority","dom":"CompetencyQuestion","x":"string","d":"MUST, SHOULD or COULD."},{"n":"cqText","dom":"CompetencyQuestion","x":"string","d":"The question in business language."},{"n":"sparql","dom":"CompetencyQuestion","x":"string","d":"Executable SPARQL that answers the question."}],"shapes":[{"name":"BitemporalShape","profile":"core","severity":"Violation","comment":"Curated reference data must carry business validity (bitemporal replay).","kind":"property constraints"},{"name":"ControlShape","profile":"core","severity":"Violation","comment":"Control instance belongs to exactly one library control and has an owner.","kind":"property constraints"},{"name":"ObligationShape","profile":"core","severity":"Violation","comment":"Obligation identity, parent summary, modality.","kind":"property constraints"},{"name":"PolicyRequirementShape","profile":"core","severity":"Violation","comment":"Policy requirement sits in exactly one policy; modality from the controlled list.","kind":"property constraints"},{"name":"RegulationShape","profile":"core","severity":"Violation","comment":"RegMap regulation identity.","kind":"property constraints"},{"name":"SummaryShape","profile":"core","severity":"Violation","comment":"Summary identity and parent regulation.","kind":"property constraints"},{"name":"AIAssertionNeedsRun","profile":"ai-governance","severity":"Violation","comment":"AI-produced assertions must name the model run (model, prompt version) for replay.","kind":"SPARQL rule"},{"name":"ImpactOnlyFromConfirmed","profile":"ai-governance","severity":"Violation","comment":"Impact edges are materialised only from LINKED + CONFIRMED assertions (on the change or an alert reporting it).","kind":"SPARQL rule"},{"name":"LinkAssertionShape","profile":"ai-governance","severity":"Violation","comment":"Every AI or curated link is a fully described, typed assertion.","kind":"property constraints"},{"name":"LinkedNeedsBothSidesEvidence","profile":"ai-governance","severity":"Violation","comment":"A LINKED decision must quote evidence from both the subject and the object text.","kind":"SPARQL rule"},{"name":"NoRegulationLevelExplosion","profile":"ai-governance","severity":"Violation","comment":"A regulation-level (RGL) link may not target a control unless fan-out is explicitly approved — prevents golden-style over-mapping.","kind":"SPARQL rule"},{"name":"EvidenceShape","profile":"evidence","severity":"Violation","comment":"Exactly one verbatim quote, one source, one subject.","kind":"property constraints"},{"name":"ClosedAssessmentShape","profile":"impact","severity":"Violation","comment":"A CLOSED assessment needs steward sign-off and a computed blast radius.","kind":"SPARQL rule"},{"name":"FindingShape","profile":"impact","severity":"Violation","comment":"No orphan findings: each derives from at least one assertion.","kind":"property constraints"},{"name":"GapShape","profile":"impact","severity":"Violation","comment":"Gap names its requirement and coverage level.","kind":"property constraints"},{"name":"OrphanControlWarning","profile":"warning","severity":"Warning","comment":"A control that satisfies no requirement is a coverage-mapping gap.","kind":"SPARQL rule"},{"name":"UncoveredAffectedObligationWarning","profile":"warning","severity":"Warning","comment":"Affected obligation with no control, step or policy requirement — candidate gap.","kind":"SPARQL rule"},{"name":"UnremediatedGapWarning","profile":"warning","severity":"Warning","comment":"A gap with no coverage should have a remediation action or a recorded risk acceptance.","kind":"SPARQL rule"}],"cypher":{"CQ01":"MATCH (:RegulatoryAlert {sourceId:'R2-140001'})-[:REPORTS_CHANGE]->(:RegulatoryChange)-[:AFFECTS_OBLIGATION]->(rob)\nRETURN rob.sourceId AS rob, rob.label AS label ORDER BY rob","CQ02":"MATCH (:RegulatoryAlert {sourceId:'R2-140001'})<-[:ASSERTION_SUBJECT]-(la:LinkAssertion {decision:'LINKED'})-[:ASSERTION_OBJECT]->(rsm:RegulatorySummary)\nRETURN rsm.sourceId AS rsm, la.relevanceScore AS score, la.confidenceScore AS conf, la.smeStatus AS sme ORDER BY score DESC","CQ03":"MATCH (:RegulatoryChange {sourceId:'CHG-001'})-[:IMPACTS_CONTROL]->(c:Control)-[:INSTANCE_OF]->(l:LibraryControl)\nRETURN c.sourceId AS control, l.sourceId AS l1c","CQ04":"MATCH (:RegulatoryChange {sourceId:'CHG-001'})-[:AFFECTS_OBLIGATION]->(:RegulatoryObligation)-[:GIVES_RISE_TO]->(r:LibraryRisk)-[:CLASSIFIED_AS]->(t)\nOPTIONAL MATCH (t)-[:BROADER_RISK*]->(top)\nRETURN DISTINCT r.label AS risk, coalesce(top.label, t.label) AS taxonomy","CQ05":"MATCH (:RegulatoryChange {sourceId:'CHG-001'})-[:AFFECTS_OBLIGATION]->(r:RegulatoryObligation)\nWHERE NOT ()-[:SATISFIES]->(r) AND NOT ()-[:IMPLEMENTS_OBLIGATION]->(r)\nRETURN r.sourceId AS rob, r.label AS label","CQ06":"MATCH (r:RegulatoryObligation)\nOPTIONAL MATCH (r)-[:HAS_CONDITION]->(c)\nOPTIONAL MATCH (e:Exception)-[:OVERRIDES]->(r)\nWITH r, c, e WHERE c IS NOT NULL OR e IS NOT NULL\nRETURN r.sourceId AS rob, c.statement AS condition, e.statement AS exception","CQ07":"MATCH (:RegulatoryChange {sourceId:'CHG-001'})-[:AFFECTS_OBLIGATION]->()-[:APPLIES_TO_SCOPE]->(s)\nOPTIONAL MATCH (s)-[:SCOPES_LEGAL_ENTITY]->(le)\nOPTIONAL MATCH (s)-[:SCOPES_BUSINESS]->(bu)\nRETURN DISTINCT le.label AS entity, bu.label AS business","CQ08":"MATCH (:RegulatoryChange {sourceId:'CHG-001'})-[:AFFECTS_OBLIGATION]->(r)-[:HAS_TEMPORAL_CONSTRAINT]->(t)\nRETURN r.sourceId AS rob, t.temporalType AS type, t.effectiveDate AS date ORDER BY date","CQ09":"MATCH (:RegulatoryChange {sourceId:'CHG-001'})-[:AFFECTS_OBLIGATION]->(r)<-[:IMPLEMENTS_OBLIGATION]-(pr)<-[:HAS_REQUIREMENT]-(p:Policy)\nRETURN r.sourceId AS rob, p.label AS policy, pr.sourceId AS requirement","CQ10":"MATCH (:ImpactAssessment {sourceId:'IA-001'})-[:IDENTIFIES_GAP]->(g:Gap)\nOPTIONAL MATCH (g)-[:REMEDIATED_BY]->(a)\nRETURN g.sourceId AS gap, g.coverage AS coverage, a.label AS action","CQ11":"MATCH (:ImpactAssessment {sourceId:'IA-001'})-[:HAS_BLAST_RADIUS]->(b)\nRETURN b.nObligations, b.nControls, b.nPolicyRequirements, b.nLegalEntities, b.nBusinesses","CQ12":"MATCH (rg:Regulator)-[:ISSUES]->(r:Regulation)-[:APPLIES_IN_JURISDICTION]->(j)\nRETURN r.label AS regulation, rg.label AS regulator, j.label AS jurisdiction","CQ13":"MATCH (a:RegulatoryAlert)-[:REPORTS_CHANGE]->(c), (a)-[:TAGGED_RISK]->(t)\nRETURN a.sourceId AS alert, c.sourceId AS change, t.label AS risk","CQ14":"MATCH (:RegulatoryChange {sourceId:'CHG-001'})-[:IMPACTS_CONTROL]->(c)-[:HAS_ISSUE]->(i {status:'OPEN'})\nRETURN c.sourceId AS control, i.label AS issue","CQ15":"MATCH (ch)-[:INITIATES_ASSESSMENT]->(ia:ImpactAssessment {sourceId:'IA-001'})-[:ASSIGNED_TO]->(s)\nMATCH (ch)-[:IMPACTS_CONTROL]->(c)-[:OWNED_BY]->(o)\nRETURN c.sourceId AS control, o.label AS owner, s.label AS steward","CQ16":"MATCH (r:RegulatoryObligation)-[:CITES_PROVISION]->(p)\nOPTIONAL MATCH (p)-[:DEFINES_TERM]->(t)\nRETURN r.sourceId AS rob, p.label AS provision, t.term AS term","CQ17":"MATCH (s:ProcedureStep)-[:SATISFIES]->(r)\nOPTIONAL MATCH (s)-[:PERFORMED_BY]->(ro)\nOPTIONAL MATCH (s)-[:USES_SYSTEM]->(sy)\nRETURN r.sourceId AS rob, s.label AS step, ro.label AS role, sy.label AS system","CQ18":"MATCH (la:LinkAssertion {sourceId:'LA-003'})-[:HAS_EVIDENCE]->(e), (la)-[:PRODUCED_BY]->(run)\nRETURN e.evidenceSide AS side, e.verbatimText AS quote, run.modelId AS model, run.promptVersion AS prompt","CQ19":"MATCH (la:LinkAssertion {decision:'LINKED', smeStatus:'UNREVIEWED'})\nRETURN la.sourceId AS assertion, la.relevanceScore AS score ORDER BY score DESC","CQ20":"MATCH (la:LinkAssertion)-[:PRODUCED_BY]->(run)\nWHERE la.smeStatus <> 'UNREVIEWED'\nRETURN run.sourceId AS run, count(la) AS reviewed, sum(CASE WHEN la.smeStatus = 'CONFIRMED' THEN 1 ELSE 0 END) AS confirmed"},"relmap":{"issues":"ISSUES","enforcesIn":"ENFORCES_IN","appliesInJurisdiction":"APPLIES_IN_JURISDICTION","publishedAs":"PUBLISHED_AS","amends":"AMENDS","supersedes":"SUPERSEDES","hasProvision":"HAS_PROVISION","partOfRegulation":"PART_OF_REGULATION","derivedFromSummary":"DERIVED_FROM_SUMMARY","citesProvision":"CITES_PROVISION","definesTerm":"DEFINES_TERM","hasCondition":"HAS_CONDITION","overrides":"OVERRIDES","exempts":"EXEMPTS","hasTemporalConstraint":"HAS_TEMPORAL_CONSTRAINT","appliesToScope":"APPLIES_TO_SCOPE","responsibleParty":"RESPONSIBLE_PARTY","initiates":"INITIATES","scopesJurisdiction":"SCOPES_JURISDICTION","scopesLegalEntity":"SCOPES_LEGAL_ENTITY","scopesBusiness":"SCOPES_BUSINESS","scopesProduct":"SCOPES_PRODUCT","scopesProcess":"SCOPES_PROCESS","givesRiseTo":"GIVES_RISE_TO","classifiedAs":"CLASSIFIED_AS","broaderRisk":"BROADER_RISK","mitigatedBy":"MITIGATED_BY","instanceOf":"INSTANCE_OF","satisfies":"SATISFIES","implementsObligation":"IMPLEMENTS_OBLIGATION","governsActivity":"GOVERNS_ACTIVITY","hasRequirement":"HAS_REQUIREMENT","hasStep":"HAS_STEP","implementsPolicy":"IMPLEMENTS_POLICY","leadsTo":"LEADS_TO","performedBy":"PERFORMED_BY","usesSystem":"USES_SYSTEM","operatedIn":"OPERATED_IN","operatedFor":"OPERATED_FOR","automatedBy":"AUTOMATED_BY","hasTest":"HAS_TEST","hasIssue":"HAS_ISSUE","partOfBusiness":"PART_OF_BUSINESS","licensedIn":"LICENSED_IN","reportsChange":"REPORTS_CHANGE","issuedByRegulator":"ISSUED_BY_REGULATOR","inJurisdiction":"IN_JURISDICTION","taggedRisk":"TAGGED_RISK","initiatesAssessment":"INITIATES_ASSESSMENT","affectsSummary":"AFFECTS_SUMMARY","affectsObligation":"AFFECTS_OBLIGATION","impactsControl":"IMPACTS_CONTROL","impactsPolicyRequirement":"IMPACTS_POLICY_REQUIREMENT","hasFinding":"HAS_FINDING","concerns":"CONCERNS","identifiesGap":"IDENTIFIES_GAP","onRequirement":"ON_REQUIREMENT","remediatedBy":"REMEDIATED_BY","changes":"CHANGES","hasBlastRadius":"HAS_BLAST_RADIUS","assignedTo":"ASSIGNED_TO","signedOffBy":"SIGNED_OFF_BY","hasRole":"HAS_ROLE","memberOf":"MEMBER_OF","ownedBy":"OWNED_BY","stewardedBy":"STEWARDED_BY","assertionSubject":"ASSERTION_SUBJECT","assertionObject":"ASSERTION_OBJECT","hasDecision":"property decision","hasGranularity":"property granularity","hasMethod":"property method","hasSMEStatus":"property smeStatus","producedBy":"PRODUCED_BY","validatedBy":"VALIDATED_BY","derivedFrom":"DERIVED_FROM","hasEvidence":"HAS_EVIDENCE","extractedFrom":"EXTRACTED_FROM","hasModality":"property modality","hasChangeType":"property changeType","hasCoverage":"property coverage","hasTemporalType":"property temporalType","hasReliabilityTier":"property reliabilityTier","hasControlNature":"property controlNature","answeredUsing":"ANSWERED_USING"},"cqClasses":{"CQ01":["RegulatoryAlert","Trigger","RegulatoryChange","RegulatorySummary","RegulatoryObligation"],"CQ02":["RegulatoryAlert","LinkAssertion","RegulatorySummary"],"CQ03":["RegulatoryChange","Control","LibraryControl"],"CQ04":["RegulatoryObligation","LibraryRisk","RiskTaxonomyNode"],"CQ05":["RegulatoryObligation","Requirement","Control","PolicyRequirement","Gap"],"CQ06":["Condition","Exception","RegulatoryObligation"],"CQ07":["ApplicabilityScope","LegalEntity","BusinessUnit","Jurisdiction","Product","Process"],"CQ08":["TemporalConstraint","RegulatoryObligation"],"CQ09":["PolicyRequirement","Policy","RegulatoryObligation"],"CQ10":["ImpactAssessment","ImpactFinding","Gap","RemediationAction"],"CQ11":["BlastRadius","ImpactAssessment"],"CQ12":["Regulator","Regulation","Jurisdiction"],"CQ13":["RegulatoryAlert","RegulatoryChange","RiskTaxonomyNode"],"CQ14":["Control","ControlIssue","ControlTest"],"CQ15":["Control","Actor","Person","Team","ImpactAssessment"],"CQ16":["Provision","DefinedTerm","RegulatoryDocument"],"CQ17":["ProcedureStep","Procedure","Role","System"],"CQ18":["LinkAssertion","EvidenceOccurrence","ModelRun"],"CQ19":["LinkAssertion","SMEValidation"],"CQ20":["LinkAssertion","SMEValidation","ModelRun"]},"proof":{"clean":{"conforms":true,"violations":[],"warnings":[{"severity":"Warning","focus":"CHG1","message":"Affected obligation is uncovered","shape":"UncoveredAffectedObligationWarning"}]},"planted":{"conforms":false,"violations":[{"severity":"Violation","focus":"CHG1","message":"Impact edge has no confirmed link assertion behind it","shape":"ImpactOnlyFromConfirmed"},{"severity":"Violation","focus":"LA900","message":"Regulation-level link targets a control without approval","shape":"NoRegulationLevelExplosion"}],"warnings":[{"severity":"Warning","focus":"CHG1","message":"Affected obligation is uncovered","shape":"UncoveredAffectedObligationWarning"}]},"cq":[{"id":"CQ01","priority":"MUST","persona":"Risk Steward","q":"Which obligations does this alert change?","vars":["rob","label"],"rows":[["ROB1","Establish and maintain a risk management system for high-risk AI"],["ROB2","Apply data governance to training, validation and testing data"],["ROB3","Enable automatic recording of events (logging) over the system lifetime"],["ROB4","Design high-risk AI to allow effective human oversight"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rob ?label WHERE { ?alert rc:sourceId \"R2-140001\" ; rc:reportsChange ?ch . ?ch rc:affectsObligation ?rob . ?rob rc:label ?label } ORDER BY ?rob"},{"id":"CQ02","priority":"MUST","persona":"Risk Steward","q":"Which summaries is the alert linked to, at what confidence, and is it human-confirmed?","vars":["rsm","score","conf","sme"],"rows":[["RSM1","9.0","5","CONFIRMED"],["RSM2","8.0","4","CONFIRMED"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rsm ?score ?conf ?sme WHERE { ?alert rc:sourceId \"R2-140001\" . ?la rc:assertionSubject ?alert ; rc:assertionObject ?rsm ; rc:hasDecision rcv:LINKED ; rc:relevanceScore ?score ; rc:confidenceScore ?conf ; rc:hasSMEStatus ?sme . ?rsm a rc:RegulatorySummary } ORDER BY DESC(?score)"},{"id":"CQ03","priority":"MUST","persona":"Risk Steward","q":"Which controls are impacted, through which library control?","vars":["control","l1c"],"rows":[["1C-90001001","L1C-90000001"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?control ?l1c WHERE { ?ch rc:sourceId \"CHG-001\" ; rc:impactsControl ?c . ?c rc:sourceId ?control ; rc:instanceOf/rc:sourceId ?l1c }"},{"id":"CQ04","priority":"MUST","persona":"Risk Steward","q":"Which library risks and taxonomy areas are affected?","vars":["risk","l1"],"rows":[["AI model not governed through its lifecycle","Model Risk"],["Training data not fit for purpose","Data Risk"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT DISTINCT ?risk ?l1 WHERE { ?ch rc:sourceId \"CHG-001\" ; rc:affectsObligation ?rob . ?rob rc:givesRiseTo ?r . ?r rc:label ?risk ; rc:classifiedAs/rc:broaderRisk*/rc:label ?l1 }"},{"id":"CQ05","priority":"MUST","persona":"Risk Steward","q":"Which affected obligations have no control and no policy requirement (gaps)?","vars":["rob","label"],"rows":[["ROB-91000004","Design high-risk AI to allow effective human oversight"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rob ?label WHERE { ?ch rc:sourceId \"CHG-001\" ; rc:affectsObligation ?r . ?r rc:sourceId ?rob ; rc:label ?label . FILTER NOT EXISTS { ?x rc:satisfies ?r } FILTER NOT EXISTS { ?p rc:implementsObligation ?r } }"},{"id":"CQ06","priority":"SHOULD","persona":"Compliance SME","q":"Under which conditions, and with which exceptions, does an obligation apply?","vars":["rob","cond","exc"],"rows":[["ROB-91000001","Where the AI system is intended to evaluate the creditworthiness of natural persons (Annex III, point 5(b))","Except AI systems used for the purpose of detecting financial fraud (Annex III, point 5(b))"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rob ?cond ?exc WHERE { ?r rc:sourceId ?rob . OPTIONAL { ?r rc:hasCondition/rc:statement ?cond } OPTIONAL { ?e rc:overrides ?r ; rc:statement ?exc } FILTER(BOUND(?cond) || BOUND(?exc)) }"},{"id":"CQ07","priority":"SHOULD","persona":"Risk Steward","q":"Which legal entities and businesses are in scope?","vars":["entity","business"],"rows":[["EU-regulated banking entity (sample)","Wealth and Personal Banking"],["EU-regulated banking entity (sample)","Commercial Banking"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT DISTINCT ?entity ?business WHERE { ?ch rc:sourceId \"CHG-001\" ; rc:affectsObligation ?r . ?r rc:appliesToScope ?s . OPTIONAL { ?s rc:scopesLegalEntity/rc:label ?entity } OPTIONAL { ?s rc:scopesBusiness/rc:label ?business } }"},{"id":"CQ08","priority":"SHOULD","persona":"Risk Steward","q":"By when must we comply?","vars":["rob","type","date"],"rows":[["ROB-91000003","DEADLINE","2026-08-02"],["ROB-91000002","DEADLINE","2026-08-02"],["ROB-91000004","DEADLINE","2026-08-02"],["ROB-91000001","DEADLINE","2026-08-02"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rob ?type ?date WHERE { ?ch rc:sourceId \"CHG-001\" ; rc:affectsObligation ?r . ?r rc:sourceId ?rob ; rc:hasTemporalConstraint ?t . ?t rc:hasTemporalType ?type ; rc:effectiveDate ?date } ORDER BY ?date"},{"id":"CQ09","priority":"MUST","persona":"Policy Owner","q":"Which policy requirements implement each affected obligation?","vars":["rob","policy","req"],"rows":[["ROB-91000003","Group Model and AI Risk Policy (sample)","PR-90000001"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rob ?policy ?req WHERE { ?ch rc:sourceId \"CHG-001\" ; rc:affectsObligation ?r . ?r rc:sourceId ?rob . ?pr rc:implementsObligation ?r ; rc:sourceId ?req ; ^rc:hasRequirement/rc:label ?policy }"},{"id":"CQ10","priority":"MUST","persona":"Risk Steward","q":"What are the findings and gaps in this assessment, and who remediates?","vars":["gap","coverage","action"],"rows":[["GAP-001","NONE","Design human-override control for credit-decision models (owner: Control Owner B)"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?gap ?coverage ?action WHERE { ?ia rc:sourceId \"IA-001\" ; rc:identifiesGap ?g . ?g rc:sourceId ?gap ; rc:hasCoverage ?coverage . OPTIONAL { ?g rc:remediatedBy/rc:label ?action } }"},{"id":"CQ11","priority":"SHOULD","persona":"Management","q":"What is the blast radius of this change?","vars":["nObl","nCtl","nPol","nLE","nBU"],"rows":[["4","1","1","1","2"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?nObl ?nCtl ?nPol ?nLE ?nBU WHERE { ?ia rc:sourceId \"IA-001\" ; rc:hasBlastRadius ?b . ?b rc:nObligations ?nObl ; rc:nControls ?nCtl ; rc:nPolicyRequirements ?nPol ; rc:nLegalEntities ?nLE ; rc:nBusinesses ?nBU }"},{"id":"CQ12","priority":"COULD","persona":"Compliance SME","q":"Which regulator issued the regulation and where does it apply?","vars":["reg","regulator","jur"],"rows":[["EU AI Act — Regulation (EU) 2024/1689","European Parliament and Council","European Union"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?reg ?regulator ?jur WHERE { ?r a rc:Regulation ; rc:label ?reg ; ^rc:issues/rc:label ?regulator ; rc:appliesInJurisdiction/rc:label ?jur }"},{"id":"CQ13","priority":"SHOULD","persona":"Risk Steward","q":"Which alerts in my risk area arrived, and which changes do they report?","vars":["alert","change","risk"],"rows":[["R2-140001","CHG-001","Model Risk"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?alert ?change ?risk WHERE { ?a a rc:RegulatoryAlert ; rc:sourceId ?alert ; rc:reportsChange/rc:sourceId ?change ; rc:taggedRisk/rc:label ?risk }"},{"id":"CQ14","priority":"SHOULD","persona":"Risk Steward","q":"Which impacted controls already have open issues or failed tests?","vars":["control","issue"],"rows":[["1C-90001001","Validation backlog: 3 models overdue"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?control ?issue WHERE { ?ch rc:sourceId \"CHG-001\" ; rc:impactsControl ?c . ?c rc:sourceId ?control ; rc:hasIssue ?i . ?i rc:status \"OPEN\" ; rc:label ?issue }"},{"id":"CQ15","priority":"MUST","persona":"Risk Steward","q":"Who owns each impacted control, and who must sign off?","vars":["control","owner","steward"],"rows":[["1C-90001001","Control Owner B (sample)","Risk Steward A (sample)"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?control ?owner ?steward WHERE { ?ia rc:sourceId \"IA-001\" ; rc:assignedTo/rc:label ?steward . ?ch rc:initiatesAssessment ?ia ; rc:impactsControl ?c . ?c rc:sourceId ?control ; rc:ownedBy/rc:label ?owner }"},{"id":"CQ16","priority":"COULD","persona":"Compliance SME","q":"Which provision and defined terms does an obligation rest on?","vars":["rob","provision","term"],"rows":[["ROB-91000004","Article 14 — Human oversight",""],["ROB-91000001","Article 9 — Risk management system",""],["ROB-91000001","Article 3 — Definitions","AI system"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rob ?provision ?term WHERE { ?r rc:sourceId ?rob ; rc:citesProvision ?p . ?p rc:label ?provision . OPTIONAL { ?p rc:definesTerm/rc:term ?term } }"},{"id":"CQ17","priority":"COULD","persona":"Process Owner","q":"How is the obligation met day to day: which procedure steps, roles and systems?","vars":["rob","step","role","system"],"rows":[["ROB-91000005","Retain model decision logs for at least six months in the model registry","Model Owner","Model registry"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?rob ?step ?role ?system WHERE { ?s a rc:ProcedureStep ; rc:satisfies ?r ; rc:label ?step . ?r rc:sourceId ?rob . OPTIONAL { ?s rc:performedBy/rc:label ?role } OPTIONAL { ?s rc:usesSystem/rc:label ?system } }"},{"id":"CQ18","priority":"MUST","persona":"Model Risk (MRM)","q":"Why is this control in the assessment: show the evidence and the model run.","vars":["side","quote","model","prompt"],"rows":[["OBJECT","independent validation of credit-scoring models before deployment","gateway-llm (single model)","v2.6"],["SUBJECT","evaluate the creditworthiness of natural persons","gateway-llm (single model)","v2.6"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?side ?quote ?model ?prompt WHERE { ?la rc:sourceId \"LA-003\" ; rc:hasEvidence ?e ; rc:producedBy ?run . ?e rc:evidenceSide ?side ; rc:verbatimText ?quote . ?run rc:modelId ?model ; rc:promptVersion ?prompt }"},{"id":"CQ19","priority":"MUST","persona":"SME Reviewer","q":"What is waiting for human review, highest confidence first?","vars":["la","score"],"rows":[["LA-004","7.0"],["LA-005","6.0"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?la ?score WHERE { ?x a rc:LinkAssertion ; rc:sourceId ?la ; rc:hasDecision rcv:LINKED ; rc:hasSMEStatus rcv:UNREVIEWED ; rc:relevanceScore ?score } ORDER BY DESC(?score)"},{"id":"CQ20","priority":"SHOULD","persona":"Model Risk (MRM)","q":"How does the AI perform against human decisions, per model run?","vars":["run","reviewed","confirmed"],"rows":[["RUN-2026-10-v2.6","4","4"]],"sparql":"PREFIX rc: <https://ontology.hsbc.internal/regcompliance#>\nPREFIX rcv: <https://ontology.hsbc.internal/regcompliance/vocab#>\nSELECT ?run (COUNT(?la) AS ?reviewed) (SUM(IF(?s = rcv:CONFIRMED,1,0)) AS ?confirmed) WHERE { ?la rc:producedBy/rc:sourceId ?run ; rc:hasSMEStatus ?s . FILTER(?s != rcv:UNREVIEWED) } GROUP BY ?run"}]},"changes":[["v2.2","Map: Network and Focus views with a toggle; network labels placed so they never overlap a box or each other."],["v2.2","Explain panel: every relationship of the selected class written as a sentence; hover to light it up on the map."],["v2.2","Graph & AI: Neo4j mapping, schema, sample load and the 20 questions in Cypher; ask-the-graph demo with grounded, cited answers."],["v2.1","Map: selecting a class opens a focus view with every relationship label readable; click any neighbour to walk the graph."],["v2.1","Standalone model: external alignment mappings removed."],["Added","Requirement superclass with RegulatoryObligation and PolicyRequirement as subclasses; modality vocabulary now complete (MUST, MUST_NOT, MAY, SHOULD)."],["Added","Trigger (RegulatoryAlert is now a Trigger), ProcedureStep (the operational 'how'), Actor superclass for Person / Role / Team."],["Added","satisfies, governsActivity, overrides, exempts, performedBy, usesSystem, leadsTo, responsibleParty — the operational and normative links the impact path needs."],["Added","Competency Question catalogue: 20 questions with owners, priority and executable SPARQL; every class traces to at least one."],["Added","SHACL profiles (core, ai-governance, impact, evidence, warning) with severities, including SPARQL rules that enforce 'impact only from confirmed links'."],["Added","LLM guidance annotations (extraction guidance, disambiguation rules, examples) on extractable classes — the ontology doubles as the prompt contract."],["Added","Bitemporal datatype properties (validFrom, validTo, recordedAt) and typed dates and scores (xsd:date, decimal, integer)."],["Changed","Evidence → EvidenceOccurrence with offsets, side and reliability tier; ModelRun gains quality-gate status and failure rate."],["Changed","Risk → LibraryRisk; Definition → DefinedTerm; Control satisfies Requirement (was ADDRESSES Obligation)."],["Moved to vocabulary","ObligationModality, ChangeType, CustomerSegment, OntologyVersion, RegulatoryTheme — qualifiers, not things with a lifecycle (a concept with a lifecycle is a class; a qualifier is a vocabulary term)."],["Parked","RegulatedActor (covered by Actor + responsibleParty), Standard (no competency question yet)."]]};
+const KIND = {S:["Structural lineage","var(--lineage)"],I:["Alert impact","var(--impact)"],C:["Business context","var(--context)"],P:["Provenance","var(--prov)"]};
+const esc = s => String(s??"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+const byId = Object.fromEntries(D.classes.map(c=>[c.id,c]));
+const pill = (t,k) => `<span class="pill p-${esc(k||t)}">${esc(t)}</span>`;
+document.getElementById("ver").textContent = "v"+D.version;
+
+const TABS = [["overview","Overview"],["map","Map"],["cq","Questions it answers"],["graph","Graph & AI"],["rules","Governance rules"],["classes","Classes"],["rels","Relationships"],["changes","v1 → v2"]];
+const nav = document.getElementById("tabs"), main = document.getElementById("panels");
+TABS.forEach(([id,label],i)=>{
+  const b=document.createElement("button"); b.role="tab"; b.id="t-"+id; b.textContent=label; b.setAttribute("aria-controls","p-"+id);
+  b.onclick=()=>select(id); nav.appendChild(b);
+  const s=document.createElement("section"); s.role="tabpanel"; s.id="p-"+id; s.hidden=true; s.setAttribute("aria-labelledby","t-"+id); main.appendChild(s);
+});
+function select(id){
+  TABS.forEach(([t])=>{document.getElementById("t-"+t).setAttribute("aria-selected",t===id);document.getElementById("p-"+t).hidden=t!==id});
+  try{localStorage.setItem("rc2tab",id)}catch(e){}
+  if(id==="map") drawMap();
+}
+
+/* ---------- overview ---------- */
+const answered = D.proof.cq.filter(c=>c.rows.length).length;
+const nRel = new Set(D.rels.map(r=>r.r)).size;
+const cnt = s => D.classes.filter(c=>c.status===s).length;
+document.getElementById("p-overview").innerHTML = `
+<div class="stats">
+ <div class="stat"><b>${D.classes.length}</b><span>classes</span></div>
+ <div class="stat"><b>${nRel}</b><span>relationships</span></div>
+ <div class="stat"><b>${Object.values(D.vocabs).reduce((a,v)=>a+v.m.length,0)}</b><span>controlled terms</span></div>
+ <div class="stat"><b>${D.shapes.length}</b><span>validation rules</span></div>
+ <div class="stat"><b>${answered}/${D.proof.cq.length}</b><span>steward questions answered on sample data</span></div>
+ <div class="stat"><b>${D.classes.filter(c=>c.cqs.length).length}</b><span>classes traced to a steward question</span></div>
+</div>
+<div class="panel"><span class="eyebrow">The impact path</span>
+ <div class="chain"><span>Regulatory alert</span><i>→</i><span>Regulatory change</span><i>→</i><span>Summary (RSM)</span><i>→</i><span class="hub">Obligation (ROB)</span><i>→</i><span>Library risk</span><i>→</i><span>Library control</span><i>→</i><span>Control (1C)</span><i>·</i><span>Policy requirement</span><i>·</i><span>Procedure step</span><i>→</i><span>Owner</span></div>
+ <p class="muted">The obligation is the hub. Controls, policy requirements and procedure steps all <span class="mono">satisfy</span> requirements; a gap is an affected requirement nothing satisfies.</p></div>
+<div class="grid2">
+ <div class="panel"><h3>What makes it different</h3><ul>
+  <li>Built on the systems of record: Rapid2, RegMap, Helios, US_Risk and GPPS.</li>
+  <li>Every AI link is a <b>Link Assertion</b> with evidence quotes from both sides, scores, model run and human review status.</li>
+  <li>Impact is only drawn from links a person has confirmed, and a regulation-level link cannot fan out to controls. Both are enforced as rules, not guidelines.</li>
+  <li>Bitemporal history, so any assessment can be replayed exactly as it was signed off.</li>
+  <li>Every class traces to a question a Risk Steward asked for.</li></ul></div>
+ <div class="panel"><h3>Data readiness</h3>
+  <div class="chips">${pill(cnt("AVAILABLE")+" available","AVAILABLE")} ${pill(cnt("PARTIAL")+" partial","PARTIAL")} ${pill(cnt("MISSING")+" missing","MISSING")} ${pill(cnt("DERIVED")+" derived","DERIVED")}</div>
+  <p class="muted">"Derived" classes are computed or extracted by the pipeline. "Missing" classes need data owned by other teams: entity, product and process masters, control testing, issues and the SME review queue.</p>
+  <p class="muted">The sample graph is the EU AI Act (Regulation (EU) 2024/1689). Article references are real; all HSBC identifiers, controls, people and scores are synthetic.</p></div>
+</div>`;
+
+/* ---------- map ---------- */
+const ORDER = ["CHG","REG","SEM","RSK","CTL","GOV","IMP","BUS","ACC","PRV"];
+let onM = new Set(ORDER), onK = new Set(Object.keys(KIND)), sel = null, trail = [], view = "network";
+try{ const v=localStorage.getItem("rcview"); if(v==="focus"||v==="network") view=v }catch(e){}
+const PHRASE = {issues:"issues",enforcesIn:"enforces in",appliesInJurisdiction:"applies in",publishedAs:"is published as",amends:"amends",supersedes:"supersedes",
+ hasProvision:"contains",partOfRegulation:"belongs to",derivedFromSummary:"is derived from",citesProvision:"cites",definesTerm:"defines",hasCondition:"applies only under",
+ overrides:"overrides",exempts:"exempts",hasTemporalConstraint:"is time-bound by",appliesToScope:"applies within",responsibleParty:"places its duty on",initiates:"initiates",
+ scopesJurisdiction:"covers",scopesLegalEntity:"covers",scopesBusiness:"covers",scopesProduct:"covers",scopesProcess:"covers",givesRiseTo:"gives rise to",classifiedAs:"is classified under",
+ broaderRisk:"sits under",mitigatedBy:"is mitigated by",instanceOf:"is an instance of",satisfies:"satisfies",implementsObligation:"implements",governsActivity:"governs",
+ hasRequirement:"contains",hasStep:"contains",implementsPolicy:"implements",leadsTo:"leads to",performedBy:"is performed by",usesSystem:"uses",operatedIn:"is operated in",
+ operatedFor:"is operated for",automatedBy:"is automated by",hasTest:"is tested by",hasIssue:"carries",partOfBusiness:"sits under",licensedIn:"is licensed in",
+ reportsChange:"reports",issuedByRegulator:"is issued by",inJurisdiction:"applies in",taggedRisk:"is tagged to",initiatesAssessment:"triggers",affectsSummary:"affects",
+ affectsObligation:"affects",impactsControl:"impacts",impactsPolicyRequirement:"impacts",hasFinding:"records",concerns:"concerns",identifiesGap:"identifies",onRequirement:"is a gap in",
+ remediatedBy:"is closed by",changes:"changes",hasBlastRadius:"has",assignedTo:"is assigned to",signedOffBy:"is signed off by",hasRole:"holds",memberOf:"is a member of",
+ ownedBy:"is owned by",stewardedBy:"is stewarded by",assertionSubject:"links from",assertionObject:"links to",producedBy:"was produced by",validatedBy:"is validated by",
+ derivedFrom:"is derived from",hasEvidence:"is backed by",extractedFrom:"is quoted from",answeredUsing:"is answered using",hasModality:"takes its strength from",
+ hasDecision:"takes its decision from",hasGranularity:"takes its level from",hasMethod:"takes its method from",hasSMEStatus:"takes its review status from",
+ hasChangeType:"takes its type from",hasCoverage:"takes its coverage from",hasTemporalType:"takes its type from",hasReliabilityTier:"takes its reliability from",hasControlNature:"takes its nature from"};
+const CARD = {"1":"exactly one","1..*":"one or more","0..*":"any number of","0..1":"at most one"};
+const ekey = e => e.f+"|"+e.r+"|"+e.t;
+const nameOf = id => id.startsWith("Vocab:") ? "the "+id.slice(6)+" list" : byId[id].l;
+
+document.getElementById("p-map").innerHTML = `
+<div class="maptools">
+  <div class="seg" role="group" aria-label="Map view">
+    <button id="v-network" aria-pressed="false">Network view</button><button id="v-focus" aria-pressed="false">Focus view</button></div>
+  <div class="crumbs" id="crumbs" aria-live="polite"></div>
+  <label class="inh" id="inhwrap"><input type="checkbox" id="inh" checked> Include inherited</label>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div class="zoom" role="group" aria-label="Zoom"><button id="z-out" aria-label="Zoom out">−</button><button id="z-fit" aria-pressed="true">Fit</button><button id="z-in" aria-label="Zoom in">+</button><button id="z-full" aria-label="Full screen">⤢</button></div>
+    <button class="ex-toggle" id="ex-toggle" aria-expanded="false" aria-controls="explain">Explain ▸</button></div>
+</div>
+<div class="chips" id="mchips"></div><div class="chips" id="kchips"></div>
+<div class="mapgrid" id="mapgrid"><button class="fs-exit" id="fs-exit">✕ Exit full screen (Esc)</button>
+  <div class="mapwrap" id="mapwrap"><svg id="svg" role="img" aria-label="Ontology class map"></svg></div>
+  <aside class="explain" id="explain" aria-live="polite"></aside>
+</div>`;
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+["network","focus"].forEach(v=>document.getElementById("v-"+v).onclick=()=>{view=v;try{localStorage.setItem("rcview",v)}catch(e){}drawMap()});
+document.getElementById("inh").onchange=()=>drawMap();
+let zoom=0, panelOpen=false; /* zoom 0 = fit to the visible area */
+function setPanel(o){panelOpen=o;const g=document.getElementById("mapgrid");g.classList.toggle("open",o);
+  const t=document.getElementById("ex-toggle");t.setAttribute("aria-expanded",o);t.textContent=o?"Hide explain ◂":"Explain ▸";}
+document.getElementById("ex-toggle").onclick=()=>setPanel(!panelOpen);
+function sizeSvg(W,H){const s=document.getElementById("svg");s.setAttribute("viewBox",`0 0 ${W} ${H}`);s.classList.remove("fit");
+  if(!zoom){s.classList.add("fitall");s.removeAttribute("width");s.removeAttribute("height");s.setAttribute("preserveAspectRatio","xMidYMid meet")}
+  else{s.classList.remove("fitall");s.setAttribute("width",W*zoom);s.setAttribute("height",H*zoom)}
+  document.getElementById("z-fit").setAttribute("aria-pressed",!zoom);}
+const ZS=[0.6,0.8,1,1.25,1.5,2];
+document.getElementById("z-fit").onclick=()=>{zoom=0;drawMap()};
+document.getElementById("z-in").onclick=()=>{zoom=ZS.find(z=>z>(zoom||0.7))||2;drawMap()};
+document.getElementById("z-out").onclick=()=>{const c=zoom||1;zoom=[...ZS].reverse().find(z=>z<c)||0.6;drawMap()};
+function setFull(on){document.getElementById("mapgrid").classList.toggle("full",on);setTimeout(drawMap,50)}
+document.getElementById("z-full").onclick=()=>setFull(!document.getElementById("mapgrid").classList.contains("full"));
+document.getElementById("fs-exit").onclick=()=>setFull(false);
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&document.getElementById("mapgrid").classList.contains("full")){e.stopImmediatePropagation();setFull(false)}},true);
+addEventListener("resize",()=>{clearTimeout(window._rz);window._rz=setTimeout(()=>{if(!document.getElementById("p-map").hidden)drawMap()},200)});
+
+function chips(){
+  const mc=document.getElementById("mchips"); mc.innerHTML="";
+  ORDER.forEach(m=>{const b=document.createElement("button");b.className="chip";b.setAttribute("aria-pressed",onM.has(m));
+    b.innerHTML=`<span class="dot" style="background:${D.modules[m].c}"></span>${esc(D.modules[m].n)}`;b.onclick=()=>{onM.has(m)?onM.delete(m):onM.add(m);chips();drawMap()};mc.appendChild(b)});
+  const kc=document.getElementById("kchips"); kc.innerHTML="";
+  Object.entries(KIND).forEach(([k,[n,c]])=>{const b=document.createElement("button");b.className="chip";b.setAttribute("aria-pressed",onK.has(k));
+    b.innerHTML=`<span class="dot" style="background:${c}"></span>${n}`;b.onclick=()=>{onK.has(k)?onK.delete(k):onK.add(k);chips();drawMap()};kc.appendChild(b)});
+}
+const NW=176,NH=34,CX=206,RY=46,TOP=48,pos={},hdr={};let OW=0,OH=0;
+/* wrap module columns into rows so the whole map fits the visible width */
+function layout(){
+  const mods=ORDER.filter(m=>onM.has(m)); Object.keys(pos).forEach(k=>delete pos[k]);
+  const el=document.getElementById("mapwrap"), w=el&&el.clientWidth||1200, h=el&&el.clientHeight||700;
+  let per=mods.length;
+  if(!zoom){let best=0;for(let p=3;p<=mods.length;p++){let ht=0;for(let r=0;r<mods.length;r+=p)ht+=TOP+Math.max(...mods.slice(r,r+p).map(m=>D.classes.filter(c=>c.m===m).length))*RY+24;
+    const sc=Math.min(w/(16+p*CX),h/ht);if(sc>best){best=sc;per=p}}}
+  let y0=0; OW=16+Math.min(per,mods.length)*CX;
+  for(let r=0;r<mods.length;r+=per){const row=mods.slice(r,r+per);let maxN=0;
+    row.forEach((m,i)=>{const cs=D.classes.filter(c=>c.m===m);maxN=Math.max(maxN,cs.length);hdr[m]={x:16+i*CX,y:y0+26};
+      cs.forEach((c,j)=>pos[c.id]={x:16+i*CX,y:y0+TOP+j*RY})});
+    y0+=TOP+maxN*RY+24;}
+  OH=y0;
+}
+function ancestors(id){const out=[];let p=byId[id]&&byId[id].parent;while(p&&p!=="Entity"){out.push(p);p=byId[p].parent}return out}
+function trunc(s,n){return s.length>n?s.slice(0,n-1)+"…":s}
+
+function drawMap(){
+  if(!document.getElementById("mchips").children.length) chips();
+  document.getElementById("v-network").setAttribute("aria-pressed",view==="network");
+  document.getElementById("v-focus").setAttribute("aria-pressed",view==="focus");
+  crumbs();
+  (sel && view==="focus") ? drawFocus() : drawNetwork();
+  explain();
+  {const ex=document.getElementById("explain");ex.insertAdjacentHTML("afterbegin",`<button class="ex-close" aria-label="Close explain panel">×</button>`);ex.querySelector(".ex-close").onclick=()=>setPanel(false);}
+  document.querySelectorAll("#svg .lbl").forEach(l=>{l.onmouseenter=()=>hl(l.dataset.key);l.onmouseleave=()=>hl(null)});
+}
+function crumbs(){
+  const c=document.getElementById("crumbs");
+  let h=`<button class="crumb${sel?"":" here"}" data-go="">All classes</button>`;
+  trail.forEach((id,i)=>{h+=`<span class="sep" aria-hidden="true">›</span><button class="crumb${i===trail.length-1?" here":""}" data-go="${id}">${esc(byId[id].l)}</button>`});
+  c.innerHTML=h;
+  c.querySelectorAll("button").forEach(b=>b.onclick=()=>{const id=b.dataset.go;if(!id){sel=null;trail=[]}else{trail=trail.slice(0,trail.indexOf(id)+1);sel=id}drawMap()});
+  document.getElementById("inhwrap").hidden=!sel;
+  document.getElementById("mchips").hidden=!!sel&&view==="focus";
+}
+function focus(id){
+  if(!byId[id]) return;
+  if(sel===id && view==="network"){ sel=null; trail=[]; drawMap(); return }
+  const i=trail.indexOf(id); trail = i>=0 ? trail.slice(0,i+1) : [...trail,id]; sel=id;
+  setPanel(true); drawMap();
+  if(view==="focus") document.getElementById("mapwrap").scrollTo({top:0,left:0,behavior:reduce?"auto":"smooth"});
+}
+function bindNodes(s,hoverable){
+  s.querySelectorAll(".node").forEach(n=>{const id=n.dataset.id;const go=()=>focus(id);
+    n.onclick=go;n.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}};
+    if(hoverable){n.onmouseenter=n.onfocus=()=>light(s,id);n.onmouseleave=n.onblur=()=>light(s,null)}});
+}
+function light(s,id){
+  if(sel) return;
+  s.querySelectorAll(".ov-edge").forEach(p=>{const hi=id&&(p.dataset.f===id||p.dataset.t===id);
+    p.setAttribute("opacity",id?(hi?.95:.07):.34);p.setAttribute("stroke-width",hi?2.2:1.1)});
+}
+
+/* relationship sets for a class (own + optionally inherited) */
+function edgesFor(id, withInherited){
+  const inh = withInherited ? ancestors(id) : [];
+  const out=[], inn=[];
+  [id,...inh].forEach(src=>D.rels.forEach(e=>{ if(!onK.has(e.k)) return;
+    const via = src===id ? "" : src;
+    if(e.f===src) out.push({...e,via,other:e.t});
+    if(e.t===src && e.f!==src) inn.push({...e,via,other:e.f}); }));
+  const k=e=>e.r+"|"+e.other, uniq=a=>a.filter((e,i)=>a.findIndex(x=>k(x)===k(e))===i);
+  const rank={S:0,I:1,C:2,P:3}, sort=a=>a.sort((x,y)=>rank[x.k]-rank[y.k]||x.r.localeCompare(y.r));
+  return {out:sort(uniq(out)), inn:sort(uniq(inn).filter(e=>e.other!=="Entity"))};
+}
+
+/* ---------- network view: whole map; selection highlights edges with collision-free labels ---------- */
+function curve(e){
+  const a=pos[e.f],b=pos[e.t];
+  if(e.f===e.t) return {d:`M${a.x+NW},${a.y+9} c40,-18 40,34 0,16`, mx:a.x+NW+30, my:a.y+17};
+  if(a.x===b.x){const y1=a.y+NH/2,y2=b.y+NH/2,x=a.x+NW;return {d:`M${x},${y1} C${x+54},${y1} ${x+54},${y2} ${x},${y2}`, mx:x+40, my:(y1+y2)/2}}
+  const fw=b.x>a.x,x1=fw?a.x+NW:a.x,x2=fw?b.x:b.x+NW,y1=a.y+NH/2,y2=b.y+NH/2,dx=Math.max(40,Math.abs(x2-x1)/2)*(fw?1:-1);
+  return {d:`M${x1},${y1} C${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}`, mx:(x1+x2)/2, my:(y1+y2)/2};
+}
+function drawNetwork(){
+  layout(); const s=document.getElementById("svg"); sizeSvg(OW,OH);
+  const vis=e=>pos[e.f]&&pos[e.t]&&e.f!=="Entity"&&e.t!=="Entity"&&onK.has(e.k)&&onM.has(byId[e.f].m)&&onM.has(byId[e.t].m);
+  const selEdges = sel ? D.rels.filter(e=>vis(e)&&(e.f===sel||e.t===sel)) : [];
+  const nb=new Set(selEdges.flatMap(e=>[e.f,e.t])); if(sel) nb.add(sel);
+  let g=`<defs>${Object.entries(KIND).map(([k,[,cl]])=>`<marker id="nh-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${cl}"/></marker>`).join("")}</defs>`;
+  ORDER.forEach((m,i)=>{if(onM.has(m)&&hdr[m])g+=`<text x="${hdr[m].x}" y="${hdr[m].y}" font-size="11.5" font-weight="700" letter-spacing=".06em" fill="${D.modules[m].c}">${esc(D.modules[m].n.toUpperCase())}</text>`});
+  D.rels.forEach(e=>{ if(!vis(e)) return; const hi=sel&&(e.f===sel||e.t===sel); if(hi) return;
+    const c=curve(e); g+=`<path class="ov-edge" data-f="${e.f}" data-t="${e.t}" d="${c.d}" fill="none" stroke="${KIND[e.k][1]}" stroke-width="1.1" opacity="${sel?.05:.34}"><title>${esc(e.f+" "+e.r+" "+e.t)}</title></path>`});
+  selEdges.forEach(e=>{const c=curve(e);
+    g+=`<path class="sel-edge" data-key="${ekey(e)}" d="${c.d}" fill="none" stroke="${KIND[e.k][1]}" stroke-width="2.4" marker-end="url(#nh-${e.k})"><title>${esc(e.f+" "+e.r+" "+e.t)}</title></path>`});
+  D.classes.forEach(c=>{if(!onM.has(c.m))return;const p=pos[c.id],col=D.modules[c.m].c,isSel=sel===c.id,dim=sel&&!nb.has(c.id);
+    g+=`<g class="node" tabindex="0" role="button" aria-label="Select ${esc(c.l)}" data-id="${c.id}" opacity="${dim?.2:1}">
+      <rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="6" fill="${isSel?col:"var(--surface)"}" fill-opacity="${isSel?.18:1}" stroke="${col}" stroke-width="${isSel?2.8:(sel&&nb.has(c.id)?2:1.4)}" ${c.status==="MISSING"?'stroke-dasharray="3 3"':""}/>
+      <text x="${p.x+NW/2}" y="${p.y+NH/2+4}" text-anchor="middle" font-size="12" font-weight="${isSel?700:400}" fill="var(--fg)">${esc(trunc(c.l,26))}</text></g>`});
+  /* labels last: one tag per neighbour box, pinned on its top edge, so labels can never collide */
+  if(sel){
+    const tags={};
+    selEdges.forEach(e=>{const other=e.f===sel?e.t:e.f, dir=e.f===e.t?"↻":(e.f===sel?"→":"←");
+      (tags[other]=tags[other]||[]).push({e,txt:`${dir} ${e.r}`})});
+    Object.entries(tags).forEach(([id,list])=>{const p=pos[id]; if(!p) return;
+      let x=p.x+NW/2; const total=list.reduce((a,t)=>a+t.txt.length*6.5+18,0)+(list.length-1)*4; let cx=x-total/2;
+      list.forEach(t=>{const w=t.txt.length*6.5+18, h=18, y=p.y-h/2, kc=KIND[t.e.k][1];
+        g+=`<g class="lbl" data-key="${ekey(t.e)}"><rect x="${cx}" y="${y}" width="${w}" height="${h}" rx="9" fill="var(--surface)" stroke="${kc}" stroke-width="1.5"/>
+          <text x="${cx+w/2}" y="${y+12.5}" text-anchor="middle" font-size="11" font-weight="600" font-family="var(--mono)" fill="var(--fg)">${esc(t.txt)}</text><title>${esc(t.e.f+" "+t.e.r+" "+t.e.t)}</title></g>`;
+        cx+=w+4;});
+    });
+  }
+  s.innerHTML=g; bindNodes(s,!sel);
+  if(zoom&&sel&&pos[sel]){const w=document.getElementById('mapwrap');w.scrollTo({left:Math.max(0,pos[sel].x+NW/2-w.clientWidth/2),top:Math.max(0,pos[sel].y-w.clientHeight/2),behavior:reduce?'auto':'smooth'})}
+}
+
+/* ---------- focus view: incoming left, outgoing right, one lane per label ---------- */
+function drawFocus(){
+  const c=byId[sel], {out,inn}=edgesFor(sel, document.getElementById("inh").checked);
+  const RH=54, TOPF=80, n=Math.max(out.length,inn.length,1), W=1320;
+  const LBX=24, LBW=220, LPC=354, CW=260, CL=W/2-CW/2, CR=CL+CW, RPC=W-LPC, RBX=W-24-LBW, LANE=90;
+  const CH=Math.max(96,Math.min(n*RH-14,220)), CY=TOPF+20+(n-1)*RH/2-CH/2;
+  const rowY=(i,len)=>TOPF+(n-len)*RH/2+i*RH+20;
+  const H=Math.max(TOPF+20+(n-1)*RH+40, CY+CH+30);
+  const s=document.getElementById("svg"); sizeSvg(W,H);
+  const col=D.modules[c.m].c;
+  let g=`<defs>${Object.entries(KIND).map(([k,[,cl]])=>`<marker id="ah-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${cl}"/></marker>`).join("")}</defs>`;
+  g+=`<text x="${LBX}" y="30" font-size="12" font-weight="700" letter-spacing=".08em" fill="var(--muted)">POINTS TO ${esc(c.l.toUpperCase())}  ·  ${inn.length}</text>`;
+  g+=`<text x="${W-24}" y="30" text-anchor="end" font-size="12" font-weight="700" letter-spacing=".08em" fill="var(--muted)">${esc(c.l.toUpperCase())} POINTS TO  ·  ${out.length}</text>`;
+  const pillF=(cx,y,e)=>{const name=e.r, sub=e.via?`via ${byId[e.via].l}`:"", fs=name.length>22?11:12.5, w=Math.min(176,Math.max(name.length*fs*0.62,sub.length*6)+26);
+    return `<g class="lbl" data-key="${ekey(e)}"><rect x="${cx-w/2}" y="${y-(sub?17:12)}" width="${w}" height="${sub?34:24}" rx="12" fill="var(--surface)" stroke="${KIND[e.k][1]}" stroke-width="1.4" ${e.via?'stroke-dasharray="4 3"':""}/>
+      <text x="${cx}" y="${y+(sub?-1:4)}" text-anchor="middle" font-size="${fs}" font-weight="600" fill="var(--fg)" font-family="var(--mono)">${esc(name)}</text>
+      ${sub?`<text x="${cx}" y="${y+11}" text-anchor="middle" font-size="10.5" fill="var(--muted)">${esc(trunc(sub,28))}</text>`:""}<title>${esc(e.f+" "+e.r+" "+e.t+" ["+e.card+"]")}</title></g>`};
+  const box=(x,y,id,align)=>{const vocab=id.startsWith("Vocab:"),cl=vocab?null:byId[id],label=vocab?"vocab: "+id.slice(6):(id===sel?c.l+" (itself)":cl.l),mc=vocab?"var(--muted)":D.modules[cl.m].c;
+    const attrs=vocab||id===sel?"":`class="node" tabindex="0" role="button" aria-label="Focus on ${esc(cl.l)}" data-id="${id}"`;
+    return `<g ${attrs}><rect x="${x}" y="${y-18}" width="${LBW}" height="36" rx="7" fill="var(--surface)" stroke="${mc}" stroke-width="1.5" ${vocab||(cl&&cl.status==="MISSING")?'stroke-dasharray="4 3"':""}/>
+      <rect x="${align==="l"?x:x+LBW-5}" y="${y-18}" width="5" height="36" fill="${mc}" rx="2"/>
+      <text x="${x+LBW/2}" y="${y+4.5}" text-anchor="middle" font-size="12.5" fill="var(--fg)">${esc(trunc(label,29))}</text></g>`};
+  const attach=(i,len)=>CY+CH*(len===1?.5:(0.18+0.64*i/(len-1)));
+  inn.forEach((e,i)=>{const y=rowY(i,inn.length), ay=attach(i,inn.length);
+    g+=`<path class="sel-edge" data-key="${ekey(e)}" d="M${LBX+LBW},${y} H${LPC+LANE} C${(LPC+LANE+CL)/2},${y} ${(LPC+LANE+CL)/2},${ay} ${CL},${ay}" fill="none" stroke="${KIND[e.k][1]}" stroke-width="1.6" ${e.via?'stroke-dasharray="5 4"':""} marker-end="url(#ah-${e.k})"/>`;
+    g+=box(LBX,y,e.other,"l")+pillF(LPC,y,e)});
+  out.forEach((e,i)=>{const y=rowY(i,out.length), ay=attach(i,out.length);
+    g+=`<path class="sel-edge" data-key="${ekey(e)}" d="M${CR},${ay} C${(CR+RPC-LANE)/2},${ay} ${(CR+RPC-LANE)/2},${y} ${RPC-LANE},${y} H${RBX}" fill="none" stroke="${KIND[e.k][1]}" stroke-width="1.6" ${e.via?'stroke-dasharray="5 4"':""} marker-end="url(#ah-${e.k})"/>`;
+    g+=pillF(RPC,y,e)+box(RBX,y,e.other,"r")});
+  g+=`<g><rect x="${CL}" y="${CY}" width="${CW}" height="${CH}" rx="10" fill="${col}" fill-opacity=".12" stroke="${col}" stroke-width="2.5"/>
+     <text x="${CL+CW/2}" y="${CY+CH/2-8}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--fg)">${esc(trunc(c.l,32))}</text>
+     <text x="${CL+CW/2}" y="${CY+CH/2+14}" text-anchor="middle" font-size="12" fill="var(--muted)">${esc(D.modules[c.m].n)} · ${esc(c.status.toLowerCase())}</text>
+     ${c.parent&&c.parent!=="Entity"?`<text x="${CL+CW/2}" y="${CY+CH/2+32}" text-anchor="middle" font-size="11.5" fill="var(--muted)">is a ${esc(byId[c.parent].l)}</text>`:""}</g>`;
+  if(!inn.length) g+=`<text x="${LBX}" y="${rowY(0,1)+4}" font-size="13" fill="var(--muted)">Nothing points here.</text>`;
+  if(!out.length) g+=`<text x="${W-24}" y="${rowY(0,1)+4}" text-anchor="end" font-size="13" fill="var(--muted)">No outgoing relationships.</text>`;
+  s.style.opacity=0; s.innerHTML=g; bindNodes(s,false);
+  requestAnimationFrame(()=>{s.style.transition=reduce?"none":"opacity .18s";s.style.opacity=1});
+}
+
+/* ---------- explain panel: the relationships in plain sentences ---------- */
+function sentence(e, outgoing){
+  const subj = outgoing ? byId[sel].l : nameOf(e.other), obj = outgoing ? nameOf(e.other) : byId[sel].l;
+  const verb = PHRASE[e.r] || e.r.replace(/([A-Z])/g," $1").toLowerCase();
+  const card = e.t.startsWith("Vocab:") ? "a value from" : (CARD[e.card] || e.card);
+  const otherBtn = e.other.startsWith("Vocab:") ? `<b>${esc(nameOf(e.other))}</b>` : `<button class="lnk" data-go="${e.other}">${esc(nameOf(e.other))}</button>`;
+  const subjH = outgoing ? `<b>${esc(subj)}</b>` : otherBtn, objH = outgoing ? otherBtn : `<b>${esc(obj)}</b>`;
+  const cardTxt = e.t.startsWith("Vocab:") ? "" : `${esc(card)} `;
+  return `<li data-key="${ekey(e)}" tabindex="0"><span class="kbar" style="background:${KIND[e.k][1]}"></span><span>Each ${subjH} <span class="verb" style="--kc:${KIND[e.k][1]}">${esc(verb)}</span> ${outgoing?cardTxt:""}${objH}.${e.via?` <span class="via">inherited from ${esc(byId[e.via].l)}</span>`:""}${e.n?` <span class="note">${esc(e.n)}</span>`:""}</span></li>`;
+}
+function explain(){
+  const box=document.getElementById("explain");
+  if(!sel){
+    box.innerHTML=`<h3>How to read the map</h3>
+     <p>Select a class to see its relationships drawn on the map and written out here as sentences. Hover a sentence to light up that relationship.</p>
+     <p><b>Network view</b> shows the whole model; <b>Focus view</b> lines up one class's relationships so every label has its own row.</p>
+     <div class="legend-v">${Object.values(KIND).map(([n,c])=>`<span><i style="border-color:${c}"></i>${n}</span>`).join("")}<span><i class="dash"></i>Data not yet available</span></div>
+     <p class="muted">Suggested walk-through: Regulatory Alert → Regulatory Change → Regulatory Obligation → Control Instance → Library Control.</p>`;
+    return;
+  }
+  const c=byId[sel], {out,inn}=edgesFor(sel, view==="focus"?document.getElementById("inh").checked:false);
+  box.innerHTML=`<div class="ex-head"><span class="dot" style="background:${D.modules[c.m].c}"></span><span class="muted">${esc(D.modules[c.m].n)}</span>${pill(c.status)}</div>
+   <h3>${esc(c.l)}</h3><p>${esc(c.d)}</p>
+   <p class="muted">Source: ${esc(c.src)}${c.parent&&c.parent!=="Entity"?` · a kind of ${esc(byId[c.parent].l)}`:""}${c.cqs.length?` · answers ${esc(c.cqs.join(", "))}`:""}</p>
+   <h4>What it connects to <span class="count">${out.length}</span></h4><ul class="sent">${out.map(e=>sentence(e,true)).join("")||"<li class=muted>None</li>"}</ul>
+   <h4>What connects to it <span class="count">${inn.length}</span></h4><ul class="sent">${inn.map(e=>sentence(e,false)).join("")||"<li class=muted>None</li>"}</ul>
+   ${view==="network"?`<p class="muted">Inherited relationships appear in Focus view.</p>`:""}`;
+  box.querySelectorAll(".lnk").forEach(b=>b.onclick=()=>focus(b.dataset.go));
+  box.querySelectorAll("li[data-key]").forEach(li=>{const k=li.dataset.key;
+    li.onmouseenter=li.onfocus=()=>hl(k); li.onmouseleave=li.onblur=()=>hl(null)});
+}
+function hl(key){
+  const s=document.getElementById("svg");
+  s.querySelectorAll(".sel-edge").forEach(p=>{const on=!key||p.dataset.key===key;p.setAttribute("opacity",on?1:.15);p.setAttribute("stroke-width",key&&on?4:(s.classList.contains("fit")?1.6:2.4))});
+  s.querySelectorAll(".lbl").forEach(l=>{const on=!key||l.dataset.key===key;l.setAttribute("opacity",on?1:.25);l.classList.toggle("lit",!!key&&on)});
+  document.querySelectorAll("#explain li[data-key]").forEach(li=>li.classList.toggle("lit",li.dataset.key===key));
+}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&sel&&!document.getElementById("p-map").hidden){trail.pop();sel=trail.at(-1)||null;drawMap()}});
+
+/* ---------- competency questions ---------- */
+document.getElementById("p-cq").innerHTML = `
+<p>${answered} of ${D.proof.cq.length} questions return the right answer on the EU AI Act sample graph. Each one is a SPARQL query stored in the ontology itself, so the questions are the acceptance tests.</p>
+${D.proof.cq.map(c=>`<div class="cq"><header><b>${c.id}</b>${pill(c.priority)}<span class="muted">${esc(c.persona)}</span></header>
+ <h3>${esc(c.q)}</h3>
+ <div class="tablewrap"><table><tr>${c.vars.map(v=>`<th>${esc(v)}</th>`).join("")}</tr>${c.rows.map(r=>`<tr>${r.map(x=>`<td>${esc(x)}</td>`).join("")}</tr>`).join("")}</table></div>
+ <details><summary>Show the SPARQL</summary><pre>${esc(c.sparql)}</pre></details></div>`).join("")}`;
+
+/* ---------- rules ---------- */
+const pr = D.proof;
+const resRow = r => `<div class="res">${pill(r.severity)}<span class="mono">${esc(r.focus)}</span><span>${esc(r.message)}</span></div>`;
+document.getElementById("p-rules").innerHTML = `
+<div class="verdict">
+ <div class="panel"><h3>Clean sample ${pill(pr.clean.conforms?"PASS":"FAIL",pr.clean.conforms?"PASS":"Violation")}</h3>
+  <p class="muted">${pr.clean.violations.length} violations, ${pr.clean.warnings.length} warning.</p>${pr.clean.warnings.map(resRow).join("")}
+  <p class="muted">The warning is a real finding: the human-oversight obligation (Art 14) is affected but nothing covers it, so it surfaces as a gap.</p></div>
+ <div class="panel"><h3>Sample with two planted errors ${pill("BLOCKED","Violation")}</h3>
+  <p class="muted">Adds a golden-style regulation-level link to an unrelated control, and an impact edge drawn from an unreviewed link.</p>${pr.planted.violations.map(resRow).join("")}</div>
+</div>
+<div class="tablewrap"><table><tr><th>Rule</th><th>Profile</th><th>Severity</th><th>Type</th><th>What it enforces</th></tr>
+${D.shapes.map(s=>`<tr><td class="mono">${esc(s.name)}</td><td>${pill(s.profile)}</td><td>${pill(s.severity)}</td><td class="muted">${esc(s.kind)}</td><td>${esc(s.comment)}</td></tr>`).join("")}</table></div>`;
+
+/* ---------- classes / relationships ---------- */
+function tableTab(id, cols, rows, ph){
+  const el=document.getElementById(id);
+  el.innerHTML=`<input type="search" id="${id}-q" placeholder="${ph}" aria-label="${ph}"><div class="tablewrap"><table id="${id}-t"></table></div>`;
+  const render=q=>{q=q.toLowerCase();document.getElementById(id+"-t").innerHTML=`<tr>${cols.map(c=>`<th>${c}</th>`).join("")}</tr>`+rows.filter(r=>r.text.toLowerCase().includes(q)).map(r=>r.html).join("")};
+  render(""); document.getElementById(id+"-q").oninput=e=>render(e.target.value);
+}
+tableTab("p-classes",["Class","Module","Source","Data","Definition"],
+  D.classes.map(c=>({text:JSON.stringify(c),html:`<tr><td><b>${esc(c.l)}</b><div class="mono muted">rc:${c.id}${c.parent?" ⊂ "+c.parent:""}</div></td><td><span class="dot" style="display:inline-block;background:${D.modules[c.m].c}"></span> ${esc(D.modules[c.m].n)}</td><td class="muted">${esc(c.src)}</td><td>${pill(c.status)}</td><td>${esc(c.d)}</td></tr>`})),"Search classes");
+tableTab("p-rels",["From","Relationship","To","Card.","Kind"],
+  D.rels.map(r=>({text:JSON.stringify(r),html:`<tr><td>${esc(r.f)}</td><td><b class="mono">${esc(r.r)}</b>${r.inv?`<div class="muted mono">inverse: ${esc(r.inv)}</div>`:""}</td><td>${esc(r.t.replace("Vocab:","vocab: "))}</td><td class="num">${r.card}</td><td><span class="dot" style="display:inline-block;background:${KIND[r.k][1]}"></span> ${KIND[r.k][0]}</td></tr>`})),"Search relationships");
+
+/* ---------- changes ---------- */
+document.getElementById("p-changes").innerHTML = `
+<div class="tablewrap"><table><tr><th>Change</th><th>Detail</th></tr>${D.changes.map(([k,t])=>`<tr><td>${pill(k,k==="Added"?"AVAILABLE":k==="Changed"?"PARTIAL":"DERIVED")}</td><td>${esc(t)}</td></tr>`).join("")}</table></div>
+<div class="panel"><h3>Controlled vocabularies</h3><div class="tablewrap"><table><tr><th>Scheme</th><th>Meaning</th><th>Terms</th></tr>${Object.entries(D.vocabs).map(([k,v])=>`<tr><td class="mono">rcv:${k}</td><td>${esc(v.d)}</td><td class="mono muted">${v.m.join(" · ")}</td></tr>`).join("")}</table></div></div>`;
+
+/* ---------- graph & AI: architecture, Neo4j mapping, ask-the-graph demo ---------- */
+const CQX = Object.fromEntries(D.proof.cq.map(c=>[c.id,c]));
+const listing = a => a.length<=1 ? (a[0]||"") : a.slice(0,-1).join(", ")+" and "+a.at(-1);
+const ANSWER = {
+ CQ01:r=>`This alert changes ${r.length} obligations: ${listing(r.map(x=>x[1]))}.`,
+ CQ02:r=>`The alert is linked to ${r.length} regulation summaries, each confirmed by an SME: ${listing(r.map(x=>`${x[0]} (relevance ${x[1]}, confidence ${x[2]})`))}.`,
+ CQ03:r=>`${r.length} control is impacted: ${listing(r.map(x=>`${x[0]}, an instance of library control ${x[1]}`))}. Two further candidate controls are waiting for SME review and are not counted.`,
+ CQ04:r=>`${listing(r.map(x=>`"${x[0]}" (${x[1]})`))} ${r.length>1?"are":"is"} the library risks affected.`,
+ CQ05:r=>r.length?`${r.length} affected obligation has no control and no policy requirement: ${listing(r.map(x=>`${x[0]}, "${x[1]}"`))}. That is a coverage gap.`:"Every affected obligation is covered.",
+ CQ06:r=>r.map(x=>`${x[0]} applies ${x[1]?`only "${x[1]}"`:""}${x[2]?`, with the exception "${x[2]}"`:""}.`).join(" "),
+ CQ07:r=>`In scope: ${listing([...new Set(r.map(x=>x[0]))])}, across ${listing([...new Set(r.map(x=>x[1]))])}.`,
+ CQ08:r=>`All ${r.length} affected obligations carry a ${r[0][1].toLowerCase()} of ${r[0][2]}. Confirm the date; it may change under EU proposals.`,
+ CQ09:r=>r.map(x=>`${x[0]} is implemented by ${x[2]} in the ${x[1]}.`).join(" ")+" The other affected obligations have no implementing policy requirement.",
+ CQ10:r=>r.map(x=>`${x[0]} has ${x[1].toLowerCase()} coverage; remediation: ${x[2]}.`).join(" "),
+ CQ11:r=>`Blast radius: ${r[0][0]} obligations, ${r[0][1]} control, ${r[0][2]} policy requirement, ${r[0][3]} legal entity and ${r[0][4]} businesses.`,
+ CQ12:r=>r.map(x=>`${x[0]} was issued by the ${x[1]} and applies in the ${x[2]}.`).join(" "),
+ CQ13:r=>r.map(x=>`Alert ${x[0]} reports change ${x[1]} and is tagged to ${x[2]}.`).join(" "),
+ CQ14:r=>r.length?`${listing(r.map(x=>`${x[0]} already has an open issue: "${x[1]}"`))}.`:"No impacted control has an open issue.",
+ CQ15:r=>`${listing(r.map(x=>`${x[0]} is owned by ${x[1]}`))}. Sign-off sits with ${r[0][2]}.`,
+ CQ16:r=>r.map(x=>`${x[0]} rests on ${x[1]}${x[2]?` (defines "${x[2]}")`:""}.`).join(" "),
+ CQ17:r=>r.map(x=>`${x[0]} is met by the step "${x[1]}", performed by the ${x[2]} in the ${x[3]}.`).join(" "),
+ CQ18:r=>`The link rests on two quotes. ${r.map(x=>`From the ${x[0]==="SUBJECT"?"change":"control"}: "${x[1]}".`).join(" ")} Produced by ${r[0][2]}, prompt ${r[0][3]}.`,
+ CQ19:r=>`${r.length} links are waiting for SME review: ${listing(r.map(x=>`${x[0]} (relevance ${x[1]})`))}.`,
+ CQ20:r=>r.map(x=>`Run ${x[0]}: ${x[1]} links reviewed, ${x[2]} agreed with by the SME.`).join(" "),
+};
+const KEYS = {
+ CQ01:"obligation obligations change changes affected affect alert rob which",CQ02:"summary summaries rsm linked confidence confirmed score",
+ CQ03:"control controls impacted impact library l1c 1c",CQ04:"risk risks library taxonomy area",CQ05:"gap gaps uncovered coverage missing no control policy",
+ CQ06:"condition conditions exception exceptions exemption apply when",CQ07:"entity entities business businesses scope legal lob in-scope where",
+ CQ08:"when deadline date comply compliance timeline by",CQ09:"policy policies requirement gpps implement implements",CQ10:"findings finding remediation remediate action fix",
+ CQ11:"blast radius footprint how big size scale count",CQ12:"regulator issued jurisdiction who issued",CQ13:"alerts arrived risk area my",
+ CQ14:"issue issues open failed test tests already",CQ15:"owner owners own owns owned who sign signoff sign-off accountable responsible impacted control controls",CQ16:"provision article articles defined term definition",
+ CQ17:"procedure step steps day to day how met system role operate",CQ18:"why evidence quote explain model run justify proof control scope linked",
+ CQ19:"review queue waiting pending sme unreviewed",CQ20:"accuracy perform performance agree agreement model ai human",
+};
+const STOP=new Set("the a an of to is are in on for and or does do this that what which how with by be it its my our".split(" "));
+function route(q){
+  const toks=q.toLowerCase().replace(/[^a-z0-9\s-]/g," ").split(/\s+/).filter(t=>t&&!STOP.has(t));
+  const sc=Object.entries(KEYS).map(([id,k])=>{const ks=k.split(" ");let s=0;toks.forEach(t=>{if(ks.includes(t))s+=2;else if(ks.some(x=>x.startsWith(t)||t.startsWith(x)))s+=1});return [id,s]}).sort((a,b)=>b[1]-a[1]);
+  return sc;
+}
+const PRIMARY={CQ01:"RegulatoryObligation",CQ02:"LinkAssertion",CQ03:"Control",CQ04:"LibraryRisk",CQ05:"Gap",CQ06:"Condition",CQ07:"ApplicabilityScope",CQ08:"TemporalConstraint",CQ09:"PolicyRequirement",CQ10:"Gap",CQ11:"BlastRadius",CQ12:"Regulation",CQ13:"RegulatoryAlert",CQ14:"ControlIssue",CQ15:"Actor",CQ16:"Provision",CQ17:"ProcedureStep",CQ18:"EvidenceOccurrence",CQ19:"LinkAssertion",CQ20:"ModelRun"};
+
+document.getElementById("p-graph").innerHTML = `
+<div class="panel"><span class="eyebrow">Where this goes next</span>
+ <h2>One ontology drives the graph, the questions and the answers</h2>
+ <p>The ontology is the schema of a Neo4j knowledge graph. Risk Stewards explore the graph visually, and ask questions in plain language; a GraphRAG service answers only from what the graph holds and shows the path it used.</p></div>
+<div class="flow" aria-label="Architecture from source systems to the steward">
+ <div class="fstep"><span class="eyebrow">1 · Sources</span><b>Systems of record</b><span>Rapid2, RegMap, Helios, US_Risk / RTCL, GPPS</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">2 · Build</span><b>Load and AI linkage</b><span>Curated lineage, LLM link assertions with evidence</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep hub"><span class="eyebrow">3 · Gate</span><b>Ontology + rules</b><span>18 validation rules run before anything is written</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">4 · Store</span><b>Neo4j knowledge graph</b><span>Labels and relationships from the ontology; vector and full-text indexes</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">5 · Reason</span><b>GraphRAG service</b><span>Question → Cypher → sub-graph → cited answer</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">6 · Use</span><b>Steward workspace</b><span>Ask, explore in Neo4j Bloom, review queue</span></div>
+</div>
+<p class="muted">Feedback loop: every SME decision in the review queue is written back as a validation on its link assertion, so the graph and the benchmark improve with use.</p>
+
+<div class="panel ask">
+ <h2>Ask the graph</h2>
+ <p class="muted">Demo on the EU AI Act sample graph. Questions are routed to the matching graph query; in production an LLM on the GenAI gateway does the routing and writes the final sentence.</p>
+ <form id="askf" class="askrow"><label for="q" class="vh">Your question</label><input id="q" type="search" autocomplete="off" placeholder="e.g. Which obligations does this alert change?"><button type="submit">Ask</button></form>
+ <div class="chips" id="sugg"></div>
+ <ol class="steps" id="steps">
+  <li data-s="1"><b>Understand</b><span>match the question to a known pattern</span></li>
+  <li data-s="2"><b>Retrieve</b><span>run Cypher on the graph</span></li>
+  <li data-s="3"><b>Ground</b><span>collect nodes and evidence</span></li>
+  <li data-s="4"><b>Answer</b><span>write it, citing what was used</span></li></ol>
+ <div id="ans" class="ans" aria-live="polite"></div>
+</div>
+
+<div class="grid2">
+ <div class="panel"><h3>How the ontology becomes a Neo4j graph</h3>
+  <div class="tablewrap"><table>
+   <tr><th>Ontology</th><th>Neo4j</th></tr>
+   <tr><td>Class</td><td>Node label, plus its parent labels and <span class="mono">:Entity</span> (a Regulatory Obligation is also a <span class="mono">:Requirement</span>)</td></tr>
+   <tr><td>Relationship</td><td>Relationship type in UPPER_SNAKE: <span class="mono">derivedFromSummary</span> → <span class="mono">DERIVED_FROM_SUMMARY</span></td></tr>
+   <tr><td>Controlled vocabulary</td><td>Node property with allowed values: <span class="mono">smeStatus: 'CONFIRMED'</span></td></tr>
+   <tr><td>Link Assertion</td><td>A node; the impact shortcut is written only once it is confirmed</td></tr>
+   <tr><td>Dates and validity</td><td>Native <span class="mono">date</span> properties for bitemporal replay</td></tr>
+   <tr><td>Text</td><td>Embeddings in vector indexes for GraphRAG entity lookup</td></tr>
+  </table></div></div>
+ <div class="panel"><h3>Guardrails for answers</h3><ul>
+  <li>Answers come only from graph paths; no path means no answer, and the steward is told so.</li>
+  <li>Every answer cites the nodes it used and shows its Cypher.</li>
+  <li>Only SME-confirmed links count as impact unless the steward asks to include pending ones.</li>
+  <li>Question, query, nodes and answer are logged for model risk review.</li>
+  <li>The 20 steward questions are the GraphRAG test set and must keep passing.</li></ul></div>
+</div>
+<details class="panel"><summary>All relationship types in Neo4j (${Object.keys(D.relmap).length})</summary>
+ <div class="tablewrap"><table><tr><th>Ontology relationship</th><th>Neo4j</th></tr>${Object.entries(D.relmap).sort().map(([k,v])=>`<tr><td class="mono">${esc(k)}</td><td class="mono">${esc(v)}</td></tr>`).join("")}</table></div></details>`;
+
+const SUG=["Which obligations does this alert change?","Where are the gaps?","Which controls are impacted?","Who owns the impacted controls?","Why is this control in scope?","By when must we comply?","What is the weather tomorrow?"];
+document.getElementById("sugg").innerHTML=SUG.map(s=>`<button type="button" class="chip">${esc(s)}</button>`).join("");
+document.querySelectorAll("#sugg .chip").forEach(b=>b.onclick=()=>{document.getElementById("q").value=b.textContent;ask(b.textContent)});
+document.getElementById("askf").onsubmit=e=>{e.preventDefault();const q=document.getElementById("q").value.trim();if(q)ask(q)};
+let askTimer=[];
+function ask(q){
+  askTimer.forEach(clearTimeout); askTimer=[];
+  const steps=[...document.querySelectorAll("#steps li")]; steps.forEach(s=>s.className="");
+  const out=document.getElementById("ans"); out.innerHTML="";
+  const ranked=route(q), [best,score]=ranked[0];
+  const delay=reduce?0:260;
+  const go=(i,f)=>askTimer.push(setTimeout(f,delay*i));
+  go(0,()=>steps[0].className="on");
+  if(score<2){
+    go(1,()=>{steps[0].className="done";out.innerHTML=`<div class="nores"><b>No grounded answer.</b> The graph has no path that answers this, so nothing is made up. Closest questions it can answer:<ul>${ranked.slice(0,3).filter(r=>r[1]>0).map(r=>`<li><button class="lnk" data-q="${esc(CQX[r[0]].q)}">${esc(CQX[r[0]].q)}</button></li>`).join("")||"<li>Try one of the suggestions above.</li>"}</ul></div>`;
+      out.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>{document.getElementById("q").value=b.dataset.q;ask(b.dataset.q)})});
+    return;
+  }
+  const cq=CQX[best], rows=cq.rows;
+  go(1,()=>{steps[0].className="done";steps[1].className="on"});
+  go(2,()=>{steps[1].className="done";steps[2].className="on"});
+  go(3,()=>{steps[2].className="done";steps[3].className="on"});
+  go(4,()=>{steps[3].className="done";
+    const cited=[...new Set(rows.flat().filter(v=>/^(ROB|RSM|LA|CTRL|1C|L1C|LR|PR|GAP|R2|CHG|RUN|IA)[-0-9A-Z]*$/i.test(v)||/^(ROB|RSM)\d$/.test(v)))].slice(0,10);
+    const path=CQX[best] && D.cqClasses[best] ? D.cqClasses[best].map(id=>byId[id]?byId[id].l:id).join(" → ") : "";
+    out.innerHTML=`<div class="ares">
+      <p class="answer">${esc(ANSWER[best](rows))}</p>
+      <div class="meta"><span class="pill p-MUST">${best}</span><span class="muted">Matched: ${esc(cq.q)}</span></div>
+      ${cited.length?`<div class="cite"><span class="muted">Grounded in</span>${cited.map(c=>`<span class="tag">${esc(c)}</span>`).join("")}</div>`:""}
+      <p class="muted"><b>Path used:</b> ${esc(path)}</p>
+      <div class="arow"><button class="btn2" id="showmap">Show in map</button></div>
+      <details><summary>Cypher run on Neo4j</summary><pre>${esc(D.cypher[best])}</pre></details>
+      <details><summary>Rows returned (${rows.length})</summary><div class="tablewrap"><table><tr>${cq.vars.map(v=>`<th>${esc(v)}</th>`).join("")}</tr>${rows.map(r=>`<tr>${r.map(x=>`<td>${esc(x)}</td>`).join("")}</tr>`).join("")}</table></div></details></div>`;
+    document.getElementById("showmap").onclick=()=>{sel=null;trail=[];view="focus";select("map");focus(PRIMARY[best])};
+  });
+}
+
+let start="overview"; try{const s=localStorage.getItem("rc2tab"); if(s&&TABS.some(t=>t[0]===s)) start=s}catch(e){}
+const h=location.hash.slice(1); if(TABS.some(t=>t[0]===h)) start=h;
+select(start);
+</script>
+
+<style>
+/* =====================================================================
+   v2.3 LIVE DATA ADD-ON - styles (uses the page's own colour tokens,
+   so light and dark themes both work)
+   ===================================================================== */
+.lv-load{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.lv-badge text{font:600 10.5px var(--mono)}
+.lv-off{opacity:.2!important;pointer-events:none}
+
+/* ---- use the full width of wide screens ---- */
+.wrap{max-width:var(--pagew,100%)!important;width:100%!important;padding-inline:clamp(12px,1.5vw,32px)!important}
+.lv-size{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.lv-size .zoom button{min-width:34px}
+.mapgrid .mapwrap,#lv-wrap{height:calc(100vh - 140px)!important;min-height:640px}
+
+/* ---- live graph ---- */
+#lv-svg{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+#lv-svg.drag{cursor:grabbing}
+.lv-node{cursor:pointer}
+.lv-node rect.box{fill:var(--surface);stroke:var(--line);stroke-width:1.3}
+.lv-node:hover rect.box{stroke:var(--fg)}
+.lv-node.sel rect.box{stroke:var(--accent);stroke-width:2.6}
+.lv-node.gap rect.box{stroke:var(--bad);stroke-dasharray:4 3;fill:var(--bad-soft)}
+.lv-node text{font:12px var(--sans);fill:var(--fg);pointer-events:none}
+.lv-dim{opacity:.13}
+.lv-edge{fill:none;stroke-width:1.6}
+.lv-edge.structure{stroke:var(--lineage);stroke-dasharray:3 3;opacity:.85}
+.lv-edge.structure-ai{stroke:var(--lineage)}
+.lv-edge.gap{stroke:var(--bad);stroke-dasharray:6 4}
+.lv-edge.impact{stroke:var(--muted)}
+.lv-edge.context{stroke:var(--context)}
+.lv-elab.context rect{stroke:var(--context)}
+/* intake journey strip */
+.jr{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap}
+.jr .js{flex:1 1 150px;min-width:0;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--surface);display:flex;flex-direction:column;gap:2px;cursor:pointer;font-size:12.5px;color:var(--muted)}
+.jr .js b{color:var(--fg);font-size:13.5px}
+.jr .js .v{font:600 12.5px var(--mono);color:var(--fg)}
+.jr .js.on{border-color:var(--accent);background:var(--accent-soft)}
+.jr .js .k{font:700 10.5px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--kc,var(--muted))}
+.jr .ja{align-self:center;color:var(--muted)}
+.pn-kv{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;font-size:13px}
+.pn-kv>span:nth-child(odd){color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.pn-yes{font:700 12px var(--sans);padding:2px 10px;border-radius:999px;background:var(--ok-soft);color:var(--ok)}
+.pn-no{font:700 12px var(--sans);padding:2px 10px;border-radius:999px;background:var(--bad-soft);color:var(--bad)}
+.pn-cat{font:700 12px var(--mono);padding:2px 10px;border-radius:999px;background:var(--sunk);color:var(--fg);border:1px solid var(--line)}
+.lv-edge.impact.v-agree{stroke:var(--ok)}
+.lv-edge.impact.v-disagree{stroke:var(--bad)}
+.lv-edge.impact.v-uncertain{stroke:var(--warn)}
+.lv-edge.hl{stroke-width:3.4}
+.lv-hit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer}
+.lv-elab{cursor:pointer}
+.lv-elab rect{fill:var(--surface);stroke:var(--line)}
+.lv-elab text{font:600 10px var(--mono);fill:var(--fg);pointer-events:none}
+.lv-elab.impact rect{stroke:var(--accent)}
+.lv-elab.gap rect{stroke:var(--bad)}
+.lv-elab:hover rect{stroke:var(--fg)}
+.lv-lane{fill:var(--sunk);stroke:var(--line)}
+.lv-lane-t{font:700 12px var(--sans);letter-spacing:.06em;fill:var(--muted)}
+.lv-col-t{font:600 10.5px var(--sans);letter-spacing:.06em;fill:var(--muted)}
+.lv-select{font:14px var(--sans);padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);max-width:440px}
+.lv-stats .stat b{font-size:22px}
+.lv-stats .stat.wide{grid-column:span 2}
+.lv-hint{font-size:13px;color:var(--muted)}
+.lv-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lv-tools button:disabled{opacity:.45;cursor:not-allowed}
+@keyframes lvIn{from{opacity:0}to{opacity:1}}
+.lv-new{animation:lvIn .5s ease both}
+.lv-more{cursor:pointer}
+.lv-more rect{fill:var(--accent)}
+.lv-more.done rect{fill:var(--sunk);stroke:var(--line)}
+.lv-more text{font:700 10.5px var(--mono);fill:#fff;pointer-events:none}
+.lv-more.done text{fill:var(--muted)}
+
+/* ---- side panel: structured cards ---- */
+#lv-ex>*{flex-shrink:0}
+.pn-sec{font:700 11.5px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:8px}
+.pn-sec .n{font:600 11px var(--mono);background:var(--fg);color:var(--bg);border-radius:999px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center}
+.pn-card{border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:10px 12px;background:var(--surface);display:flex;flex-direction:column;gap:6px}
+.pn-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pn-chip{font:600 11px var(--sans);color:#fff;border-radius:999px;padding:2px 8px;background:var(--c,var(--muted))}
+.pn-title{font-weight:600;font-size:14.5px}
+.pn-text{white-space:pre-wrap;font-size:13.5px;line-height:1.55;background:var(--sunk);padding:8px 10px;border-radius:6px}
+.pn-text.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--lines,6);overflow:hidden;padding-bottom:0;border-bottom:8px solid var(--sunk)}
+.pn-more{align-self:flex-start;font:600 12px var(--sans);color:var(--accent);background:none;border:0;padding:0;cursor:pointer}
+.pn-rel{display:flex;flex-direction:column;align-items:center;gap:2px;padding:2px 0}
+.pn-rel .arrow{color:var(--muted);font-size:16px;line-height:1}
+.pn-rel .verb{font:700 13px var(--mono);border:1.5px solid var(--kc,var(--line));border-radius:999px;padding:3px 12px;background:var(--surface)}
+.pn-rel small{font-size:11.5px;color:var(--muted)}
+.pn-evi{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.pn-vrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.pn-verdict{font:700 12.5px var(--sans);border-radius:6px;padding:4px 10px;background:var(--sunk);color:var(--fg)}
+.pn-verdict.agree{background:var(--ok-soft);color:var(--ok)}
+.pn-verdict.disagree{background:var(--bad-soft);color:var(--bad)}
+.pn-verdict.uncertain{background:var(--warn-soft);color:var(--warn)}
+.pn-meter{display:inline-flex;align-items:center;gap:6px}
+.pn-meter i{display:inline-block;width:70px;height:6px;border-radius:3px;background:var(--sunk);overflow:hidden;position:relative}
+.pn-meter i b{position:absolute;left:0;top:0;bottom:0;background:var(--fg)}
+.pn-q{font-size:13.5px;line-height:1.5;padding:7px 10px;border-radius:6px;background:var(--sunk);border-left:3px solid var(--qc)}
+.pn-ql{display:block;font:700 11px var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--qc);margin-bottom:2px}
+.pn-evi details summary{font-weight:600;color:var(--fg)}
+.pn-evi details p{font-size:13.5px;margin-top:6px}
+.pn-links{display:flex;flex-direction:column;gap:4px}
+.pn-link{display:grid;grid-template-columns:auto auto 1fr;gap:8px;align-items:center;font-size:13px;padding:5px 6px;border-radius:6px}
+.pn-link:hover{background:var(--sunk)}
+.pn-dir{color:var(--muted);font:600 11px var(--sans);text-transform:uppercase;width:38px}
+.pn-verb{font:600 11.5px var(--mono);border:1px solid var(--kc,var(--line));border-radius:999px;padding:1px 8px;white-space:nowrap}
+.pn-go{justify-self:start;font:500 13px var(--sans);background:var(--surface);color:var(--fg);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:6px;padding:3px 8px;cursor:pointer;text-align:left}
+.pn-go:hover{border-color:var(--fg)}
+.pn-ev{font:600 11.5px var(--sans);color:var(--accent);background:none;border:0;cursor:pointer;padding:0;margin-left:6px;text-decoration:underline}
+.pn-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.pn-group{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+.pn-group h5{margin:0;font-size:13px;display:flex;align-items:center;gap:8px}
+.pn-chips{display:flex;flex-wrap:wrap;gap:4px}
+.pn-onto{font-size:13px;line-height:1.5;text-align:center;max-width:95%;border:1px dashed var(--line);border-radius:8px;padding:6px 10px;margin:4px 0}
+.pn-onto .pn-ql{display:block}
+.pn-note{font-size:13px;color:var(--muted);border:1px dashed var(--line);border-radius:8px;padding:8px 10px}
+</style>
+
+<script>
+/* =====================================================================
+   v2.3 LIVE DATA ADD-ON
+   ---------------------------------------------------------------------
+   Loads ontology_demo_data.json (or all of its split parts) from the
+   user's computer. Nothing leaves the browser.
+
+   Two layers are kept apart, exactly as in the ontology:
+     STRUCTURE : how artefacts relate, regardless of any alert
+                 RGL has summary RSM, RSM decomposes to ROB,
+                 ROB implemented by Policy / operationalised by Procedure,
+                 LR mitigated by L1C, L1C has instance 1C.
+     IMPACT    : what one alert touches (AI link assertions with
+                 evidence and a judge verdict):
+                 Alert impacts RGL / RSM / ROB / LR / L1C / 1C.
+     GAP       : rule-based findings on the structure.
+   The ontology model above is untouched.
+   ===================================================================== */
+(function () {
+
+  const $ = (id) => document.getElementById(id);
+  const h = (s) => esc(Array.isArray(s) ? s.join(" | ") : s);       // page's esc()
+  const blank = (v) => v === null || v === undefined || v === "" || String(v).toLowerCase() === "nan";
+  const short = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+
+
+  /* -------------------------------------------------------------------
+     1. SAMPLE TYPES -> ONTOLOGY CLASSES, RELATIONS -> ONTOLOGY VERBS
+     ------------------------------------------------------------------- */
+  const TYPE_ALIAS = { IC: "1C", LIC: "L1C" };
+  const T = {
+    Alert:     { cls: "RegulatoryAlert",      lane: "mid", col: 0 },
+    RGL:       { cls: "Regulation",           lane: "reg", col: 1 },
+    RSM:       { cls: "RegulatorySummary",    lane: "reg", col: 2 },
+    ROB:       { cls: "RegulatoryObligation", lane: "reg", col: 3 },
+    Policy:    { cls: "Policy",               lane: "reg", col: 4 },
+    Procedure: { cls: "Procedure",            lane: "reg", col: 4 },
+    LR:        { cls: "LibraryRisk",          lane: "ctl", col: 1 },
+    L1C:       { cls: "LibraryControl",       lane: "ctl", col: 2 },
+    "1C":      { cls: "Control",              lane: "ctl", col: 3 },
+    Gap:       { cls: "Gap",                  lane: "parent", col: 5 },
+    // v2.4 intake context (ML classifiers at alert intake)
+    Jurisdiction: { cls: "Jurisdiction",      lane: "ctx", col: 1 },
+    Steward:      { cls: "Role",              lane: "ctx", col: 1 },
+    Theme:        { cls: "RegulatoryTheme",   lane: "ctx", col: 1 },
+    Taxonomy:     { cls: "RiskTaxonomyNode",  lane: "ctx", col: 1 },
+    LOB:          { cls: "BusinessUnit",      lane: "ctx", col: 1 },
+    LE:           { cls: "LegalEntity",       lane: "ctx", col: 1 },
+  };
+  const CTX_TYPES = new Set(["Jurisdiction", "Steward", "Theme", "Taxonomy", "LOB", "LE"]);
+  const colOf = (n) => n.col ?? (T[n.type] || {}).col ?? 5;
+
+  /* -------------------------------------------------------------------
+     1b. INTAKE DATA for the demo alerts (applicability, category and the
+         ML contextualisation tags). An alert node can also carry its own
+         "intake" object in the JSON; that wins over this table.
+     ------------------------------------------------------------------- */
+  const INTAKE = {
+    "133999": { ref: "RD-00000133999", applicable: "Yes", category: "RD",
+      title: "Pennsylvania Amends Insurance Producer Continuing Education Requirements (SB 1241)",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Insurance",
+      l1: "Regulatory Compliance Risk", l2: "Breach of regulatory duty to clients and other counterparties",
+      l3: "Failure to ensure sales outcomes are appropriate",
+      lob: "Group Insurance", le: "HSBC North America Holdings Inc." },
+    "159982": { ref: "RD-00000159982", applicable: "Yes", category: "RD",
+      title: "Ohio Amends Request for Information Procedures",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Consumer Protection",
+      l1: "Regulatory Compliance Risk", l2: "Breach of regulatory duty to clients and other counterparties",
+      l3: "Failure to protect client assets",
+      lob: "Wealth and Distribution", le: "HSBC North America Holdings Inc." },
+    "119934": { ref: "RD-00000119934", applicable: "Yes", category: "RD",
+      title: "SEC Approves FINRA's Amendments to Maintain Qualification Program",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Licensing, Registration and Permissions",
+      l1: "Regulatory Compliance Risk", l2: "Regulatory Licensing, Permissions & Rules",
+      l3: "Regulatory Compliance Regulatory Reporting Risk",
+      lob: "Wealth and Distribution", le: "HSBC North America Holdings Inc." },
+    "125919": { ref: "RD-00000125919", applicable: "Yes", category: "RD",
+      title: "California Amends Law on Reservist Deferred Compensation",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Consumer Protection",
+      l1: "Regulatory Compliance Risk", l2: "Breach of regulatory duty to clients and other counterparties",
+      l3: "Failure to protect client assets",
+      lob: "Wealth and Distribution", le: "HSBC North America Holdings Inc." },
+  };
+  const CATEGORY_TXT = { RD: "Regulatory development", CONSULTATION: "Consultation", NEWS: "News", FINE: "Fine / enforcement" };
+  const tLabel = (t) => (T[t] && byId[T[t].cls]) ? byId[T[t].cls].l : t;
+  const tShort = (t) => ({ Alert: "Alert", RGL: "Regulation", RSM: "Summary", ROB: "Obligation",
+                           Policy: "Policy", Procedure: "Procedure", LR: "Library risk",
+                           L1C: "Library control", "1C": "Control instance", Gap: "Gap",
+                           Jurisdiction: "Jurisdiction", Steward: "Risk steward", Theme: "Theme",
+                           Taxonomy: "Risk taxonomy", LOB: "Line of business", LE: "Legal entity" }[t] || t);
+  const tColor = (t) => (T[t] && byId[T[t].cls]) ? D.modules[byId[T[t].cls].m].c : "var(--muted)";
+
+  /* Every link in the data is mapped to the ontology relationship it
+     instantiates (D.rels, the same list the Map tab draws). Wording on the
+     lines and in the panel comes from the ontology itself.
+       [from class, property, to class, data direction vs ontology direction] */
+  const ONTO = {
+    has_summary:              ["RegulatorySummary",    "partOfRegulation",     "Regulation",           "reverse"],
+    has_obligation:           ["RegulatoryObligation", "derivedFromSummary",   "RegulatorySummary",    "reverse"],
+    implemented_by_policy:    ["PolicyRequirement",    "implementsObligation", "RegulatoryObligation", "reverse"],
+    implemented_by_procedure: ["Requirement",          "governsActivity",      "ProcedureStep",        "forward"],
+    mitigated_by:             ["LibraryRisk",          "mitigatedBy",          "LibraryControl",       "forward"],
+    instantiated_as:          ["Control",              "instanceOf",           "LibraryControl",       "reverse"],
+    has_gap:                  ["Gap",                  "onRequirement",        "Requirement",          "reverse"],
+    impacts_summary:          ["RegulatoryChange",     "affectsSummary",       "RegulatorySummary",    "forward"],
+    impacts_obligation:       ["RegulatoryChange",     "affectsObligation",    "RegulatoryObligation", "forward"],
+    impacts_control_instance: ["RegulatoryChange",     "impactsControl",       "Control",              "forward"],
+    // v2.4 intake context
+    in_jurisdiction:          ["RegulatoryAlert",      "inJurisdiction",       "Jurisdiction",         "forward"],
+    broader_jurisdiction:     ["Jurisdiction",         "broaderJurisdiction",  "Jurisdiction",         "forward"],
+    tagged_steward:           ["RegulatoryAlert",      "taggedSteward",        "Role",                 "forward"],
+    has_theme:                ["RegulatoryAlert",      "hasTheme",             "RegulatoryTheme",      "forward"],
+    tagged_risk:              ["RegulatoryAlert",      "taggedRisk",           "RiskTaxonomyNode",     "forward"],
+    broader_risk:             ["RiskTaxonomyNode",     "broaderRisk",          "RiskTaxonomyNode",     "forward"],
+    tagged_business:          ["RegulatoryAlert",      "taggedBusiness",       "BusinessUnit",         "forward"],
+    tagged_legal_entity:      ["RegulatoryAlert",      "taggedLegalEntity",    "LegalEntity",          "forward"],
+  };
+  // Granularity of the LinkAssertion for each impact link (ontology vocab).
+  const GRAN = { impacts_regulation: "RGL", impacts_summary: "RSM", impacts_obligation: "ROB",
+                 impacts_risk: "LR", impacts_control: "L1C", impacts_control_instance: "CONTROL_1C" };
+
+  const words = (p) => p.replace(/([A-Z])/g, " $1").toLowerCase();
+  const phrase = (p) => (typeof PHRASE !== "undefined" && PHRASE[p]) || words(p);
+
+  // The ontology relationship behind a data relation (or null).
+  function ontoRel(r) {
+    const m = ONTO[r]; if (!m) return null;
+    const rel = D.rels.find((x) => x.f === m[0] && x.r === m[1] && x.t === m[2]);
+    return rel ? { ...rel, dir: m[3] } : null;
+  }
+
+  // relation -> [verb drawn on the line, ontology property]
+  const REL = {
+    impacts_regulation:       ["impacts", "LinkAssertion · RGL"],
+    impacts_summary:          ["impacts", "LinkAssertion · RSM"],
+    impacts_obligation:       ["impacts", "LinkAssertion · ROB"],
+    impacts_risk:             ["impacts", "LinkAssertion · LR"],
+    impacts_control:          ["impacts", "LinkAssertion · L1C"],
+    impacts_control_instance: ["impacts", "LinkAssertion · CONTROL_1C"],
+    has_summary:              ["has summary",        "hasSummary"],
+    has_obligation:           ["decomposes to",      "decomposesTo"],
+    implemented_by_policy:    ["implemented by",     "implementedByPolicy"],
+    implemented_by_procedure: ["operationalised by", "governsActivity"],
+    mitigated_by:             ["mitigated by",       "mitigatedBy"],
+    instantiated_as:          ["has instance",       "hasInstance"],
+    has_gap:                  ["has gap",            "identifiesGap"],
+  };
+  // Line label = the ontology's own wording, read in the direction of the line.
+  // Short line labels for the intake tags (the gap next to the alert is narrow);
+  // the panel still shows the full ontology property.
+  const SHORT_LABEL = { in_jurisdiction: "location", broader_jurisdiction: "within",
+    tagged_steward: "steward", has_theme: "theme", tagged_risk: "risk tag", broader_risk: "sits under",
+    tagged_business: "business", tagged_legal_entity: "entity" };
+  function verb(r) {
+    if (SHORT_LABEL[r]) return SHORT_LABEL[r];
+    const o = ontoRel(r);
+    if (o && (o.dir === "forward" || o.inv)) return o.dir === "forward" ? phrase(o.r) : phrase(o.inv);
+    if (GRAN[r]) return "asserts impact";
+    return (REL[r] || [r.replace(/_/g, " ")])[0];
+  }
+  function prop(r) {
+    const o = ontoRel(r);
+    const base = o ? `${o.f} ${o.r} ${o.t}` : "";
+    if (GRAN[r]) return (base ? base + " · " : "") + "LinkAssertion · granularity " + GRAN[r];
+    return base || (REL[r] || ["", ""])[1];
+  }
+  // The ontology sentence, as on the Map tab: "Each X <verb> <card> Y."
+  function ontoSentence(r) {
+    const o = ontoRel(r);
+    if (!o) return GRAN[r]
+      ? `Recorded as a <b>Link Assertion</b> at granularity <span class="tag">${GRAN[r]}</span>. It becomes an impact edge only once CONFIRMED.`
+      : "";
+    const card = (typeof CARD !== "undefined" && CARD[o.card]) || o.card;
+    const col = KIND[o.k] ? KIND[o.k][1] : "var(--line)";
+    return `Each <b>${h(byId[o.f].l)}</b> <span class="pn-verb" style="--kc:${col}">${h(phrase(o.r))}</span> ${h(card)} <b>${h(byId[o.t].l)}</b>.` +
+      (o.n ? ` <span class="muted">${h(o.n.replace(/\.?$/, "."))}</span>` : "") +
+      (GRAN[r] ? ` <span class="muted">Until CONFIRMED it is a Link Assertion (granularity ${GRAN[r]}); the alert reports the change.</span>` : "");
+  }
+
+  // Which layer an edge belongs to.
+  function layerOf(e) {
+    if (e.kind === "DERIVED") return "gap";
+    if (e.kind === "CONTEXT") return "context";
+    if (nodeById[e.source].type === "Alert") return "impact";
+    return e.kind === "AI_LINK" ? "structure-ai" : "structure";
+  }
+  const LAYER_TXT = {
+    impact:         ["Impact link", "AI-assessed: this alert touches this record", "var(--accent)"],
+    structure:      ["Ontology structure", "From the system of record (RegMap / Helios)", "var(--lineage)"],
+    "structure-ai": ["Ontology structure", "AI-built link, not alert-specific (obligation → GPPS)", "var(--lineage)"],
+    gap:            ["Gap finding", "Rule: something the structure expects is missing", "var(--bad)"],
+    context:        ["Intake context", "Tagged at alert intake by an ML classifier (contextualisation)", "var(--context)"],
+  };
+
+  function vClass(v) {
+    const s = String(v || "").toUpperCase();
+    if (s === "AGREE" || s === "CONFIRMED") return "agree";
+    if (s === "DISAGREE" || s === "DISPUTED") return "disagree";
+    if (s === "UNCERTAIN" || s === "NEEDS_SME") return "uncertain";
+    return "";
+  }
+  const vText = (v) => ({ agree: "✓ Judge confirms", disagree: "✗ Judge disputes",
+                          uncertain: "? Judge unsure → SME" }[vClass(v)] || "Not judged");
+
+
+  /* -------------------------------------------------------------------
+     2. STATE
+     ------------------------------------------------------------------- */
+  let DATA = null, nodeById = {}, inE = {}, outE = {};
+  let mapOn = true;                 // live counts on the Map tab
+  let cur = "ALL";                  // alert filter
+  let layer = "both";               // "both" | "structure" | "impact"
+  let mode = "step";                // "step" = reveal on click, "all" = everything
+  let R = new Set();                // revealed records (step mode)
+  let fresh = new Set();            // just revealed -> animate once
+  let KIDS = {}, PARENTS = {};      // drawn children / parents in the current view
+  let selL = null;                  // { kind: "node"|"edge", id }
+  let P = {};                       // node positions
+  let TF = { x: 0, y: 0, k: 1 };    // pan / zoom
+  let lastText = "";                // joined, cleaned JSON text
+
+
+  /* -------------------------------------------------------------------
+     3. HEADER: load, save-as-one-file, status
+     ------------------------------------------------------------------- */
+  document.querySelector("header").insertAdjacentHTML("beforeend", `
+    <div class="lv-load">
+      <button class="ex-toggle" id="lv-loadbtn">Load live data</button>
+      <input type="file" id="lv-file" multiple hidden>
+      <button class="btn2" id="lv-save" hidden title="Save the joined parts as one ontology_demo_data.json">Save as one file</button>
+      <span class="lv-size" title="Page width and size. Remembered on this computer.">
+        Width <span class="zoom"><button id="pw-full" aria-pressed="true">Full</button><button id="pw-1600">Wide</button><button id="pw-1240">Narrow</button></span>
+        Size <span class="zoom"><button id="pz-out" aria-label="Smaller">A−</button><button id="pz-val">100%</button><button id="pz-in" aria-label="Bigger">A+</button></span>
+      </span>
+      <span class="muted" id="lv-status" style="font-size:13px">No sample loaded · the ontology is shown without data</span>
+    </div>`);
+  $("ver").textContent = "v2.4";
+
+  /* ---- Page width + size (saved per computer) ----------------------
+     Width : Full = whole screen, Wide = 1600 px, Narrow = 1240 px.
+     Size  : scales everything (text, boxes, graph) from 60% to 200%.  */
+  const PW = { full: "100%", "1600": "1600px", "1240": "1240px" };
+  let pageW = "full", pageZ = 1;
+  try { pageW = localStorage.getItem("lv-pagew") || "full"; pageZ = Number(localStorage.getItem("lv-pagez")) || 1; } catch (e) {}
+  function applyPage() {
+    document.documentElement.style.setProperty("--pagew", PW[pageW] || "100%");
+    document.body.style.zoom = pageZ;
+    ["full", "1600", "1240"].forEach((k) => $("pw-" + k).setAttribute("aria-pressed", k === pageW));
+    $("pz-val").textContent = Math.round(pageZ * 100) + "%";
+    try { localStorage.setItem("lv-pagew", pageW); localStorage.setItem("lv-pagez", pageZ); } catch (e) {}
+    setTimeout(() => {
+      if (!$("p-map").hidden) drawMap();
+      if (typeof fit === "function") fit();
+    }, 60);
+  }
+  ["full", "1600", "1240"].forEach((k) => { $("pw-" + k).onclick = () => { pageW = k; applyPage(); }; });
+  $("pz-in").onclick  = () => { pageZ = Math.min(2, +(pageZ + 0.1).toFixed(2)); applyPage(); };
+  $("pz-out").onclick = () => { pageZ = Math.max(0.6, +(pageZ - 0.1).toFixed(2)); applyPage(); };
+  $("pz-val").onclick = () => { pageZ = 1; applyPage(); };
+
+  $("lv-loadbtn").onclick = () => $("lv-file").click();
+  $("lv-file").onchange = (e) => readFiles(e.target.files);
+  document.addEventListener("dragover", (e) => e.preventDefault());
+  document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files.length) readFiles(e.dataTransfer.files);
+  });
+
+  // One JSON file, or ALL split parts selected together (joined in name order).
+  function readFiles(list) {
+    const files = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    if (!files.length) return;
+    Promise.all(files.map((f) => f.text())).then((texts) => {
+      // Python writes missing numbers as bare NaN / Infinity: make them null.
+      const clean = texts.join("").replace(/([:\[,]\s*)(NaN|-?Infinity)(?=\s*[,\]}])/g, "$1null");
+      try {
+        load(JSON.parse(clean));
+        lastText = clean;
+        $("lv-save").hidden = files.length < 2;
+      } catch (err) {
+        alert("Could not read the data.\n\nIf you loaded split parts, select ALL parts together.\n\n" + err.message);
+      }
+    });
+  }
+
+  $("lv-save").onclick = () => {
+    if (!lastText) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lastText], { type: "application/json" }));
+    a.download = "ontology_demo_data.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+
+  // Silent attempt when the page is served from the data folder.
+  fetch("ontology_demo_data.json").then((r) => (r.ok ? r.json() : null))
+    .then((d) => { if (d) load(d); }).catch(() => {});
+
+
+  /* -------------------------------------------------------------------
+     4. COUNTS PER ONTOLOGY CLASS
+     ------------------------------------------------------------------- */
+  function countFor(cls) {
+    if (!DATA) return 0;
+    if (cls === "LinkAssertion") return DATA.edges.filter((e) => e.kind === "AI_LINK").length;
+    if (cls === "EvidenceOccurrence")
+      return DATA.edges.reduce((a, e) => a + (blank(e.evidence_from) ? 0 : 1) + (blank(e.evidence_to) ? 0 : 1), 0);
+    return DATA.nodes.filter((n) => T[n.type] && T[n.type].cls === cls).length;
+  }
+  const instancesOf = (cls) => DATA ? DATA.nodes.filter((n) => T[n.type] && T[n.type].cls === cls) : [];
+
+
+  /* -------------------------------------------------------------------
+     5. MAP TAB: light up classes with data, grey out the rest
+     ------------------------------------------------------------------- */
+  document.querySelector("#p-map .maptools").insertAdjacentHTML("beforeend",
+    `<button class="ex-toggle" id="lv-maptoggle" hidden aria-pressed="true">Live data on map: ON</button>`);
+  $("lv-maptoggle").onclick = () => {
+    mapOn = !mapOn;
+    $("lv-maptoggle").textContent = "Live data on map: " + (mapOn ? "ON" : "OFF");
+    $("lv-maptoggle").setAttribute("aria-pressed", mapOn);
+    drawMap();
+  };
+
+  const baseDrawMap = drawMap;
+  drawMap = function () { baseDrawMap(); if (DATA && mapOn) decorateMap(); };
+
+  function decorateMap() {
+    $("svg").querySelectorAll(".node").forEach((g) => {
+      const id = g.dataset.id, n = countFor(id), r = g.querySelector("rect");
+      if (!r) return;
+      if (n > 0) {
+        const x = +r.getAttribute("x") + +r.getAttribute("width"), y = +r.getAttribute("y");
+        const w = String(n).length * 7 + 12;
+        g.insertAdjacentHTML("beforeend",
+          `<g class="lv-badge"><rect x="${x - w + 6}" y="${y - 8}" width="${w}" height="16" rx="8" fill="var(--ok)"/>
+           <text x="${x - w / 2 + 6}" y="${y + 4}" text-anchor="middle" fill="#fff">${n}</text>
+           <title>${n} in the live sample</title></g>`);
+      } else {
+        g.classList.add("lv-off");
+        g.removeAttribute("tabindex");
+      }
+    });
+
+    if (!sel) return;
+    const ex = $("explain"), n = countFor(sel);
+    if (n > 0) {
+      const inst = instancesOf(sel);
+      let html = `<h4>In the live sample <span class="count">${n}</span></h4>`;
+      html += inst.length
+        ? `<div class="chips">${inst.slice(0, 60).map((x) =>
+            `<button class="chip" data-lv="${h(x.id)}">${h(short(x.title || x.id, 34))}</button>`).join("")}</div>`
+        : `<p class="muted">${sel === "LinkAssertion"
+            ? "Every AI link in the sample, each with score, confidence, evidence quotes, reasoning and the independent judge's verdict."
+            : "Verbatim quotes from the alert and from the target text that support each AI link."}</p>`;
+      html += `<div><button class="ex-toggle" data-lv="">Open in Live data ▸</button></div>`;
+      ex.insertAdjacentHTML("beforeend", html);
+      ex.querySelectorAll("[data-lv]").forEach((b) => (b.onclick = () => {
+        select("live");
+        if (b.dataset.lv) gotoNode(b.dataset.lv);
+      }));
+    } else {
+      ex.insertAdjacentHTML("beforeend", `<p class="muted"><b>No data linked yet</b> for this class in the live sample.</p>`);
+    }
+  }
+
+
+  /* -------------------------------------------------------------------
+     6. LIVE DATA TAB (inserted after "Map")
+     ------------------------------------------------------------------- */
+  TABS.push(["live", "Live data"]);
+  const tabBtn = document.createElement("button");
+  tabBtn.role = "tab"; tabBtn.id = "t-live"; tabBtn.textContent = "Live data";
+  tabBtn.setAttribute("aria-controls", "p-live");
+  tabBtn.onclick = () => select("live");
+  $("tabs").insertBefore(tabBtn, $("t-cq"));
+
+  const sec = document.createElement("section");
+  sec.role = "tabpanel"; sec.id = "p-live"; sec.hidden = true;
+  sec.setAttribute("aria-labelledby", "t-live");
+  $("panels").appendChild(sec);
+  sec.innerHTML = `
+    <div class="panel" id="lv-empty">
+      <h2>Live data</h2>
+      <p>Load the sample (<span class="mono">ontology_demo_data.json</span>, or all of its parts together) to trace
+         real alerts through the ontology: regulation → obligation → policy and procedure, and
+         risk → library control → control instance, with the evidence behind every AI link.</p>
+      <div><button class="ex-toggle" id="lv-load2">Load live data</button></div>
+    </div>
+    <div id="lv-body" hidden style="display:flex;flex-direction:column;gap:12px">
+      <div class="maptools">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select class="lv-select" id="lv-alert" aria-label="Alert"></select>
+          <input type="search" id="lv-search" placeholder="Find an ID or title, then Enter">
+        </div>
+        <div class="zoom" role="group" aria-label="Zoom">
+          <button id="lv-out" aria-label="Zoom out">−</button><button id="lv-fit">Fit</button><button id="lv-in" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+      <div class="maptools">
+        <div class="lv-tools">
+          <span class="muted" style="font-size:13px">Layer</span>
+          <div class="seg" role="group" aria-label="Layer">
+            <button id="lv-l-both">Everything</button><button id="lv-l-context">Alert context</button><button id="lv-l-structure">Ontology structure</button><button id="lv-l-impact">Alert impact</button>
+          </div>
+        </div>
+        <div class="lv-tools">
+          <div class="seg" role="group" aria-label="Reveal mode">
+            <button id="lv-m-step">Step by step</button><button id="lv-m-all">Show all</button>
+          </div>
+          <button class="ex-toggle" id="lv-next">Next step ▸</button>
+          <button class="btn2" id="lv-reset">Reset</button>
+        </div>
+      </div>
+      <div class="jr" id="lv-journey"></div>
+      <div class="lv-hint" id="lv-hint"></div>
+      <div class="stats lv-stats" id="lv-stats"></div>
+      <div class="legend" id="lv-legend"></div>
+      <div class="mapgrid" id="lv-grid">
+        <div class="mapwrap" id="lv-wrap" style="overflow:hidden">
+          <svg id="lv-svg" role="img" aria-label="Live data graph"><g id="lv-vp"></g></svg>
+        </div>
+        <aside class="explain" id="lv-ex" aria-live="polite"></aside>
+      </div>
+    </div>`;
+  $("lv-load2").onclick = () => $("lv-file").click();
+
+  $("lv-legend").innerHTML = [
+    ["var(--ok)",      "Impact · judge confirms", ""],
+    ["var(--bad)",     "Impact · judge disputes", ""],
+    ["var(--warn)",    "Impact · judge unsure → SME", ""],
+    ["var(--muted)",   "Impact · not judged", ""],
+    ["var(--lineage)", "Ontology structure", "dotted"],
+    ["var(--bad)",     "Gap (rule)", "dashed"],
+    ["var(--context)", "Intake context (ML tag)", ""],
+  ].map(([c, t, s]) => `<span><i style="border-color:${c};${s ? "border-top-style:" + s : ""}"></i>${t}</span>`).join("")
+    + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span><span>Line labels use the ontology's own relationship names</span>`;
+
+  const baseSelect = select;
+  select = function (id) { baseSelect(id); if (id === "live") showLive(); };
+
+  function showLive() {
+    $("lv-empty").hidden = !!DATA;
+    $("lv-body").hidden = !DATA;
+    if (DATA) { render(); requestAnimationFrame(fit); }
+  }
+
+
+  /* -------------------------------------------------------------------
+     7. LOAD
+     ------------------------------------------------------------------- */
+  function load(d) {
+    if (!d || !Array.isArray(d.nodes) || !Array.isArray(d.edges)) {
+      alert("This is not ontology_demo_data.json (it needs 'nodes' and 'edges').");
+      return;
+    }
+    d.nodes.forEach((n) => { n.type = TYPE_ALIAS[n.type] || n.type; });
+    addIntake(d);
+    nodeById = {}; inE = {}; outE = {};
+    d.nodes.forEach((n) => { nodeById[n.id] = n; inE[n.id] = []; outE[n.id] = []; });
+    d.edges = d.edges.filter((e) => nodeById[e.source] && nodeById[e.target]);
+    d.edges.forEach((e, i) => { e._i = i; outE[e.source].push(e); inE[e.target].push(e); });
+    DATA = d; cur = "ALL"; selL = null;
+    d.edges.forEach((e) => { e._layer = layerOf(e); });
+
+    const alerts = d.nodes.filter((n) => n.type === "Alert");
+    $("lv-alert").innerHTML = `<option value="ALL">All sample alerts (${alerts.length})</option>` +
+      alerts.map((a) => `<option value="${h(a.id)}">${h(a.title)} · ${h(short(a.text, 60))}</option>`).join("");
+
+    const ai = d.edges.filter((e) => e.kind === "AI_LINK").length;
+    $("lv-status").textContent =
+      `Live sample: ${d.nodes.length} records · ${d.edges.length} links (${ai} AI links with evidence)` +
+      (d.meta && d.meta.generated ? ` · built ${d.meta.generated}` : "");
+    $("lv-loadbtn").textContent = "Reload data";
+    $("lv-maptoggle").hidden = false;
+    resetReveal();
+    select("live");
+  }
+
+
+  /* Turn each alert's intake record into ontology nodes and links.
+     Shared values (one steward, one legal entity...) become ONE node, so
+     the graph shows which alerts share context. */
+  function addIntake(d) {
+    const have = new Set(d.nodes.map((n) => n.id));
+    const node = (id, type, title, extra = {}) => {
+      if (!have.has(id)) { d.nodes.push({ id, type, title, text: "", ...extra }); have.add(id); }
+      return id;
+    };
+    const seenE = new Set(d.edges.map((e) => e.source + "|" + e.target + "|" + e.relation));
+    const edge = (s, t, r) => {
+      const k = s + "|" + t + "|" + r;
+      if (!seenE.has(k)) { d.edges.push({ source: s, target: t, relation: r, kind: "CONTEXT" }); seenE.add(k); }
+    };
+    const slug = (x) => String(x).trim().replace(/\s+/g, "_");
+    d.nodes.filter((n) => n.type === "Alert").forEach((a) => {
+      const key = a.id.replace(/^ALERT-/, "");
+      const x = a.intake || INTAKE[key];
+      if (!x) return;
+      a.intake = x;
+      if (x.ref || x.title) a.title = [x.ref, x.title].filter(Boolean).join(" · ");
+      // Location: "Global/United States" -> United States, broader Global
+      const parts = String(x.location || "").split("/").map((p) => p.trim()).filter(Boolean);
+      let child = null;
+      parts.reverse().forEach((p, i) => {
+        const id = node("JUR-" + slug(p), "Jurisdiction", p, { col: 1 + i });
+        if (child) edge(child, id, "broader_jurisdiction"); else edge(a.id, id, "in_jurisdiction");
+        child = id;
+      });
+      if (x.steward) edge(a.id, node("STEW-" + slug(x.steward), "Steward", x.steward), "tagged_steward");
+      if (x.theme)   edge(a.id, node("THEME-" + slug(x.theme), "Theme", x.theme), "has_theme");
+      // Risk taxonomy: alert is tagged at L3; L3 -> L2 -> L1 is the hierarchy
+      const lv = [[x.l3, "L3", 1], [x.l2, "L2", 2], [x.l1, "L1", 3]].filter((v) => v[0]);
+      let prev = null;
+      lv.forEach(([name, level, col]) => {
+        const id = node("TAX-" + level + "-" + slug(name), "Taxonomy", level + " · " + name, { col, level });
+        if (prev) edge(prev, id, "broader_risk"); else edge(a.id, id, "tagged_risk");
+        prev = id;
+      });
+      if (x.lob) edge(a.id, node("LOB-" + slug(x.lob), "LOB", x.lob), "tagged_business");
+      if (x.le)  edge(a.id, node("LE-" + slug(x.le), "LE", x.le), "tagged_legal_entity");
+    });
+  }
+
+  /* -------------------------------------------------------------------
+     8. WHAT IS IN VIEW
+        scope  = records reachable from the chosen alert(s)
+        layer  = which kinds of links are drawn
+        reveal = which records are shown so far (step mode)
+     ------------------------------------------------------------------- */
+  const COL_W = 330, ROW_H = 36, NODE_W = 220, NODE_H = 28, LANE_GAP = 100, TOP = 60;
+
+  function scopeSet() {
+    if (cur === "ALL") return new Set(DATA.nodes.map((n) => n.id));
+    const seen = new Set([cur]), queue = [cur];
+    while (queue.length) {
+      const id = queue.shift();
+      outE[id].forEach((e) => { if (!seen.has(e.target)) { seen.add(e.target); queue.push(e.target); } });
+    }
+    return seen;
+  }
+
+  // Edges drawn for the active layer.
+  function layerEdges(scope) {
+    const inScope = (e) => scope.has(e.source) && scope.has(e.target);
+    if (layer === "impact") return DATA.edges.filter((e) => inScope(e) && e._layer === "impact");
+    if (layer === "context") return DATA.edges.filter((e) => inScope(e) && e._layer === "context");
+    if (layer === "structure") return DATA.edges.filter((e) => inScope(e) && e._layer !== "impact" && e._layer !== "context");
+    // both: structure everywhere; an alert's impact line is drawn only to
+    // records with no structural parent in view (the others carry the
+    // impact as the coloured dot, and in the side panel).
+    return DATA.edges.filter((e) => {
+      if (!inScope(e)) return false;
+      if (e._layer !== "impact") return true;          // structure, gaps and intake context
+      return !inE[e.target].some((p) => scope.has(p.source) && p._layer !== "impact");
+    });
+  }
+
+  // Records that take part in the active layer.
+  function layerNodes(scope, edges) {
+    const s = new Set();
+    edges.forEach((e) => { s.add(e.source); s.add(e.target); });
+    if (layer !== "structure") scope.forEach((id) => { if (nodeById[id].type === "Alert") s.add(id); });
+    if (layer === "structure") scope.forEach((id) => {          // impacted records with no structure link
+      const t = nodeById[id].type;
+      if (t !== "Alert" && !CTX_TYPES.has(t)) s.add(id);
+    });
+    return s;
+  }
+
+  function computeView() {
+    const scope = scopeSet();
+    const edges = layerEdges(scope);
+    const nodes = layerNodes(scope, edges);
+    KIDS = {}; PARENTS = {};
+    edges.forEach((e) => {
+      (KIDS[e.source] = KIDS[e.source] || []).push(e.target);
+      (PARENTS[e.target] = PARENTS[e.target] || []).push(e.source);
+    });
+    return { scope, edges, nodes };
+  }
+
+  function resetReveal() {
+    const { nodes } = computeView();
+    // Start from the roots: records nothing in view points to (the alerts,
+    // or in the structure layer the top of each chain).
+    R = new Set([...nodes].filter((id) => !(PARENTS[id] || []).length));
+    fresh = new Set(R);
+  }
+  function reveal(ids) { ids.forEach((k) => { if (!R.has(k)) { R.add(k); fresh.add(k); } }); }
+  // An alert opens in two steps, like the real process: first its intake
+  // context (applicability, category, ML tags), then what it impacts.
+  function expand(id) {
+    const kids = KIDS[id] || [];
+    if (nodeById[id].type === "Alert") {
+      const ctx = kids.filter((k) => CTX_TYPES.has(nodeById[k].type) && !R.has(k));
+      if (ctx.length) { reveal(ctx); return; }
+    }
+    reveal(kids);
+  }
+  function fold(id) {
+    (KIDS[id] || []).forEach((k) => {
+      if (!R.has(k)) return;
+      const other = (PARENTS[k] || []).some((p) => p !== id && R.has(p));
+      if (!other) { fold(k); R.delete(k); }
+    });
+  }
+  function nextStep() {
+    [...R].filter((id) => (KIDS[id] || []).some((k) => !R.has(k))).forEach(expand);
+    render();
+  }
+  function revealPath(id) {
+    let x = id, guard = 0;
+    while (x && !R.has(x) && guard++ < 50) { R.add(x); fresh.add(x); x = (PARENTS[x] || [])[0]; }
+  }
+
+
+  /* -------------------------------------------------------------------
+     9. LAYOUT: two lanes, fixed positions for the whole scope
+        Regulatory chain : Alert | RGL | RSM | ROB | Policy + Procedure | Gaps
+        Risk & control   : Alert | LR  | L1C | 1C  |                   | Gaps
+     ------------------------------------------------------------------- */
+  function laneOf(id) {
+    const n = nodeById[id];
+    if (n.type === "Gap") { const p = inE[id][0]; return p ? laneOf(p.source) : "reg"; }
+    return (T[n.type] || { lane: "reg" }).lane;
+  }
+
+  function layoutGraph(scope) {
+    P = {};
+    const cols = {}, alerts = [];
+    scope.forEach((id) => {
+      const n = nodeById[id];
+      if (n.type === "Alert") { alerts.push(id); return; }
+      const key = laneOf(id) + "|" + colOf(n);
+      (cols[key] = cols[key] || []).push(id);
+    });
+
+    // Order each column next to its structural parent (falls back to alert).
+    const order = {};
+    alerts.sort().forEach((id, i) => { order[id] = i / Math.max(1, alerts.length); });
+    const parentsOf = (id) => {
+      const s = inE[id].filter((e) => scope.has(e.source) && e._layer !== "impact").map((e) => e.source);
+      return s.length ? s : inE[id].filter((e) => scope.has(e.source)).map((e) => e.source);
+    };
+    const typeRank = { Policy: 0, Procedure: 1,
+      Jurisdiction: 0, Steward: 1, Theme: 2, Taxonomy: 3, LOB: 4, LE: 5 };
+    ["reg", "ctx", "ctl"].forEach((lane) => {
+      for (let c = 1; c <= 5; c++) {
+        const list = cols[lane + "|" + c];
+        if (!list) continue;
+        const bary = (id) => {
+          const ps = parentsOf(id).filter((p) => p in order);
+          return ps.length ? ps.reduce((s, p) => s + order[p], 0) / ps.length : 1;
+        };
+        list.sort((a, b) =>
+          (typeRank[nodeById[a].type] ?? 0) - (typeRank[nodeById[b].type] ?? 0) ||
+          bary(a) - bary(b) ||
+          String(nodeById[a].title).localeCompare(String(nodeById[b].title)));
+        list.forEach((id, i) => { order[id] = i / list.length; });
+      }
+    });
+
+    const count = (lane) => Math.max(0, ...[1, 2, 3, 4, 5].map((c) => (cols[lane + "|" + c] || []).length));
+    const laneH = (lane) => Math.max(1, count(lane)) * ROW_H;
+    // Regulatory chain on top, intake context in the middle (next to the
+    // alerts), risk & control at the bottom.
+    const lanes = {};
+    let top = TOP;
+    ["reg", "ctx", "ctl"].forEach((lane) => {
+      if (lane === "ctx" && !count("ctx")) return;
+      lanes[lane] = { top, h: laneH(lane) };
+      top += laneH(lane) + LANE_GAP;
+    });
+
+    Object.entries(cols).forEach(([key, list]) => {
+      const [lane, c] = key.split("|"), L = lanes[lane];
+      const off = (L.h - list.length * ROW_H) / 2;
+      list.forEach((id, i) => { P[id] = { x: 40 + Number(c) * COL_W, y: L.top + off + i * ROW_H }; });
+    });
+
+    const midY = lanes.ctx
+      ? lanes.ctx.top + lanes.ctx.h / 2 - NODE_H / 2
+      : lanes.reg.top + lanes.reg.h + LANE_GAP / 2 - NODE_H / 2;
+    alerts.forEach((id, i) => {
+      P[id] = { x: 40, y: midY - ((alerts.length - 1) / 2) * ROW_H * 1.3 + i * ROW_H * 1.3 };
+    });
+    return { cols, lanes };
+  }
+
+
+  /* -------------------------------------------------------------------
+     10. RENDER
+     ------------------------------------------------------------------- */
+  function render() {
+    const { scope, edges, nodes } = computeView();
+    const { cols, lanes } = layoutGraph(scope);
+    const vis = mode === "all" ? nodes : new Set([...R].filter((id) => nodes.has(id)));
+    const shown = edges.filter((e) => vis.has(e.source) && vis.has(e.target));
+
+    // Show-all mode: clicking a box highlights its own links.
+    let fs = null;
+    if (mode === "all" && selL && selL.kind === "node" && vis.has(selL.id)) {
+      fs = new Set([selL.id]);
+      shown.forEach((e) => { if (e.source === selL.id || e.target === selL.id) { fs.add(e.source); fs.add(e.target); } });
+    } else if (mode === "all" && selL && selL.kind === "edge") {
+      const e = DATA.edges[selL.id]; fs = new Set([e.source, e.target]);
+    }
+    const labelOn = (e) => mode === "step" || (fs && fs.has(e.source) && fs.has(e.target));
+
+    let order = 0;
+    const anim = (id) => fresh.has(id) ? ` lv-new" style="animation-delay:${Math.min(order++ * 35, 900)}ms` : "";
+
+    let g = "";
+    const width = 40 + 6 * COL_W;
+
+    // --- Lane bands and column titles ---------------------------------
+    const CTX_COL = { 1: "TAGGED AT INTAKE", 2: "BROADER", 3: "BROADER" };
+    [["reg", "REGULATORY CHAIN · RegMap + GPPS"], ["ctx", "ALERT CONTEXT · intake standardisation & ML contextualisation"],
+     ["ctl", "RISK & CONTROL CHAIN · Helios"]].forEach(([lane, title]) => {
+      const L = lanes[lane];
+      if (!L) return;
+      g += `<rect class="lv-lane" x="${COL_W - 40}" y="${L.top - 46}" width="${width - COL_W + 20}" height="${L.h + 62}" rx="10"/>`;
+      g += `<text class="lv-lane-t" x="${COL_W - 22}" y="${L.top - 27}">${title}</text>`;
+      for (let c = 1; c <= 5; c++) {
+        const list = cols[lane + "|" + c];
+        if (!list) continue;
+        const names = lane === "ctx" ? (CTX_COL[c] || "")
+          : [...new Set(list.map((id) => tLabel(nodeById[id].type)))].join(" / ");
+        g += `<text class="lv-col-t" x="${40 + c * COL_W}" y="${L.top - 9}">${h(names.toUpperCase())}</text>`;
+      }
+    });
+
+    // --- Lines ------------------------------------------------------------
+    const labels = [], labelSeen = new Set();
+    shown.forEach((e) => {
+      const a = P[e.source], b = P[e.target];
+      if (!a || !b) return;
+      const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
+      const dx = Math.max(40, (x2 - x1) / 2);
+      const d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+      const v = e._layer === "impact" ? vClass(e.judge_verdict) : "";
+      const dim = fs && !(fs.has(e.source) && fs.has(e.target)) ? "lv-dim" : "";
+      const hl = selL && selL.kind === "edge" && selL.id === e._i ? "hl" : "";
+      const an = anim(e.target);
+      g += `<path class="lv-edge ${e._layer} ${v ? "v-" + v : ""} ${dim} ${hl}${an}" d="${d}"/>`;
+      g += `<path class="lv-hit" data-edge="${e._i}" d="${d}"><title>${h(verb(e.relation))}</title></path>`;
+      // The relation is written on the line, just before the box it points to.
+      const key = e.target + "|" + e.relation;
+      if (labelOn(e) && !labelSeen.has(key)) {
+        labelSeen.add(key);
+        const t = verb(e.relation), w = t.length * 6.2 + 14;
+        labels.push(`<g class="lv-elab ${e._layer}${an}" data-edge="${e._i}">
+          <rect x="${x2 - 8 - w}" y="${y2 - 9}" width="${w}" height="18" rx="9"/>
+          <text x="${x2 - 8 - w / 2}" y="${y2 + 3.5}" text-anchor="middle">${h(t)}</text>
+          <title>${h(t)} · ${h(prop(e.relation))}</title></g>`);
+      }
+    });
+    g += labels.join("");
+
+    // --- Boxes ------------------------------------------------------------
+    vis.forEach((id) => {
+      const n = nodeById[id], p = P[id];
+      if (!p) return;
+      const dim = fs && !fs.has(id) ? "lv-dim" : "";
+      const isSel = selL && selL.kind === "node" && selL.id === id ? "sel" : "";
+      const gap = n.type === "Gap" ? "gap" : "";
+      const imp = inE[id].find((e) => e._layer === "impact" && !blank(e.judge_verdict));
+      const vc = imp ? vClass(imp.judge_verdict) : "";
+      const vcol = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc];
+      const label = n.title && n.title !== id ? n.title : id;
+      let more = "";
+      if (mode === "step" && (KIDS[id] || []).length) {
+        const k = (KIDS[id] || []).filter((x) => !vis.has(x)).length;
+        const txt = k ? "+" + k : "−", w = txt.length * 7 + 12;
+        more = `<g class="lv-more ${k ? "" : "done"}" data-more="${h(id)}" data-n="${k}">
+          <rect x="${NODE_W - 22 - w}" y="${NODE_H / 2 - 9}" width="${w}" height="18" rx="9"/>
+          <text x="${NODE_W - 22 - w / 2}" y="${NODE_H / 2 + 4}" text-anchor="middle">${txt}</text>
+          <title>${k ? "Reveal " + k + " linked record(s)" : "Fold this branch"}</title></g>`;
+      }
+      g += `<g class="lv-node ${dim} ${isSel} ${gap}${anim(id)}" data-node="${h(id)}" transform="translate(${p.x},${p.y})">
+        <title>${h(tLabel(n.type))}: ${h(id)}${n.title && n.title !== id ? "\n" + h(n.title) : ""}</title>
+        <rect class="box" width="${NODE_W}" height="${NODE_H}" rx="6"/>
+        <rect width="5" height="${NODE_H}" rx="2" fill="${tColor(n.type)}"/>
+        <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${h(short(label, more ? 23 : 30))}</text>
+        ${vcol ? `<circle cx="${NODE_W - 10}" cy="${NODE_H / 2}" r="5" fill="${vcol}"><title>Alert impact: ${vText(imp.judge_verdict)}</title></circle>` : ""}
+        ${more}
+      </g>`;
+    });
+
+    $("lv-vp").innerHTML = g;
+    fresh = new Set();
+    stats(scope);
+    toolsUi(vis);
+  }
+
+  function stats(scope) {
+    const c = {};
+    scope.forEach((id) => { const t = nodeById[id].type; c[t] = (c[t] || 0) + 1; });
+    const imp = DATA.edges.filter((e) => e._layer === "impact" && scope.has(e.source) && scope.has(e.target));
+    const v = { agree: 0, disagree: 0, uncertain: 0, "": 0 };
+    imp.forEach((e) => { v[vClass(e.judge_verdict)]++; });
+    const order = ["Alert", "RGL", "RSM", "ROB", "Policy", "Procedure", "LR", "L1C", "1C", "Gap"];
+    const ctxN = [...scope].filter((id) => CTX_TYPES.has(nodeById[id].type)).length;
+    $("lv-stats").innerHTML = (ctxN ? `<div class="stat"><b style="color:var(--context)">${ctxN}</b><span>Intake context tags</span></div>` : "") +
+      order.filter((t) => c[t]).map((t) =>
+        `<div class="stat"><b style="color:${tColor(t)}">${c[t]}</b><span>${h(tLabel(t))}</span></div>`).join("") +
+      `<div class="stat wide"><b>${imp.length}</b><span>alert impact links ·
+        <span style="color:var(--ok)">${v.agree} confirmed</span> ·
+        <span style="color:var(--bad)">${v.disagree} disputed</span> ·
+        <span style="color:var(--warn)">${v.uncertain} to SME</span> · ${v[""]} not judged</span></div>`;
+  }
+
+  function toolsUi(vis) {
+    const step = mode === "step";
+    ["both", "context", "structure", "impact"].forEach((l) => $("lv-l-" + l).setAttribute("aria-pressed", layer === l));
+    journey();
+    $("lv-m-step").setAttribute("aria-pressed", step);
+    $("lv-m-all").setAttribute("aria-pressed", !step);
+    $("lv-next").hidden = !step; $("lv-reset").hidden = !step;
+    $("lv-next").disabled = ![...vis].some((id) => (KIDS[id] || []).some((k) => !vis.has(k)));
+    const L = {
+      both: "<b>Everything:</b> the alert's intake context, plus the ontology chain of everything it touches. The coloured dot on a box is the judge's verdict on the alert's impact on it.",
+      context: "<b>Alert context:</b> what happens first, at intake: applicability, category and the ML tags (risk steward, theme, risk taxonomy L1–L3, line of business, legal entity, location).",
+      structure: "<b>Ontology structure:</b> how the impacted records relate to each other in RegMap, GPPS and Helios, with no alert links drawn.",
+      impact: "<b>Alert impact:</b> every record the alert touches directly, one line each, coloured by the judge's verdict.",
+    }[layer];
+    $("lv-hint").innerHTML = L + (step
+      ? " &nbsp;·&nbsp; <b>Step by step:</b> click a box to reveal what it links to (red <b>+N</b>), <b>Next step</b> reveals one more layer, <b>−</b> folds a branch."
+      : " &nbsp;·&nbsp; <b>Show all:</b> click a box to highlight its links.");
+  }
+
+  const relayout = () => { selL = null; $("lv-grid").classList.remove("open"); resetReveal(); render(); requestAnimationFrame(fit); };
+  ["both", "context", "structure", "impact"].forEach((l) => { $("lv-l-" + l).onclick = () => { layer = l; relayout(); }; });
+
+  /* The alert journey, left to right: what happens to an alert before and
+     during impact assessment. Values are filled for the selected alert. */
+  function journey() {
+    const a = cur !== "ALL" ? nodeById[cur] : null, x = a && a.intake;
+    const imp = a ? outE[a.id].filter((e) => e._layer === "impact") : DATA.edges.filter((e) => e._layer === "impact");
+    const ok = imp.filter((e) => vClass(e.judge_verdict) === "agree").length;
+    const ctx = a ? outE[a.id].filter((e) => e._layer === "context").length : 0;
+    const steps = [
+      ["1", "Alert received", a ? h((x && x.ref) || a.id) : `${DATA.nodes.filter((n) => n.type === "Alert").length} alerts`, "", "var(--impact)"],
+      ["2", "Applicable to HSBC?", x ? h(x.applicable) : "Yes / No", "context", "var(--context)"],
+      ["3", "Category", x ? h(x.category) + " · " + h(CATEGORY_TXT[x.category] || "") : "RD · Consultation · News · Fine", "context", "var(--context)"],
+      ["4", "Contextualise (ML)", x ? `${ctx} tags: steward, theme, risk L1–L3, LOB, LE` : "steward, theme, risk L1–L3, LOB, LE", "context", "var(--context)"],
+      ["5", "Impact assessment (AI)", `${imp.length} links · ${ok} judge-confirmed`, "impact", "var(--accent)"],
+      ["6", "Ontology chain", "regulation → obligation → policy · risk → control", "structure", "var(--lineage)"],
+      ["7", "SME review", "next: confirm or reject each link", "", "var(--muted)"],
+    ];
+    $("lv-journey").innerHTML = steps.map(([n, t, v, l, c], i) =>
+      `${i ? '<span class="ja">→</span>' : ""}<div class="js ${l && l === layer ? "on" : ""}" data-layer="${l}" style="--kc:${c}">
+        <span class="k">Step ${n}</span><b>${t}</b><span class="v">${v}</span></div>`).join("");
+    $("lv-journey").querySelectorAll(".js").forEach((el) => {
+      el.onclick = () => { if (el.dataset.layer) { layer = el.dataset.layer; relayout(); } };
+    });
+  }
+  $("lv-m-step").onclick = () => { mode = "step"; relayout(); };
+  $("lv-m-all").onclick  = () => { mode = "all"; render(); requestAnimationFrame(fit); };
+  $("lv-next").onclick   = nextStep;
+  $("lv-reset").onclick  = () => { selL = null; $("lv-grid").classList.remove("open"); resetReveal(); render(); };
+
+
+  /* -------------------------------------------------------------------
+     11. SIDE PANEL: structured cards
+         1 · the record   2 · how the alert impacts it   3 · where it sits
+     ------------------------------------------------------------------- */
+  function openEx(html) {
+    $("lv-ex").innerHTML = `<button class="ex-close" aria-label="Close">×</button>` + html;
+    $("lv-ex").querySelector(".ex-close").onclick = clearSel;
+    $("lv-grid").classList.add("open");
+    $("lv-ex").scrollTop = 0;
+    // Show "Show more" only where the text is actually cut.
+    $("lv-ex").querySelectorAll(".pn-text.clamp").forEach((t) => {
+      const b = t.nextElementSibling;
+      if (b && b.classList.contains("pn-more")) b.hidden = t.scrollHeight <= t.clientHeight + 2;
+    });
+  }
+  function clearSel() { selL = null; $("lv-grid").classList.remove("open"); render(); }
+
+  const secT = (n, t, extra = "") => `<div class="pn-sec"><span class="n">${n}</span>${t}${extra}</div>`;
+
+  // A record card: type chip, ID, title, its own text (clamped).
+  function card(n, lines = 6) {
+    const cls = T[n.type] ? T[n.type].cls : "";
+    const desc = cls && byId[cls] ? byId[cls].d : "";
+    const title = n.title && n.title !== n.id ? `<div class="pn-title">${h(n.title)}</div>` : "";
+    const text = !blank(n.text)
+      ? `<div class="pn-text clamp" style="--lines:${lines}">${h(n.text)}</div><button class="pn-more">Show more</button>`
+      : `<div class="muted" style="font-size:13px">${h(desc)}</div>`;
+    return `<div class="pn-card" style="--c:${tColor(n.type)}">
+      <div class="pn-head"><span class="pn-chip">${h(tShort(n.type))}</span><span class="tag">${h(n.id)}</span></div>
+      ${title}${text}</div>`;
+  }
+
+  // The relation between two cards.
+  function relBlock(e) {
+    const [name, sub, col] = LAYER_TXT[e._layer];
+    const sent = ontoSentence(e.relation), o = ontoRel(e.relation);
+    return `<div class="pn-rel" style="--kc:${col}"><span class="arrow">↓</span>
+      <span class="verb">${h(verb(e.relation))}</span>
+      <small>${h(name)} · ${h(sub)}</small>
+      ${sent ? `<div class="pn-onto"><span class="pn-ql" style="--qc:var(--muted)">Ontology</span>${sent}
+        ${o ? ` <button class="lnk" data-cls="${h(o.f)}">see on Map</button>` : ""}</div>` : ""}
+      <span class="arrow">↓</span></div>`;
+  }
+
+  // Evidence for an AI link: verdict, score, the two quotes, reasoning.
+  function evidence(e) {
+    if (e.kind !== "AI_LINK") return "";
+    const s = nodeById[e.source], t = nodeById[e.target];
+    const vc = vClass(e.judge_verdict);
+    const score = Number(e.score);
+    let x = `<div class="pn-evi"><div class="pn-vrow">
+      <span class="pn-verdict ${vc}">${vText(e.judge_verdict)}</span>
+      ${!blank(e.score) && !isNaN(score) ? `<span class="pn-meter">Score <i><b style="width:${Math.max(0, Math.min(10, score)) * 10}%"></b></i><b style="color:var(--fg)">${h(e.score)}/10</b></span>` : ""}
+      ${!blank(e.confidence) ? `<span>Confidence <b style="color:var(--fg)">${h(e.confidence)}</b></span>` : ""}
+      ${!blank(e.grounding) ? `<span>Quotes <b style="color:var(--fg)">${h(e.grounding)}</b></span>` : ""}</div>`;
+    if (!blank(e.sections)) x += `<div class="pn-vrow">Linked sections <b style="color:var(--fg)">${h(e.sections)}</b></div>`;
+    if (!blank(e.evidence_from))
+      x += `<div class="pn-q" style="--qc:${tColor(s.type)}"><span class="pn-ql">${h(tShort(s.type))} says</span>“${h(e.evidence_from)}”</div>`;
+    if (!blank(e.evidence_to))
+      x += `<div class="pn-q" style="--qc:${tColor(t.type)}"><span class="pn-ql">${h(tShort(t.type))} says</span>“${h(e.evidence_to)}”</div>`;
+    if (!blank(e.reasoning)) x += `<details><summary>Why the model linked them</summary><p>${h(e.reasoning)}</p></details>`;
+    return x + `</div>`;
+  }
+
+  // One row in "Where it sits": direction, relation, the other record.
+  function linkRow(e, dir) {
+    const o = nodeById[dir === "up" ? e.source : e.target];
+    const [, , col] = LAYER_TXT[e._layer];
+    return `<div class="pn-link"><span class="pn-dir">${dir === "up" ? "↑ from" : "↓ to"}</span>
+      <span class="pn-verb" style="--kc:${col}">${h(verb(e.relation))}</span>
+      <span><button class="pn-go" style="--c:${tColor(o.type)}" data-go="${h(o.id)}">${h(tShort(o.type))} · ${h(short(o.title || o.id, 30))}</button>${
+        e.kind === "AI_LINK" ? `<button class="pn-ev" data-proof="${e._i}">evidence</button>` : ""}</span></div>`;
+  }
+
+  function showNode(id) {
+    const n = nodeById[id];
+    let x = secT(1, n.type === "Alert" ? "The alert" : "The record") + card(n, 8);
+
+    if (n.type === "Alert" && n.intake) {
+      const it = n.intake, tags = outE[id].filter((e) => e._layer === "context");
+      const chip = (t) => {
+        const e = tags.find((z) => nodeById[z.target].type === t);
+        return e ? `<button class="pn-go" style="--c:var(--context)" data-go="${h(e.target)}">${h(short(nodeById[e.target].title, 46))}</button>` : `<span class="muted">—</span>`;
+      };
+      x += secT(2, "Intake: standardisation") + `<div class="pn-card" style="--c:var(--context)"><div class="pn-kv">
+          <span>Reference</span><span class="tag">${h(it.ref || id)}</span>
+          <span>Applicable</span><span><span class="${String(it.applicable).toLowerCase() === "yes" ? "pn-yes" : "pn-no"}">${h(it.applicable)}</span></span>
+          <span>Category</span><span><span class="pn-cat">${h(it.category)}</span> <span class="muted">${h(CATEGORY_TXT[it.category] || "")}</span></span>
+          <span>Location</span><span>${chip("Jurisdiction")}</span></div></div>`;
+      x += secT(3, "Contextualisation (ML classifiers)") + `<div class="pn-card" style="--c:var(--context)"><div class="pn-kv">
+          <span>Risk steward</span><span>${chip("Steward")}</span>
+          <span>Theme</span><span>${chip("Theme")}</span>
+          <span>Risk L1</span><span>${h(it.l1 || "—")}</span>
+          <span>Risk L2</span><span>${h(it.l2 || "—")}</span>
+          <span>Risk L3</span><span>${chip("Taxonomy")}</span>
+          <span>Line of business</span><span>${chip("LOB")}</span>
+          <span>Legal entity</span><span>${chip("LE")}</span></div>
+          <div class="muted" style="font-size:12px">Ontology: RegulatoryAlert hasApplicability · hasCategory · taggedSteward · hasTheme · taggedRisk · taggedBusiness · taggedLegalEntity · inJurisdiction. These tags steer the impact search below.</div></div>`;
+    }
+
+    if (n.type === "Alert") {
+      // What it impacts, grouped by artefact type.
+      const groups = {};
+      outE[id].filter((e) => e._layer === "impact").forEach((e) => {
+        const t = nodeById[e.target].type; (groups[t] = groups[t] || []).push(e);
+      });
+      const order = ["RGL", "RSM", "ROB", "LR", "L1C", "1C"];
+      const total = Object.values(groups).reduce((a, l) => a + l.length, 0);
+      x += secT(n.intake ? 4 : 2, "What this alert impacts", ` <span class="count">${total}</span>`) + `<div class="pn-grid">` +
+        order.filter((t) => groups[t]).map((t) => {
+          const l = groups[t], ok = l.filter((e) => vClass(e.judge_verdict) === "agree").length;
+          return `<div class="pn-group"><h5><span class="pn-chip" style="--c:${tColor(t)}">${h(tShort(t))}</span>
+              ${l.length}${ok ? ` <span class="muted" style="font-weight:400">· ${ok} judge-confirmed</span>` : ""}</h5>
+            <div class="pn-chips">${l.slice(0, 14).map((e) => {
+              const o = nodeById[e.target], vc = vClass(e.judge_verdict);
+              const dot = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc] || "var(--line)";
+              return `<button class="pn-go" style="--c:${dot}" data-go="${h(o.id)}">${h(short(o.title || o.id, 22))}</button>`;
+            }).join("")}${l.length > 14 ? `<span class="muted">+${l.length - 14} more</span>` : ""}</div></div>`;
+        }).join("") + `</div><div class="pn-note">Left border colour = judge verdict (green confirmed, red disputed, amber to SME). Click one to see the evidence.</div>`;
+    } else {
+      // 2 · How the alert impacts it (or, for an intake tag, which alerts carry it).
+      const imps = inE[id].filter((e) => e._layer === "impact");
+      const tagged = inE[id].filter((e) => e._layer === "context" && nodeById[e.source].type === "Alert");
+      if (CTX_TYPES.has(n.type)) {
+        x += secT(2, "Alerts tagged with it at intake", ` <span class="count">${tagged.length}</span>`) +
+          (tagged.length ? relBlock(tagged[0]) + `<div class="pn-links">` + tagged.map((e) => linkRow(e, "up")).join("") + `</div>`
+                         : `<div class="pn-note">Reached through the hierarchy (a broader level of a tag), not tagged directly.</div>`) +
+          `<div class="pn-note">Set by the intake ML classifier during contextualisation. Shared tags show which alerts belong to the same steward, theme, business or entity.</div>`;
+      } else if (imps.length) {
+        x += secT(2, "How the alert impacts it", imps.length > 1 ? ` <span class="count">${imps.length}</span>` : "");
+        imps.forEach((e) => { x += card(nodeById[e.source], 3) + relBlock(e) + evidence(e); });
+      } else {
+        const viaStructure = inE[id].filter((e) => e._layer !== "impact");
+        x += secT(2, "Impact") + `<div class="pn-note">${n.type === "Gap"
+          ? "A rule-based finding, not an AI judgement: the structure below expects a link that is missing."
+          : viaStructure.length
+            ? "Not linked directly by the alert. It is reached through the ontology structure: it sits under an impacted record (see below), so it is in the blast radius."
+            : "Not linked directly by the alert."}</div>`;
+      }
+      // 3 · Where it sits in the ontology.
+      const up = inE[id].filter((e) => e._layer !== "impact" && !(CTX_TYPES.has(n.type) && nodeById[e.source].type === "Alert")), down = outE[id];
+      if (up.length || down.length) {
+        x += secT(3, "Where it sits in the ontology") + `<div class="pn-links">` +
+          up.map((e) => linkRow(e, "up")).join("") + down.map((e) => linkRow(e, "down")).join("") + `</div>`;
+      }
+    }
+    const cls = T[n.type] ? T[n.type].cls : "";
+    if (cls && n.type !== "Alert") x += otherRels(cls, id);
+    if (cls) x += `<p class="muted" style="font-size:12.5px">Ontology class: <button class="lnk" data-cls="${h(cls)}">${h(byId[cls].l)}</button></p>`;
+    openEx(x);
+  }
+
+  // Everything else the ontology says about this class: the relationships
+  // that exist in the model but have no data in the sample yet.
+  function otherRels(cls, id) {
+    const classes = [cls, ...ancestors(cls)];
+    const used = new Set([...inE[id], ...outE[id]].map((e) => { const o = ontoRel(e.relation); return o ? o.f + o.r + o.t : ""; }));
+    const rels = D.rels.filter((r) => (classes.includes(r.f) || classes.includes(r.t)) &&
+      !r.t.startsWith("Vocab:") && r.f !== "Entity" && r.t !== "Entity" && !used.has(r.f + r.r + r.t));
+    if (!rels.length) return "";
+    const rows = rels.map((r) => {
+      const out = classes.includes(r.f), other = out ? r.t : r.f, col = KIND[r.k] ? KIND[r.k][1] : "var(--line)";
+      const has = countFor(other) > 0;
+      return `<div class="pn-link" style="${has ? "" : "opacity:.55"}"><span class="pn-dir">${out ? "↓ to" : "↑ from"}</span>
+        <span class="pn-verb" style="--kc:${col}">${h(phrase(r.r))}</span>
+        <span><button class="lnk" data-cls="${h(other)}">${h(byId[other] ? byId[other].l : other)}</button>
+        <span class="muted" style="font-size:12px"> · ${has ? "class has data, not linked here" : "no data yet"}</span></span></div>`;
+    }).join("");
+    return `<details class="pn-group"><summary class="pn-sec" style="cursor:pointer;margin:0"><span class="n">4</span>
+      More in the ontology <span class="count">${rels.length}</span></summary>
+      <div class="pn-links" style="margin-top:6px">${rows}</div></details>`;
+  }
+
+  function showEdge(i) {
+    const e = DATA.edges[i];
+    let x = secT(1, "The connection") + card(nodeById[e.source], 4) + relBlock(e) + card(nodeById[e.target], 4);
+    if (e.kind === "AI_LINK") x += secT(2, "The evidence") + evidence(e);
+    else x += `<div class="pn-note">${e._layer === "gap"
+      ? "Created by a rule on the structure, not by the model."
+      : "A fact copied from the system of record. No AI involved, so no score or evidence."}</div>`;
+    openEx(x);
+  }
+
+  $("lv-ex").addEventListener("click", (ev) => {
+    const more = ev.target.closest(".pn-more");
+    if (more) {
+      const t = more.previousElementSibling;
+      const open = t.classList.toggle("clamp");
+      more.textContent = open ? "Show more" : "Show less";
+      return;
+    }
+    const go = ev.target.closest("[data-go]"), pr = ev.target.closest("[data-proof]"), cl = ev.target.closest("[data-cls]");
+    if (go) gotoNode(go.dataset.go);
+    else if (pr) { selL = { kind: "edge", id: Number(pr.dataset.proof) }; render(); showEdge(selL.id); }
+    else if (cl) { select("map"); focus(cl.dataset.cls); }
+  });
+
+  function gotoNode(id) {
+    if (!DATA || !nodeById[id]) return;
+    if (!scopeSet().has(id)) { cur = "ALL"; $("lv-alert").value = "ALL"; resetReveal(); }
+    selL = { kind: "node", id };
+    if (!computeView().nodes.has(id)) { layer = "both"; resetReveal(); computeView(); }
+    if (mode === "step" && !R.has(id)) revealPath(id);
+    render(); showNode(id);
+    requestAnimationFrame(() => centerOn(id));
+  }
+
+
+  /* -------------------------------------------------------------------
+     12. INTERACTION: click, pan, zoom, fit, search, alert filter
+     ------------------------------------------------------------------- */
+  const svgL = $("lv-svg");
+  let drag = null, moved = false;
+
+  svgL.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, tx: TF.x, ty: TF.y }; moved = false; });
+  window.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) { moved = true; svgL.classList.add("drag"); }
+    if (moved) { TF.x = drag.tx + dx; TF.y = drag.ty + dy; applyTF(); }
+  });
+  window.addEventListener("pointerup", () => { drag = null; svgL.classList.remove("drag"); });
+
+  svgL.addEventListener("click", (e) => {
+    if (moved) return;                                   // a pan, not a click
+    const mo = e.target.closest("[data-more]");
+    if (mo) {
+      const id = mo.dataset.more;
+      if (Number(mo.dataset.n) > 0) expand(id); else fold(id);
+      render(); return;
+    }
+    const n = e.target.closest("[data-node]"), ed = e.target.closest("[data-edge]");
+    if (n) {
+      selL = { kind: "node", id: n.dataset.node };
+      if (mode === "step") expand(selL.id);
+      render(); showNode(selL.id);
+    }
+    else if (ed) { selL = { kind: "edge", id: Number(ed.dataset.edge) }; render(); showEdge(selL.id); }
+    else if (selL) clearSel();
+  });
+
+  svgL.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = svgL.getBoundingClientRect();
+    zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
+  }, { passive: false });
+
+  function zoomAt(mx, my, f) {
+    const k = Math.min(3, Math.max(0.15, TF.k * f));
+    TF.x = mx - (mx - TF.x) * (k / TF.k); TF.y = my - (my - TF.y) * (k / TF.k); TF.k = k;
+    applyTF();
+  }
+  function applyTF() { $("lv-vp").setAttribute("transform", `translate(${TF.x},${TF.y}) scale(${TF.k})`); }
+
+  function fit() {
+    if ($("p-live").hidden || !DATA) return;
+    const bb = $("lv-vp").getBBox(), r = svgL.getBoundingClientRect();
+    if (!bb.width || !bb.height || !r.width) return;
+    const k = Math.min((r.width - 40) / bb.width, (r.height - 40) / bb.height, 1.3);
+    TF = { k, x: (r.width - bb.width * k) / 2 - bb.x * k, y: (r.height - bb.height * k) / 2 - bb.y * k };
+    applyTF();
+  }
+  function centerOn(id) {
+    const p = P[id]; if (!p) return;
+    const r = svgL.getBoundingClientRect(), k = Math.max(TF.k, 0.9);
+    TF = { k, x: r.width * 0.3 - (p.x + NODE_W / 2) * k, y: r.height / 2 - (p.y + NODE_H / 2) * k };
+    applyTF();
+  }
+
+  $("lv-in").onclick = () => { const r = svgL.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.25); };
+  $("lv-out").onclick = () => { const r = svgL.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 0.8); };
+  $("lv-fit").onclick = fit;
+  addEventListener("resize", () => { clearTimeout(window._lvrz); window._lvrz = setTimeout(fit, 200); });
+
+  $("lv-alert").onchange = (e) => { cur = e.target.value; relayout(); };
+
+  $("lv-search").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !DATA) return;
+    const q = e.target.value.trim().toLowerCase(); if (!q) return;
+    const hit = DATA.nodes.find((n) => n.id.toLowerCase().includes(q)) ||
+                DATA.nodes.find((n) => String(n.title || "").toLowerCase().includes(q));
+    if (hit) gotoNode(hit.id); else alert("No record matches: " + q);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("p-live").hidden && selL) clearSel();
+  });
+
+  applyPage();
+})();
+</script>
+
+</body></html>
