@@ -674,6 +674,17 @@ select(start);
 .lv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.55;max-height:320px;min-height:3em;overflow:auto;background:var(--sunk);padding:10px 12px;border-radius:6px;resize:vertical}
 .lv-stats .stat b{font-size:22px}
 .lv-stats .stat.wide{grid-column:span 2}
+/* step-by-step reveal */
+@keyframes lvIn{from{opacity:0}to{opacity:1}}
+.lv-new{animation:lvIn .5s ease both}
+.lv-more{cursor:pointer}
+.lv-more rect{fill:var(--accent)}
+.lv-more.done rect{fill:var(--sunk);stroke:var(--line)}
+.lv-more text{font:700 10.5px var(--mono);fill:#fff;pointer-events:none}
+.lv-more.done text{fill:var(--muted)}
+.lv-hint{font-size:13px;color:var(--muted)}
+.lv-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lv-tools button:disabled{opacity:.45;cursor:not-allowed}
 </style>
 
 <script>
@@ -761,6 +772,10 @@ select(start);
   let selL = null;                  // { kind: "node"|"edge", id }
   let P = {};                       // node positions in the Live graph
   let TF = { x: 0, y: 0, k: 1 };    // pan / zoom
+  let mode = "step";                // "step" = reveal on click, "all" = everything
+  let R = new Set();                // records revealed so far (step mode)
+  let fresh = new Set();            // just revealed -> animate once
+  let KIDS = {}, PARENTS = {};      // drawn children / parents in the current scope
 
 
   /* -------------------------------------------------------------------
@@ -770,6 +785,7 @@ select(start);
     <div class="lv-load">
       <button class="ex-toggle" id="lv-loadbtn">Load live data</button>
       <input type="file" id="lv-file" multiple hidden>
+      <button class="btn2" id="lv-save" hidden title="Save the joined parts as one ontology_demo_data.json">Save as one file</button>
       <span class="muted" id="lv-status" style="font-size:13px">No sample loaded · the ontology is shown without data</span>
     </div>`);
   $("ver").textContent = "v2.3";
@@ -789,12 +805,23 @@ select(start);
     Promise.all(files.map((f) => f.text())).then((texts) => {
       // Python writes missing numbers as bare NaN / Infinity: make them null.
       const clean = texts.join("").replace(/([:\[,]\s*)(NaN|-?Infinity)(?=\s*[,\]}])/g, "$1null");
-      try { load(JSON.parse(clean)); }
+      try { load(JSON.parse(clean)); lastText = clean; $("lv-save").hidden = files.length < 2; }
       catch (err) {
         alert("Could not read the data.\n\nIf you loaded split parts, select ALL parts together.\n\n" + err.message);
       }
     });
   }
+
+  // Save the joined (and NaN-cleaned) parts as ONE json file on this computer.
+  let lastText = "";
+  $("lv-save").onclick = () => {
+    if (!lastText) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lastText], { type: "application/json" }));
+    a.download = "ontology_demo_data.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
 
   // Silent attempt when the page is served from the data folder.
   fetch("ontology_demo_data.json").then((r) => (r.ok ? r.json() : null))
@@ -899,10 +926,18 @@ select(start);
           <select class="lv-select" id="lv-alert" aria-label="Alert"></select>
           <input type="search" id="lv-search" placeholder="Find an ID or title, then Enter">
         </div>
+        <div class="lv-tools">
+          <div class="seg" role="group" aria-label="Reveal mode">
+            <button id="lv-m-step" aria-pressed="true">Step by step</button><button id="lv-m-all" aria-pressed="false">Show all</button>
+          </div>
+          <button class="ex-toggle" id="lv-next">Next step ▸</button>
+          <button class="btn2" id="lv-reset">Reset</button>
+        </div>
         <div class="zoom" role="group" aria-label="Zoom">
           <button id="lv-out" aria-label="Zoom out">−</button><button id="lv-fit">Fit</button><button id="lv-in" aria-label="Zoom in">+</button>
         </div>
       </div>
+      <div class="lv-hint" id="lv-hint"></div>
       <div class="stats lv-stats" id="lv-stats"></div>
       <div class="legend" id="lv-legend"></div>
       <div class="mapgrid" id="lv-grid">
@@ -922,7 +957,7 @@ select(start);
     ["var(--lineage)", "Structural (RegMap / Helios)", "dotted"],
     ["var(--bad)",     "Gap finding (rule)", "dashed"],
   ].map(([c, t, s]) => `<span><i style="border-color:${c};${s ? "border-top-style:" + s : ""}"></i>${t}</span>`).join("")
-    + `<span><b>Click any box or line to see the evidence</b></span>`;
+    + `<span><b>Click any box or line to see its details and evidence</b></span>`;
 
   const baseSelect = select;
   select = function (id) { baseSelect(id); if (id === "live") showLive(); };
@@ -947,7 +982,7 @@ select(start);
     d.nodes.forEach((n) => { nodeById[n.id] = n; inE[n.id] = []; outE[n.id] = []; });
     d.edges = d.edges.filter((e) => nodeById[e.source] && nodeById[e.target]);
     d.edges.forEach((e, i) => { e._i = i; outE[e.source].push(e); inE[e.target].push(e); });
-    DATA = d; cur = "ALL"; selL = null;
+    DATA = d; cur = "ALL"; selL = null; resetReveal();
 
     const alerts = d.nodes.filter((n) => n.type === "Alert");
     $("lv-alert").innerHTML = `<option value="ALL">All sample alerts (${alerts.length})</option>` +
@@ -1045,11 +1080,23 @@ select(start);
   }
 
   function render() {
-    const vis = visible(), edges = drawn(vis), { cols, lanes } = layoutGraph(vis, edges);
+    // Layout uses the WHOLE scope, so boxes never move as more are revealed.
+    const scope = visible(), allEdges = drawn(scope), { cols, lanes } = layoutGraph(scope, allEdges);
+    KIDS = {}; PARENTS = {};
+    allEdges.forEach((e) => {
+      (KIDS[e.source] = KIDS[e.source] || []).push(e.target);
+      (PARENTS[e.target] = PARENTS[e.target] || []).push(e.source);
+    });
+    const vis = mode === "all" ? scope : new Set([...R].filter((id) => scope.has(id)));
+    const edges = allEdges.filter((e) => vis.has(e.source) && vis.has(e.target));
+    const hidden = (id) => (KIDS[id] || []).filter((k) => !vis.has(k)).length;
+    let order = 0;
+    const anim = (id) => fresh.has(id) ? ` lv-new" style="animation-delay:${Math.min(order++ * 35, 900)}ms` : "";
 
     // Highlight set for the current selection.
     let fs = null;
-    if (selL && selL.kind === "node" && vis.has(selL.id)) {
+    if (mode === "step") { /* no dimming while presenting step by step */ }
+    else if (selL && selL.kind === "node" && vis.has(selL.id)) {
       fs = new Set([selL.id]);
       [...inE[selL.id], ...outE[selL.id]].forEach((e) => { fs.add(e.source); fs.add(e.target); });
     } else if (selL && selL.kind === "edge") {
@@ -1082,7 +1129,7 @@ select(start);
       const v = e.kind === "AI_LINK" ? vClass(e.judge_verdict) : "";
       const dim = fs && !(fs.has(e.source) && fs.has(e.target)) ? "lv-dim" : "";
       const hl = selL && selL.kind === "edge" && selL.id === e._i ? "hl" : "";
-      g += `<path class="lv-edge ${e.kind} ${v ? "v-" + v : ""} ${dim} ${hl}" d="${d}"/>`;
+      g += `<path class="lv-edge ${e.kind} ${v ? "v-" + v : ""} ${dim} ${hl}${anim(e.target)}" d="${d}"/>`;
       g += `<path class="lv-hit" data-edge="${e._i}" d="${d}"><title>${h(relL(e.relation))}</title></path>`;
     });
 
@@ -1097,18 +1144,82 @@ select(start);
       const vc = ai ? vClass(ai.judge_verdict) : "";
       const vcol = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc];
       const label = n.title && n.title !== id ? n.title : id;
-      g += `<g class="lv-node ${dim} ${isSel} ${gap}" data-node="${h(id)}" transform="translate(${p.x},${p.y})">
+      // Step mode: "+N" = N more links to reveal, "−" = expanded (click to fold).
+      let more = "";
+      if (mode === "step" && (KIDS[id] || []).length) {
+        const n = hidden(id), txt = n ? "+" + n : "−", w = txt.length * 7 + 12;
+        more = `<g class="lv-more ${n ? "" : "done"}" data-more="${h(id)}" data-n="${n}">
+          <rect x="${NODE_W - 22 - w}" y="${NODE_H / 2 - 9}" width="${w}" height="18" rx="9"/>
+          <text x="${NODE_W - 22 - w / 2}" y="${NODE_H / 2 + 4}" text-anchor="middle">${txt}</text>
+          <title>${n ? "Reveal " + n + " linked record(s)" : "Fold this branch"}</title></g>`;
+      }
+      g += `<g class="lv-node ${dim} ${isSel} ${gap}${anim(id)}" data-node="${h(id)}" transform="translate(${p.x},${p.y})">
         <title>${h(tLabel(n.type))}: ${h(id)}${n.title && n.title !== id ? "\n" + h(n.title) : ""}</title>
         <rect class="box" width="${NODE_W}" height="${NODE_H}" rx="6"/>
         <rect width="5" height="${NODE_H}" rx="2" fill="${tColor(n.type)}"/>
-        <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${h(short(label, 30))}</text>
+        <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${h(short(label, more ? 23 : 30))}</text>
         ${vcol ? `<circle cx="${NODE_W - 10}" cy="${NODE_H / 2}" r="5" fill="${vcol}"><title>${vText(ai.judge_verdict)}</title></circle>` : ""}
+        ${more}
       </g>`;
     });
 
     $("lv-vp").innerHTML = g;
-    stats(vis);
+    fresh = new Set();
+    stats(scope);
+    stepUi(vis);
   }
+
+  /* -------------------------------------------------------------------
+     8b. STEP-BY-STEP REVEAL
+         Start with the alert(s) only. Clicking a box reveals what it links
+         to (one layer). "Next step" reveals one more layer everywhere.
+     ------------------------------------------------------------------- */
+  function scopeAlerts() {
+    return cur === "ALL" ? DATA.nodes.filter((n) => n.type === "Alert").map((n) => n.id) : [cur];
+  }
+  function resetReveal() {
+    R = new Set(scopeAlerts()); fresh = new Set(R);
+  }
+  function reveal(ids) {
+    ids.forEach((k) => { if (!R.has(k)) { R.add(k); fresh.add(k); } });
+  }
+  function expand(id) { reveal(KIDS[id] || []); }
+  // Fold: hide everything below this box that no other visible box still holds.
+  function fold(id) {
+    (KIDS[id] || []).forEach((k) => {
+      if (!R.has(k)) return;
+      const otherParent = (PARENTS[k] || []).some((p) => p !== id && R.has(p));
+      if (!otherParent) { fold(k); R.delete(k); }
+    });
+  }
+  function nextStep() {
+    const frontier = [...R].filter((id) => (KIDS[id] || []).some((k) => !R.has(k)));
+    frontier.forEach(expand);
+    render();
+  }
+  // Make a record visible by revealing one path down to it from an alert.
+  function revealPath(id) {
+    let x = id, guard = 0;
+    while (x && !R.has(x) && guard++ < 50) {
+      R.add(x); fresh.add(x);
+      x = (PARENTS[x] || [])[0];
+    }
+  }
+  function stepUi(vis) {
+    const step = mode === "step";
+    $("lv-m-step").setAttribute("aria-pressed", step);
+    $("lv-m-all").setAttribute("aria-pressed", !step);
+    $("lv-next").hidden = !step; $("lv-reset").hidden = !step;
+    $("lv-next").disabled = ![...vis].some((id) => (KIDS[id] || []).some((k) => !vis.has(k)));
+    $("lv-hint").innerHTML = step
+      ? `<b>Step by step:</b> click a box to reveal what it links to (the red <b>+N</b> shows how many) · <b>Next step</b> reveals one more layer · click <b>−</b> to fold a branch · Reset starts again`
+      : `<b>Show all:</b> every link at once · click a box to highlight its links`;
+  }
+
+  $("lv-m-step").onclick = () => { mode = "step"; resetReveal(); selL = null; $("lv-grid").classList.remove("open"); render(); requestAnimationFrame(fit); };
+  $("lv-m-all").onclick  = () => { mode = "all"; render(); requestAnimationFrame(fit); };
+  $("lv-next").onclick   = nextStep;
+  $("lv-reset").onclick  = () => { resetReveal(); selL = null; $("lv-grid").classList.remove("open"); render(); };
 
   function stats(vis) {
     const c = {};
@@ -1198,9 +1309,11 @@ select(start);
 
   function gotoNode(id) {
     if (!DATA || !nodeById[id]) return;
-    if (!visible().has(id)) { cur = "ALL"; $("lv-alert").value = "ALL"; }
+    if (!visible().has(id)) { cur = "ALL"; $("lv-alert").value = "ALL"; resetReveal(); }
     selL = { kind: "node", id };
-    render(); showNode(id);
+    render();                                            // builds PARENTS for this scope
+    if (mode === "step" && !R.has(id)) { revealPath(id); render(); }
+    showNode(id);
     requestAnimationFrame(() => centerOn(id));
   }
 
@@ -1222,8 +1335,18 @@ select(start);
 
   svgL.addEventListener("click", (e) => {
     if (moved) return;                                   // a pan, not a click
+    const mo = e.target.closest("[data-more]");
+    if (mo) {                                            // +N / − badge
+      const id = mo.dataset.more;
+      if (Number(mo.dataset.n) > 0) expand(id); else fold(id);
+      render(); return;
+    }
     const n = e.target.closest("[data-node]"), ed = e.target.closest("[data-edge]");
-    if (n) { selL = { kind: "node", id: n.dataset.node }; render(); showNode(selL.id); }
+    if (n) {
+      selL = { kind: "node", id: n.dataset.node };
+      if (mode === "step") expand(selL.id);              // reveal the next layer
+      render(); showNode(selL.id);
+    }
     else if (ed) { selL = { kind: "edge", id: Number(ed.dataset.edge) }; render(); showEdge(selL.id); }
     else if (selL) clearSel();
   });
@@ -1263,7 +1386,7 @@ select(start);
 
   $("lv-alert").onchange = (e) => {
     cur = e.target.value; selL = null; $("lv-grid").classList.remove("open");
-    render(); requestAnimationFrame(fit);
+    resetReveal(); render(); requestAnimationFrame(fit);
   };
 
   $("lv-search").addEventListener("keydown", (e) => {
