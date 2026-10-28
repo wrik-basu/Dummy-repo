@@ -641,6 +641,10 @@ select(start);
 .lv-badge text{font:600 10.5px var(--mono)}
 .lv-off{opacity:.2!important;pointer-events:none}
 
+/* ---- use the full width of wide screens ---- */
+.wrap{max-width:min(2400px,100%)!important;padding-inline:clamp(16px,2vw,40px)!important}
+.mapgrid .mapwrap,#lv-wrap{height:calc(100vh - 140px)!important;min-height:640px}
+
 /* ---- live graph ---- */
 #lv-svg{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
 #lv-svg.drag{cursor:grabbing}
@@ -724,6 +728,8 @@ select(start);
 .pn-group{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
 .pn-group h5{margin:0;font-size:13px;display:flex;align-items:center;gap:8px}
 .pn-chips{display:flex;flex-wrap:wrap;gap:4px}
+.pn-onto{font-size:13px;line-height:1.5;text-align:center;max-width:95%;border:1px dashed var(--line);border-radius:8px;padding:6px 10px;margin:4px 0}
+.pn-onto .pn-ql{display:block}
 .pn-note{font-size:13px;color:var(--muted);border:1px dashed var(--line);border-radius:8px;padding:8px 10px}
 </style>
 
@@ -775,6 +781,36 @@ select(start);
                            L1C: "Library control", "1C": "Control instance", Gap: "Gap" }[t] || t);
   const tColor = (t) => (T[t] && byId[T[t].cls]) ? D.modules[byId[T[t].cls].m].c : "var(--muted)";
 
+  /* Every link in the data is mapped to the ontology relationship it
+     instantiates (D.rels, the same list the Map tab draws). Wording on the
+     lines and in the panel comes from the ontology itself.
+       [from class, property, to class, data direction vs ontology direction] */
+  const ONTO = {
+    has_summary:              ["RegulatorySummary",    "partOfRegulation",     "Regulation",           "reverse"],
+    has_obligation:           ["RegulatoryObligation", "derivedFromSummary",   "RegulatorySummary",    "reverse"],
+    implemented_by_policy:    ["PolicyRequirement",    "implementsObligation", "RegulatoryObligation", "reverse"],
+    implemented_by_procedure: ["Requirement",          "governsActivity",      "ProcedureStep",        "forward"],
+    mitigated_by:             ["LibraryRisk",          "mitigatedBy",          "LibraryControl",       "forward"],
+    instantiated_as:          ["Control",              "instanceOf",           "LibraryControl",       "reverse"],
+    has_gap:                  ["Gap",                  "onRequirement",        "Requirement",          "reverse"],
+    impacts_summary:          ["RegulatoryChange",     "affectsSummary",       "RegulatorySummary",    "forward"],
+    impacts_obligation:       ["RegulatoryChange",     "affectsObligation",    "RegulatoryObligation", "forward"],
+    impacts_control_instance: ["RegulatoryChange",     "impactsControl",       "Control",              "forward"],
+  };
+  // Granularity of the LinkAssertion for each impact link (ontology vocab).
+  const GRAN = { impacts_regulation: "RGL", impacts_summary: "RSM", impacts_obligation: "ROB",
+                 impacts_risk: "LR", impacts_control: "L1C", impacts_control_instance: "CONTROL_1C" };
+
+  const words = (p) => p.replace(/([A-Z])/g, " $1").toLowerCase();
+  const phrase = (p) => (typeof PHRASE !== "undefined" && PHRASE[p]) || words(p);
+
+  // The ontology relationship behind a data relation (or null).
+  function ontoRel(r) {
+    const m = ONTO[r]; if (!m) return null;
+    const rel = D.rels.find((x) => x.f === m[0] && x.r === m[1] && x.t === m[2]);
+    return rel ? { ...rel, dir: m[3] } : null;
+  }
+
   // relation -> [verb drawn on the line, ontology property]
   const REL = {
     impacts_regulation:       ["impacts", "LinkAssertion · RGL"],
@@ -791,8 +827,31 @@ select(start);
     instantiated_as:          ["has instance",       "hasInstance"],
     has_gap:                  ["has gap",            "identifiesGap"],
   };
-  const verb = (r) => (REL[r] || [r.replace(/_/g, " ")])[0];
-  const prop = (r) => (REL[r] || ["", ""])[1];
+  // Line label = the ontology's own wording, read in the direction of the line.
+  function verb(r) {
+    const o = ontoRel(r);
+    if (o && (o.dir === "forward" || o.inv)) return o.dir === "forward" ? phrase(o.r) : phrase(o.inv);
+    if (GRAN[r]) return "asserts impact";
+    return (REL[r] || [r.replace(/_/g, " ")])[0];
+  }
+  function prop(r) {
+    const o = ontoRel(r);
+    const base = o ? `${o.f} ${o.r} ${o.t}` : "";
+    if (GRAN[r]) return (base ? base + " · " : "") + "LinkAssertion · granularity " + GRAN[r];
+    return base || (REL[r] || ["", ""])[1];
+  }
+  // The ontology sentence, as on the Map tab: "Each X <verb> <card> Y."
+  function ontoSentence(r) {
+    const o = ontoRel(r);
+    if (!o) return GRAN[r]
+      ? `Recorded as a <b>Link Assertion</b> at granularity <span class="tag">${GRAN[r]}</span>. It becomes an impact edge only once CONFIRMED.`
+      : "";
+    const card = (typeof CARD !== "undefined" && CARD[o.card]) || o.card;
+    const col = KIND[o.k] ? KIND[o.k][1] : "var(--line)";
+    return `Each <b>${h(byId[o.f].l)}</b> <span class="pn-verb" style="--kc:${col}">${h(phrase(o.r))}</span> ${h(card)} <b>${h(byId[o.t].l)}</b>.` +
+      (o.n ? ` <span class="muted">${h(o.n.replace(/\.?$/, "."))}</span>` : "") +
+      (GRAN[r] ? ` <span class="muted">Until CONFIRMED it is a Link Assertion (granularity ${GRAN[r]}); the alert reports the change.</span>` : "");
+  }
 
   // Which layer an edge belongs to.
   function layerOf(e) {
@@ -1021,7 +1080,7 @@ select(start);
     ["var(--lineage)", "Ontology structure", "dotted"],
     ["var(--bad)",     "Gap (rule)", "dashed"],
   ].map(([c, t, s]) => `<span><i style="border-color:${c};${s ? "border-top-style:" + s : ""}"></i>${t}</span>`).join("")
-    + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span>`;
+    + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span><span>Line labels use the ontology's own relationship names</span>`;
 
   const baseSelect = select;
   select = function (id) { baseSelect(id); if (id === "live") showLive(); };
@@ -1386,9 +1445,12 @@ select(start);
   // The relation between two cards.
   function relBlock(e) {
     const [name, sub, col] = LAYER_TXT[e._layer];
+    const sent = ontoSentence(e.relation), o = ontoRel(e.relation);
     return `<div class="pn-rel" style="--kc:${col}"><span class="arrow">↓</span>
       <span class="verb">${h(verb(e.relation))}</span>
-      <small>${h(name)} · ${h(sub)}${prop(e.relation) ? " · " + h(prop(e.relation)) : ""}</small>
+      <small>${h(name)} · ${h(sub)}</small>
+      ${sent ? `<div class="pn-onto"><span class="pn-ql" style="--qc:var(--muted)">Ontology</span>${sent}
+        ${o ? ` <button class="lnk" data-cls="${h(o.f)}">see on Map</button>` : ""}</div>` : ""}
       <span class="arrow">↓</span></div>`;
   }
 
@@ -1467,8 +1529,30 @@ select(start);
       }
     }
     const cls = T[n.type] ? T[n.type].cls : "";
+    if (cls && n.type !== "Alert") x += otherRels(cls, id);
     if (cls) x += `<p class="muted" style="font-size:12.5px">Ontology class: <button class="lnk" data-cls="${h(cls)}">${h(byId[cls].l)}</button></p>`;
     openEx(x);
+  }
+
+  // Everything else the ontology says about this class: the relationships
+  // that exist in the model but have no data in the sample yet.
+  function otherRels(cls, id) {
+    const classes = [cls, ...ancestors(cls)];
+    const used = new Set([...inE[id], ...outE[id]].map((e) => { const o = ontoRel(e.relation); return o ? o.f + o.r + o.t : ""; }));
+    const rels = D.rels.filter((r) => (classes.includes(r.f) || classes.includes(r.t)) &&
+      !r.t.startsWith("Vocab:") && r.f !== "Entity" && r.t !== "Entity" && !used.has(r.f + r.r + r.t));
+    if (!rels.length) return "";
+    const rows = rels.map((r) => {
+      const out = classes.includes(r.f), other = out ? r.t : r.f, col = KIND[r.k] ? KIND[r.k][1] : "var(--line)";
+      const has = countFor(other) > 0;
+      return `<div class="pn-link" style="${has ? "" : "opacity:.55"}"><span class="pn-dir">${out ? "↓ to" : "↑ from"}</span>
+        <span class="pn-verb" style="--kc:${col}">${h(phrase(r.r))}</span>
+        <span><button class="lnk" data-cls="${h(other)}">${h(byId[other] ? byId[other].l : other)}</button>
+        <span class="muted" style="font-size:12px"> · ${has ? "class has data, not linked here" : "no data yet"}</span></span></div>`;
+    }).join("");
+    return `<details class="pn-group"><summary class="pn-sec" style="cursor:pointer;margin:0"><span class="n">4</span>
+      More in the ontology <span class="count">${rels.length}</span></summary>
+      <div class="pn-links" style="margin-top:6px">${rows}</div></details>`;
   }
 
   function showEdge(i) {
