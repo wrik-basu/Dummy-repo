@@ -642,7 +642,9 @@ select(start);
 .lv-off{opacity:.2!important;pointer-events:none}
 
 /* ---- use the full width of wide screens ---- */
-.wrap{max-width:min(2400px,100%)!important;padding-inline:clamp(16px,2vw,40px)!important}
+.wrap{max-width:var(--pagew,100%)!important;width:100%!important;padding-inline:clamp(12px,1.5vw,32px)!important}
+.lv-size{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.lv-size .zoom button{min-width:34px}
 .mapgrid .mapwrap,#lv-wrap{height:calc(100vh - 140px)!important;min-height:640px}
 
 /* ---- live graph ---- */
@@ -902,9 +904,35 @@ select(start);
       <button class="ex-toggle" id="lv-loadbtn">Load live data</button>
       <input type="file" id="lv-file" multiple hidden>
       <button class="btn2" id="lv-save" hidden title="Save the joined parts as one ontology_demo_data.json">Save as one file</button>
+      <span class="lv-size" title="Page width and size. Remembered on this computer.">
+        Width <span class="zoom"><button id="pw-full" aria-pressed="true">Full</button><button id="pw-1600">Wide</button><button id="pw-1240">Narrow</button></span>
+        Size <span class="zoom"><button id="pz-out" aria-label="Smaller">A−</button><button id="pz-val">100%</button><button id="pz-in" aria-label="Bigger">A+</button></span>
+      </span>
       <span class="muted" id="lv-status" style="font-size:13px">No sample loaded · the ontology is shown without data</span>
     </div>`);
   $("ver").textContent = "v2.3";
+
+  /* ---- Page width + size (saved per computer) ----------------------
+     Width : Full = whole screen, Wide = 1600 px, Narrow = 1240 px.
+     Size  : scales everything (text, boxes, graph) from 60% to 200%.  */
+  const PW = { full: "100%", "1600": "1600px", "1240": "1240px" };
+  let pageW = "full", pageZ = 1;
+  try { pageW = localStorage.getItem("lv-pagew") || "full"; pageZ = Number(localStorage.getItem("lv-pagez")) || 1; } catch (e) {}
+  function applyPage() {
+    document.documentElement.style.setProperty("--pagew", PW[pageW] || "100%");
+    document.body.style.zoom = pageZ;
+    ["full", "1600", "1240"].forEach((k) => $("pw-" + k).setAttribute("aria-pressed", k === pageW));
+    $("pz-val").textContent = Math.round(pageZ * 100) + "%";
+    try { localStorage.setItem("lv-pagew", pageW); localStorage.setItem("lv-pagez", pageZ); } catch (e) {}
+    setTimeout(() => {
+      if (!$("p-map").hidden) drawMap();
+      if (typeof fit === "function") fit();
+    }, 60);
+  }
+  ["full", "1600", "1240"].forEach((k) => { $("pw-" + k).onclick = () => { pageW = k; applyPage(); }; });
+  $("pz-in").onclick  = () => { pageZ = Math.min(2, +(pageZ + 0.1).toFixed(2)); applyPage(); };
+  $("pz-out").onclick = () => { pageZ = Math.max(0.6, +(pageZ - 0.1).toFixed(2)); applyPage(); };
+  $("pz-val").onclick = () => { pageZ = 1; applyPage(); };
 
   $("lv-loadbtn").onclick = () => $("lv-file").click();
   $("lv-file").onchange = (e) => readFiles(e.target.files);
@@ -1670,6 +1698,7 @@ select(start);
     if (e.key === "Escape" && !$("p-live").hidden && selL) clearSel();
   });
 
+  applyPage();
 })();
 </script>
 
