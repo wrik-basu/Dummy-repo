@@ -640,6 +640,8 @@ select(start);
 .lv-load{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .lv-badge text{font:600 10.5px var(--mono)}
 .lv-off{opacity:.2!important;pointer-events:none}
+
+/* ---- live graph ---- */
 #lv-svg{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
 #lv-svg.drag{cursor:grabbing}
 .lv-node{cursor:pointer}
@@ -650,31 +652,30 @@ select(start);
 .lv-node text{font:12px var(--sans);fill:var(--fg);pointer-events:none}
 .lv-dim{opacity:.13}
 .lv-edge{fill:none;stroke-width:1.6}
-.lv-edge.AI_LINK{stroke:var(--muted)}
-.lv-edge.STRUCTURAL{stroke:var(--lineage);stroke-dasharray:2 3;opacity:.75}
-.lv-edge.DERIVED{stroke:var(--bad);stroke-dasharray:6 4}
-.lv-edge.v-agree{stroke:var(--ok)}
-.lv-edge.v-disagree{stroke:var(--bad)}
-.lv-edge.v-uncertain{stroke:var(--warn)}
+.lv-edge.structure{stroke:var(--lineage);stroke-dasharray:3 3;opacity:.85}
+.lv-edge.structure-ai{stroke:var(--lineage)}
+.lv-edge.gap{stroke:var(--bad);stroke-dasharray:6 4}
+.lv-edge.impact{stroke:var(--muted)}
+.lv-edge.impact.v-agree{stroke:var(--ok)}
+.lv-edge.impact.v-disagree{stroke:var(--bad)}
+.lv-edge.impact.v-uncertain{stroke:var(--warn)}
 .lv-edge.hl{stroke-width:3.4}
 .lv-hit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer}
+.lv-elab{cursor:pointer}
+.lv-elab rect{fill:var(--surface);stroke:var(--line)}
+.lv-elab text{font:600 10px var(--mono);fill:var(--fg);pointer-events:none}
+.lv-elab.impact rect{stroke:var(--accent)}
+.lv-elab.gap rect{stroke:var(--bad)}
+.lv-elab:hover rect{stroke:var(--fg)}
 .lv-lane{fill:var(--sunk);stroke:var(--line)}
 .lv-lane-t{font:700 12px var(--sans);letter-spacing:.06em;fill:var(--muted)}
 .lv-col-t{font:600 10.5px var(--sans);letter-spacing:.06em;fill:var(--muted)}
 .lv-select{font:14px var(--sans);padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);max-width:440px}
-.lv-proof{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:13.5px}
-.lv-row{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12.5px;color:var(--muted);align-items:center}
-.lv-row b{color:var(--fg)}
-.lv-q{border-left:3px solid var(--accent);background:var(--sunk);padding:6px 9px;border-radius:0 6px 6px 0;font-style:italic}
-.lv-q.to{border-left-color:var(--lineage)}
-.lv-q small{display:block;font-style:normal;color:var(--muted);margin-top:2px}
-/* panel items must keep their height (the panel is a flex column that
-   otherwise squeezes long text to one line) */
-#lv-ex>*{flex-shrink:0}
-.lv-text{white-space:pre-wrap;font-size:13.5px;line-height:1.55;max-height:320px;min-height:3em;overflow:auto;background:var(--sunk);padding:10px 12px;border-radius:6px;resize:vertical}
 .lv-stats .stat b{font-size:22px}
 .lv-stats .stat.wide{grid-column:span 2}
-/* step-by-step reveal */
+.lv-hint{font-size:13px;color:var(--muted)}
+.lv-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lv-tools button:disabled{opacity:.45;cursor:not-allowed}
 @keyframes lvIn{from{opacity:0}to{opacity:1}}
 .lv-new{animation:lvIn .5s ease both}
 .lv-more{cursor:pointer}
@@ -682,9 +683,48 @@ select(start);
 .lv-more.done rect{fill:var(--sunk);stroke:var(--line)}
 .lv-more text{font:700 10.5px var(--mono);fill:#fff;pointer-events:none}
 .lv-more.done text{fill:var(--muted)}
-.lv-hint{font-size:13px;color:var(--muted)}
-.lv-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.lv-tools button:disabled{opacity:.45;cursor:not-allowed}
+
+/* ---- side panel: structured cards ---- */
+#lv-ex>*{flex-shrink:0}
+.pn-sec{font:700 11.5px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:8px}
+.pn-sec .n{font:600 11px var(--mono);background:var(--fg);color:var(--bg);border-radius:999px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center}
+.pn-card{border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:10px 12px;background:var(--surface);display:flex;flex-direction:column;gap:6px}
+.pn-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pn-chip{font:600 11px var(--sans);color:#fff;border-radius:999px;padding:2px 8px;background:var(--c,var(--muted))}
+.pn-title{font-weight:600;font-size:14.5px}
+.pn-text{white-space:pre-wrap;font-size:13.5px;line-height:1.55;background:var(--sunk);padding:8px 10px;border-radius:6px}
+.pn-text.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--lines,6);overflow:hidden;padding-bottom:0;border-bottom:8px solid var(--sunk)}
+.pn-more{align-self:flex-start;font:600 12px var(--sans);color:var(--accent);background:none;border:0;padding:0;cursor:pointer}
+.pn-rel{display:flex;flex-direction:column;align-items:center;gap:2px;padding:2px 0}
+.pn-rel .arrow{color:var(--muted);font-size:16px;line-height:1}
+.pn-rel .verb{font:700 13px var(--mono);border:1.5px solid var(--kc,var(--line));border-radius:999px;padding:3px 12px;background:var(--surface)}
+.pn-rel small{font-size:11.5px;color:var(--muted)}
+.pn-evi{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.pn-vrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.pn-verdict{font:700 12.5px var(--sans);border-radius:6px;padding:4px 10px;background:var(--sunk);color:var(--fg)}
+.pn-verdict.agree{background:var(--ok-soft);color:var(--ok)}
+.pn-verdict.disagree{background:var(--bad-soft);color:var(--bad)}
+.pn-verdict.uncertain{background:var(--warn-soft);color:var(--warn)}
+.pn-meter{display:inline-flex;align-items:center;gap:6px}
+.pn-meter i{display:inline-block;width:70px;height:6px;border-radius:3px;background:var(--sunk);overflow:hidden;position:relative}
+.pn-meter i b{position:absolute;left:0;top:0;bottom:0;background:var(--fg)}
+.pn-q{font-size:13.5px;line-height:1.5;padding:7px 10px;border-radius:6px;background:var(--sunk);border-left:3px solid var(--qc)}
+.pn-ql{display:block;font:700 11px var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--qc);margin-bottom:2px}
+.pn-evi details summary{font-weight:600;color:var(--fg)}
+.pn-evi details p{font-size:13.5px;margin-top:6px}
+.pn-links{display:flex;flex-direction:column;gap:4px}
+.pn-link{display:grid;grid-template-columns:auto auto 1fr;gap:8px;align-items:center;font-size:13px;padding:5px 6px;border-radius:6px}
+.pn-link:hover{background:var(--sunk)}
+.pn-dir{color:var(--muted);font:600 11px var(--sans);text-transform:uppercase;width:38px}
+.pn-verb{font:600 11.5px var(--mono);border:1px solid var(--kc,var(--line));border-radius:999px;padding:1px 8px;white-space:nowrap}
+.pn-go{justify-self:start;font:500 13px var(--sans);background:var(--surface);color:var(--fg);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:6px;padding:3px 8px;cursor:pointer;text-align:left}
+.pn-go:hover{border-color:var(--fg)}
+.pn-ev{font:600 11.5px var(--sans);color:var(--accent);background:none;border:0;cursor:pointer;padding:0;margin-left:6px;text-decoration:underline}
+.pn-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.pn-group{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+.pn-group h5{margin:0;font-size:13px;display:flex;align-items:center;gap:8px}
+.pn-chips{display:flex;flex-wrap:wrap;gap:4px}
+.pn-note{font-size:13px;color:var(--muted);border:1px dashed var(--line);border-radius:8px;padding:8px 10px}
 </style>
 
 <script>
@@ -693,11 +733,16 @@ select(start);
    ---------------------------------------------------------------------
    Loads ontology_demo_data.json (or all of its split parts) from the
    user's computer. Nothing leaves the browser.
-     1. Map tab   : classes holding real data light up with a count;
-                    classes with no data yet are greyed out and inactive
-                    (toggle "Live data on map").
-     2. Live data : new tab - the sample alerts traced through the
-                    ontology, with the evidence behind every AI link.
+
+   Two layers are kept apart, exactly as in the ontology:
+     STRUCTURE : how artefacts relate, regardless of any alert
+                 RGL has summary RSM, RSM decomposes to ROB,
+                 ROB implemented by Policy / operationalised by Procedure,
+                 LR mitigated by L1C, L1C has instance 1C.
+     IMPACT    : what one alert touches (AI link assertions with
+                 evidence and a judge verdict):
+                 Alert impacts RGL / RSM / ROB / LR / L1C / 1C.
+     GAP       : rule-based findings on the structure.
    The ontology model above is untouched.
    ===================================================================== */
 (function () {
@@ -709,46 +754,57 @@ select(start);
 
 
   /* -------------------------------------------------------------------
-     1. SAMPLE TYPES  ->  ONTOLOGY CLASSES
+     1. SAMPLE TYPES -> ONTOLOGY CLASSES, RELATIONS -> ONTOLOGY VERBS
      ------------------------------------------------------------------- */
   const TYPE_ALIAS = { IC: "1C", LIC: "L1C" };
   const T = {
-    Alert:     { cls: "RegulatoryAlert",      lane: "mid",    col: 0 },
-    RGL:       { cls: "Regulation",           lane: "reg",    col: 1 },
-    RSM:       { cls: "RegulatorySummary",    lane: "reg",    col: 2 },
-    ROB:       { cls: "RegulatoryObligation", lane: "reg",    col: 3 },
-    Policy:    { cls: "Policy",               lane: "reg",    col: 4 },
-    Procedure: { cls: "Procedure",            lane: "reg",    col: 4 },
-    LR:        { cls: "LibraryRisk",          lane: "ctl",    col: 1 },
-    L1C:       { cls: "LibraryControl",       lane: "ctl",    col: 2 },
-    "1C":      { cls: "Control",              lane: "ctl",    col: 3 },
+    Alert:     { cls: "RegulatoryAlert",      lane: "mid", col: 0 },
+    RGL:       { cls: "Regulation",           lane: "reg", col: 1 },
+    RSM:       { cls: "RegulatorySummary",    lane: "reg", col: 2 },
+    ROB:       { cls: "RegulatoryObligation", lane: "reg", col: 3 },
+    Policy:    { cls: "Policy",               lane: "reg", col: 4 },
+    Procedure: { cls: "Procedure",            lane: "reg", col: 4 },
+    LR:        { cls: "LibraryRisk",          lane: "ctl", col: 1 },
+    L1C:       { cls: "LibraryControl",       lane: "ctl", col: 2 },
+    "1C":      { cls: "Control",              lane: "ctl", col: 3 },
     Gap:       { cls: "Gap",                  lane: "parent", col: 5 },
   };
   const tLabel = (t) => (T[t] && byId[T[t].cls]) ? byId[T[t].cls].l : t;
+  const tShort = (t) => ({ Alert: "Alert", RGL: "Regulation", RSM: "Summary", ROB: "Obligation",
+                           Policy: "Policy", Procedure: "Procedure", LR: "Library risk",
+                           L1C: "Library control", "1C": "Control instance", Gap: "Gap" }[t] || t);
   const tColor = (t) => (T[t] && byId[T[t].cls]) ? D.modules[byId[T[t].cls].m].c : "var(--muted)";
 
-  // Friendly label + the ontology property it instantiates.
+  // relation -> [verb drawn on the line, ontology property]
   const REL = {
-    impacts_regulation:       ["impacts regulation",           "LinkAssertion · granularity RGL"],
-    impacts_summary:          ["impacts summary",              "LinkAssertion · granularity RSM"],
-    impacts_obligation:       ["impacts obligation",           "LinkAssertion · granularity ROB"],
-    impacts_risk:             ["impacts library risk",         "LinkAssertion · granularity LR"],
-    impacts_control:          ["impacts library control",      "LinkAssertion · granularity L1C"],
-    impacts_control_instance: ["impacts control instance",     "LinkAssertion · granularity CONTROL_1C"],
-    implemented_by_policy:    ["implemented by policy",        "implementedByPolicy"],
-    implemented_by_procedure: ["operationalised by procedure", "governsActivity"],
-    has_summary:              ["has summary",                  "hasSummary"],
-    has_obligation:           ["decomposes to obligation",     "decomposesTo"],
-    mitigated_by:             ["mitigated by",                 "mitigatedBy"],
-    instantiated_as:          ["has instance",                 "hasInstance"],
-    has_gap:                  ["has gap",                      "identifiesGap"],
+    impacts_regulation:       ["impacts", "LinkAssertion · RGL"],
+    impacts_summary:          ["impacts", "LinkAssertion · RSM"],
+    impacts_obligation:       ["impacts", "LinkAssertion · ROB"],
+    impacts_risk:             ["impacts", "LinkAssertion · LR"],
+    impacts_control:          ["impacts", "LinkAssertion · L1C"],
+    impacts_control_instance: ["impacts", "LinkAssertion · CONTROL_1C"],
+    has_summary:              ["has summary",        "hasSummary"],
+    has_obligation:           ["decomposes to",      "decomposesTo"],
+    implemented_by_policy:    ["implemented by",     "implementedByPolicy"],
+    implemented_by_procedure: ["operationalised by", "governsActivity"],
+    mitigated_by:             ["mitigated by",       "mitigatedBy"],
+    instantiated_as:          ["has instance",       "hasInstance"],
+    has_gap:                  ["has gap",            "identifiesGap"],
   };
-  const relL = (r) => (REL[r] || [r])[0];
-  const relP = (r) => (REL[r] || ["", ""])[1];
-  const KINDL = {
-    AI_LINK:    "AI link · model decision with evidence",
-    STRUCTURAL: "Structural · from RegMap / Helios",
-    DERIVED:    "Derived · rule-based finding",
+  const verb = (r) => (REL[r] || [r.replace(/_/g, " ")])[0];
+  const prop = (r) => (REL[r] || ["", ""])[1];
+
+  // Which layer an edge belongs to.
+  function layerOf(e) {
+    if (e.kind === "DERIVED") return "gap";
+    if (nodeById[e.source].type === "Alert") return "impact";
+    return e.kind === "AI_LINK" ? "structure-ai" : "structure";
+  }
+  const LAYER_TXT = {
+    impact:         ["Impact link", "AI-assessed: this alert touches this record", "var(--accent)"],
+    structure:      ["Ontology structure", "From the system of record (RegMap / Helios)", "var(--lineage)"],
+    "structure-ai": ["Ontology structure", "AI-built link, not alert-specific (obligation → GPPS)", "var(--lineage)"],
+    gap:            ["Gap finding", "Rule: something the structure expects is missing", "var(--bad)"],
   };
 
   function vClass(v) {
@@ -758,28 +814,29 @@ select(start);
     if (s === "UNCERTAIN" || s === "NEEDS_SME") return "uncertain";
     return "";
   }
-  const vText = (v) => ({ agree: "Judge confirms", disagree: "Judge disputes",
-                          uncertain: "Judge unsure → SME" }[vClass(v)] || "Not judged");
-  const vPill = (v) => ({ agree: "PASS", disagree: "Violation", uncertain: "Warning" }[vClass(v)] || "DERIVED");
+  const vText = (v) => ({ agree: "✓ Judge confirms", disagree: "✗ Judge disputes",
+                          uncertain: "? Judge unsure → SME" }[vClass(v)] || "Not judged");
 
 
   /* -------------------------------------------------------------------
      2. STATE
      ------------------------------------------------------------------- */
   let DATA = null, nodeById = {}, inE = {}, outE = {};
-  let mapOn = true;                 // light up the Map with live counts
-  let cur = "ALL";                  // alert filter in the Live tab
-  let selL = null;                  // { kind: "node"|"edge", id }
-  let P = {};                       // node positions in the Live graph
-  let TF = { x: 0, y: 0, k: 1 };    // pan / zoom
+  let mapOn = true;                 // live counts on the Map tab
+  let cur = "ALL";                  // alert filter
+  let layer = "both";               // "both" | "structure" | "impact"
   let mode = "step";                // "step" = reveal on click, "all" = everything
-  let R = new Set();                // records revealed so far (step mode)
+  let R = new Set();                // revealed records (step mode)
   let fresh = new Set();            // just revealed -> animate once
-  let KIDS = {}, PARENTS = {};      // drawn children / parents in the current scope
+  let KIDS = {}, PARENTS = {};      // drawn children / parents in the current view
+  let selL = null;                  // { kind: "node"|"edge", id }
+  let P = {};                       // node positions
+  let TF = { x: 0, y: 0, k: 1 };    // pan / zoom
+  let lastText = "";                // joined, cleaned JSON text
 
 
   /* -------------------------------------------------------------------
-     3. HEADER: load button + status line
+     3. HEADER: load, save-as-one-file, status
      ------------------------------------------------------------------- */
   document.querySelector("header").insertAdjacentHTML("beforeend", `
     <div class="lv-load">
@@ -805,15 +862,16 @@ select(start);
     Promise.all(files.map((f) => f.text())).then((texts) => {
       // Python writes missing numbers as bare NaN / Infinity: make them null.
       const clean = texts.join("").replace(/([:\[,]\s*)(NaN|-?Infinity)(?=\s*[,\]}])/g, "$1null");
-      try { load(JSON.parse(clean)); lastText = clean; $("lv-save").hidden = files.length < 2; }
-      catch (err) {
+      try {
+        load(JSON.parse(clean));
+        lastText = clean;
+        $("lv-save").hidden = files.length < 2;
+      } catch (err) {
         alert("Could not read the data.\n\nIf you loaded split parts, select ALL parts together.\n\n" + err.message);
       }
     });
   }
 
-  // Save the joined (and NaN-cleaned) parts as ONE json file on this computer.
-  let lastText = "";
   $("lv-save").onclick = () => {
     if (!lastText) return;
     const a = document.createElement("a");
@@ -857,7 +915,6 @@ select(start);
   drawMap = function () { baseDrawMap(); if (DATA && mapOn) decorateMap(); };
 
   function decorateMap() {
-    // Badges on classes with data; everything else greyed and inactive.
     $("svg").querySelectorAll(".node").forEach((g) => {
       const id = g.dataset.id, n = countFor(id), r = g.querySelector("rect");
       if (!r) return;
@@ -874,7 +931,6 @@ select(start);
       }
     });
 
-    // Explain panel: the real records behind the selected class.
     if (!sel) return;
     const ex = $("explain"), n = countFor(sel);
     if (n > 0) {
@@ -920,21 +976,29 @@ select(start);
          risk → library control → control instance, with the evidence behind every AI link.</p>
       <div><button class="ex-toggle" id="lv-load2">Load live data</button></div>
     </div>
-    <div id="lv-body" hidden style="display:flex;flex-direction:column;gap:14px">
+    <div id="lv-body" hidden style="display:flex;flex-direction:column;gap:12px">
       <div class="maptools">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <select class="lv-select" id="lv-alert" aria-label="Alert"></select>
           <input type="search" id="lv-search" placeholder="Find an ID or title, then Enter">
         </div>
+        <div class="zoom" role="group" aria-label="Zoom">
+          <button id="lv-out" aria-label="Zoom out">−</button><button id="lv-fit">Fit</button><button id="lv-in" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+      <div class="maptools">
+        <div class="lv-tools">
+          <span class="muted" style="font-size:13px">Layer</span>
+          <div class="seg" role="group" aria-label="Layer">
+            <button id="lv-l-both">Structure + impact</button><button id="lv-l-structure">Ontology structure</button><button id="lv-l-impact">Alert impact</button>
+          </div>
+        </div>
         <div class="lv-tools">
           <div class="seg" role="group" aria-label="Reveal mode">
-            <button id="lv-m-step" aria-pressed="true">Step by step</button><button id="lv-m-all" aria-pressed="false">Show all</button>
+            <button id="lv-m-step">Step by step</button><button id="lv-m-all">Show all</button>
           </div>
           <button class="ex-toggle" id="lv-next">Next step ▸</button>
           <button class="btn2" id="lv-reset">Reset</button>
-        </div>
-        <div class="zoom" role="group" aria-label="Zoom">
-          <button id="lv-out" aria-label="Zoom out">−</button><button id="lv-fit">Fit</button><button id="lv-in" aria-label="Zoom in">+</button>
         </div>
       </div>
       <div class="lv-hint" id="lv-hint"></div>
@@ -950,14 +1014,14 @@ select(start);
   $("lv-load2").onclick = () => $("lv-file").click();
 
   $("lv-legend").innerHTML = [
-    ["var(--ok)",      "AI link · judge confirms", ""],
-    ["var(--bad)",     "AI link · judge disputes", ""],
-    ["var(--warn)",    "AI link · judge unsure → SME", ""],
-    ["var(--muted)",   "AI link · not judged", ""],
-    ["var(--lineage)", "Structural (RegMap / Helios)", "dotted"],
-    ["var(--bad)",     "Gap finding (rule)", "dashed"],
+    ["var(--ok)",      "Impact · judge confirms", ""],
+    ["var(--bad)",     "Impact · judge disputes", ""],
+    ["var(--warn)",    "Impact · judge unsure → SME", ""],
+    ["var(--muted)",   "Impact · not judged", ""],
+    ["var(--lineage)", "Ontology structure", "dotted"],
+    ["var(--bad)",     "Gap (rule)", "dashed"],
   ].map(([c, t, s]) => `<span><i style="border-color:${c};${s ? "border-top-style:" + s : ""}"></i>${t}</span>`).join("")
-    + `<span><b>Click any box or line to see its details and evidence</b></span>`;
+    + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span>`;
 
   const baseSelect = select;
   select = function (id) { baseSelect(id); if (id === "live") showLive(); };
@@ -982,7 +1046,8 @@ select(start);
     d.nodes.forEach((n) => { nodeById[n.id] = n; inE[n.id] = []; outE[n.id] = []; });
     d.edges = d.edges.filter((e) => nodeById[e.source] && nodeById[e.target]);
     d.edges.forEach((e, i) => { e._i = i; outE[e.source].push(e); inE[e.target].push(e); });
-    DATA = d; cur = "ALL"; selL = null; resetReveal();
+    DATA = d; cur = "ALL"; selL = null;
+    d.edges.forEach((e) => { e._layer = layerOf(e); });
 
     const alerts = d.nodes.filter((n) => n.type === "Alert");
     $("lv-alert").innerHTML = `<option value="ALL">All sample alerts (${alerts.length})</option>` +
@@ -994,18 +1059,20 @@ select(start);
       (d.meta && d.meta.generated ? ` · built ${d.meta.generated}` : "");
     $("lv-loadbtn").textContent = "Reload data";
     $("lv-maptoggle").hidden = false;
+    resetReveal();
     select("live");
   }
 
 
   /* -------------------------------------------------------------------
-     8. LIVE GRAPH: two lanes
-        Regulatory chain : Alert | RGL | RSM | ROB | Policy + Procedure | Gaps
-        Risk & control   : Alert | LR  | L1C | 1C  |                   | Gaps
+     8. WHAT IS IN VIEW
+        scope  = records reachable from the chosen alert(s)
+        layer  = which kinds of links are drawn
+        reveal = which records are shown so far (step mode)
      ------------------------------------------------------------------- */
-  const COL_W = 270, ROW_H = 36, NODE_W = 220, NODE_H = 28, LANE_GAP = 100, TOP = 60;
+  const COL_W = 330, ROW_H = 36, NODE_W = 220, NODE_H = 28, LANE_GAP = 100, TOP = 60;
 
-  function visible() {
+  function scopeSet() {
     if (cur === "ALL") return new Set(DATA.nodes.map((n) => n.id));
     const seen = new Set([cur]), queue = [cur];
     while (queue.length) {
@@ -1015,36 +1082,98 @@ select(start);
     return seen;
   }
 
+  // Edges drawn for the active layer.
+  function layerEdges(scope) {
+    const inScope = (e) => scope.has(e.source) && scope.has(e.target);
+    if (layer === "impact") return DATA.edges.filter((e) => inScope(e) && e._layer === "impact");
+    if (layer === "structure") return DATA.edges.filter((e) => inScope(e) && e._layer !== "impact");
+    // both: structure everywhere; an alert's impact line is drawn only to
+    // records with no structural parent in view (the others carry the
+    // impact as the coloured dot, and in the side panel).
+    return DATA.edges.filter((e) => {
+      if (!inScope(e)) return false;
+      if (e._layer !== "impact") return true;
+      return !inE[e.target].some((p) => scope.has(p.source) && p._layer !== "impact");
+    });
+  }
+
+  // Records that take part in the active layer.
+  function layerNodes(scope, edges) {
+    const s = new Set();
+    edges.forEach((e) => { s.add(e.source); s.add(e.target); });
+    if (layer !== "structure") scope.forEach((id) => { if (nodeById[id].type === "Alert") s.add(id); });
+    if (layer === "structure") scope.forEach((id) => {          // impacted records with no structure link
+      if (nodeById[id].type !== "Alert") s.add(id);
+    });
+    return s;
+  }
+
+  function computeView() {
+    const scope = scopeSet();
+    const edges = layerEdges(scope);
+    const nodes = layerNodes(scope, edges);
+    KIDS = {}; PARENTS = {};
+    edges.forEach((e) => {
+      (KIDS[e.source] = KIDS[e.source] || []).push(e.target);
+      (PARENTS[e.target] = PARENTS[e.target] || []).push(e.source);
+    });
+    return { scope, edges, nodes };
+  }
+
+  function resetReveal() {
+    const { nodes } = computeView();
+    // Start from the roots: records nothing in view points to (the alerts,
+    // or in the structure layer the top of each chain).
+    R = new Set([...nodes].filter((id) => !(PARENTS[id] || []).length));
+    fresh = new Set(R);
+  }
+  function reveal(ids) { ids.forEach((k) => { if (!R.has(k)) { R.add(k); fresh.add(k); } }); }
+  function expand(id) { reveal(KIDS[id] || []); }
+  function fold(id) {
+    (KIDS[id] || []).forEach((k) => {
+      if (!R.has(k)) return;
+      const other = (PARENTS[k] || []).some((p) => p !== id && R.has(p));
+      if (!other) { fold(k); R.delete(k); }
+    });
+  }
+  function nextStep() {
+    [...R].filter((id) => (KIDS[id] || []).some((k) => !R.has(k))).forEach(expand);
+    render();
+  }
+  function revealPath(id) {
+    let x = id, guard = 0;
+    while (x && !R.has(x) && guard++ < 50) { R.add(x); fresh.add(x); x = (PARENTS[x] || [])[0]; }
+  }
+
+
+  /* -------------------------------------------------------------------
+     9. LAYOUT: two lanes, fixed positions for the whole scope
+        Regulatory chain : Alert | RGL | RSM | ROB | Policy + Procedure | Gaps
+        Risk & control   : Alert | LR  | L1C | 1C  |                   | Gaps
+     ------------------------------------------------------------------- */
   function laneOf(id) {
     const n = nodeById[id];
     if (n.type === "Gap") { const p = inE[id][0]; return p ? laneOf(p.source) : "reg"; }
     return (T[n.type] || { lane: "reg" }).lane;
   }
 
-  // Hide Alert -> X when X already hangs off another parent in view;
-  // the evidence for that AI link stays in the side panel.
-  function drawn(vis) {
-    return DATA.edges.filter((e) => {
-      if (!vis.has(e.source) || !vis.has(e.target)) return false;
-      if (nodeById[e.source].type !== "Alert") return true;
-      return !inE[e.target].some((p) => vis.has(p.source) && nodeById[p.source].type !== "Alert");
-    });
-  }
-
-  function layoutGraph(vis, edges) {
+  function layoutGraph(scope) {
     P = {};
     const cols = {}, alerts = [];
-    vis.forEach((id) => {
+    scope.forEach((id) => {
       const n = nodeById[id];
       if (n.type === "Alert") { alerts.push(id); return; }
       const key = laneOf(id) + "|" + ((T[n.type] || {}).col ?? 5);
       (cols[key] = cols[key] || []).push(id);
     });
 
-    // Order each column next to its parents (shorter, cleaner lines).
+    // Order each column next to its structural parent (falls back to alert).
     const order = {};
     alerts.sort().forEach((id, i) => { order[id] = i / Math.max(1, alerts.length); });
-    const parentsOf = (id) => edges.filter((e) => e.target === id).map((e) => e.source);
+    const parentsOf = (id) => {
+      const s = inE[id].filter((e) => scope.has(e.source) && e._layer !== "impact").map((e) => e.source);
+      return s.length ? s : inE[id].filter((e) => scope.has(e.source)).map((e) => e.source);
+    };
     const typeRank = { Policy: 0, Procedure: 1 };
     ["reg", "ctl"].forEach((lane) => {
       for (let c = 1; c <= 5; c++) {
@@ -1079,29 +1208,28 @@ select(start);
     return { cols, lanes };
   }
 
-  function render() {
-    // Layout uses the WHOLE scope, so boxes never move as more are revealed.
-    const scope = visible(), allEdges = drawn(scope), { cols, lanes } = layoutGraph(scope, allEdges);
-    KIDS = {}; PARENTS = {};
-    allEdges.forEach((e) => {
-      (KIDS[e.source] = KIDS[e.source] || []).push(e.target);
-      (PARENTS[e.target] = PARENTS[e.target] || []).push(e.source);
-    });
-    const vis = mode === "all" ? scope : new Set([...R].filter((id) => scope.has(id)));
-    const edges = allEdges.filter((e) => vis.has(e.source) && vis.has(e.target));
-    const hidden = (id) => (KIDS[id] || []).filter((k) => !vis.has(k)).length;
-    let order = 0;
-    const anim = (id) => fresh.has(id) ? ` lv-new" style="animation-delay:${Math.min(order++ * 35, 900)}ms` : "";
 
-    // Highlight set for the current selection.
+  /* -------------------------------------------------------------------
+     10. RENDER
+     ------------------------------------------------------------------- */
+  function render() {
+    const { scope, edges, nodes } = computeView();
+    const { cols, lanes } = layoutGraph(scope);
+    const vis = mode === "all" ? nodes : new Set([...R].filter((id) => nodes.has(id)));
+    const shown = edges.filter((e) => vis.has(e.source) && vis.has(e.target));
+
+    // Show-all mode: clicking a box highlights its own links.
     let fs = null;
-    if (mode === "step") { /* no dimming while presenting step by step */ }
-    else if (selL && selL.kind === "node" && vis.has(selL.id)) {
+    if (mode === "all" && selL && selL.kind === "node" && vis.has(selL.id)) {
       fs = new Set([selL.id]);
-      [...inE[selL.id], ...outE[selL.id]].forEach((e) => { fs.add(e.source); fs.add(e.target); });
-    } else if (selL && selL.kind === "edge") {
+      shown.forEach((e) => { if (e.source === selL.id || e.target === selL.id) { fs.add(e.source); fs.add(e.target); } });
+    } else if (mode === "all" && selL && selL.kind === "edge") {
       const e = DATA.edges[selL.id]; fs = new Set([e.source, e.target]);
     }
+    const labelOn = (e) => mode === "step" || (fs && fs.has(e.source) && fs.has(e.target));
+
+    let order = 0;
+    const anim = (id) => fresh.has(id) ? ` lv-new" style="animation-delay:${Math.min(order++ * 35, 900)}ms` : "";
 
     let g = "";
     const width = 40 + 6 * COL_W;
@@ -1109,8 +1237,8 @@ select(start);
     // --- Lane bands and column titles ---------------------------------
     [["reg", "REGULATORY CHAIN · RegMap + GPPS"], ["ctl", "RISK & CONTROL CHAIN · Helios"]].forEach(([lane, title]) => {
       const L = lanes[lane];
-      g += `<rect class="lv-lane" x="${COL_W - 30}" y="${L.top - 46}" width="${width - COL_W + 10}" height="${L.h + 62}" rx="10"/>`;
-      g += `<text class="lv-lane-t" x="${COL_W - 12}" y="${L.top - 27}">${title}</text>`;
+      g += `<rect class="lv-lane" x="${COL_W - 40}" y="${L.top - 46}" width="${width - COL_W + 20}" height="${L.h + 62}" rx="10"/>`;
+      g += `<text class="lv-lane-t" x="${COL_W - 22}" y="${L.top - 27}">${title}</text>`;
       for (let c = 1; c <= 5; c++) {
         const list = cols[lane + "|" + c];
         if (!list) continue;
@@ -1119,46 +1247,59 @@ select(start);
       }
     });
 
-    // --- Edges (wide invisible hit path for clicking) ------------------
-    edges.forEach((e) => {
+    // --- Lines ------------------------------------------------------------
+    const labels = [], labelSeen = new Set();
+    shown.forEach((e) => {
       const a = P[e.source], b = P[e.target];
       if (!a || !b) return;
       const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
       const dx = Math.max(40, (x2 - x1) / 2);
       const d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
-      const v = e.kind === "AI_LINK" ? vClass(e.judge_verdict) : "";
+      const v = e._layer === "impact" ? vClass(e.judge_verdict) : "";
       const dim = fs && !(fs.has(e.source) && fs.has(e.target)) ? "lv-dim" : "";
       const hl = selL && selL.kind === "edge" && selL.id === e._i ? "hl" : "";
-      g += `<path class="lv-edge ${e.kind} ${v ? "v-" + v : ""} ${dim} ${hl}${anim(e.target)}" d="${d}"/>`;
-      g += `<path class="lv-hit" data-edge="${e._i}" d="${d}"><title>${h(relL(e.relation))}</title></path>`;
+      const an = anim(e.target);
+      g += `<path class="lv-edge ${e._layer} ${v ? "v-" + v : ""} ${dim} ${hl}${an}" d="${d}"/>`;
+      g += `<path class="lv-hit" data-edge="${e._i}" d="${d}"><title>${h(verb(e.relation))}</title></path>`;
+      // The relation is written on the line, just before the box it points to.
+      const key = e.target + "|" + e.relation;
+      if (labelOn(e) && !labelSeen.has(key)) {
+        labelSeen.add(key);
+        const t = verb(e.relation), w = t.length * 6.2 + 14;
+        labels.push(`<g class="lv-elab ${e._layer}${an}" data-edge="${e._i}">
+          <rect x="${x2 - 8 - w}" y="${y2 - 9}" width="${w}" height="18" rx="9"/>
+          <text x="${x2 - 8 - w / 2}" y="${y2 + 3.5}" text-anchor="middle">${h(t)}</text>
+          <title>${h(t)} · ${h(prop(e.relation))}</title></g>`);
+      }
     });
+    g += labels.join("");
 
-    // --- Nodes ---------------------------------------------------------
+    // --- Boxes ------------------------------------------------------------
     vis.forEach((id) => {
       const n = nodeById[id], p = P[id];
       if (!p) return;
       const dim = fs && !fs.has(id) ? "lv-dim" : "";
       const isSel = selL && selL.kind === "node" && selL.id === id ? "sel" : "";
       const gap = n.type === "Gap" ? "gap" : "";
-      const ai = inE[id].find((e) => e.kind === "AI_LINK" && vis.has(e.source) && !blank(e.judge_verdict));
-      const vc = ai ? vClass(ai.judge_verdict) : "";
+      const imp = inE[id].find((e) => e._layer === "impact" && !blank(e.judge_verdict));
+      const vc = imp ? vClass(imp.judge_verdict) : "";
       const vcol = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc];
       const label = n.title && n.title !== id ? n.title : id;
-      // Step mode: "+N" = N more links to reveal, "−" = expanded (click to fold).
       let more = "";
       if (mode === "step" && (KIDS[id] || []).length) {
-        const n = hidden(id), txt = n ? "+" + n : "−", w = txt.length * 7 + 12;
-        more = `<g class="lv-more ${n ? "" : "done"}" data-more="${h(id)}" data-n="${n}">
+        const k = (KIDS[id] || []).filter((x) => !vis.has(x)).length;
+        const txt = k ? "+" + k : "−", w = txt.length * 7 + 12;
+        more = `<g class="lv-more ${k ? "" : "done"}" data-more="${h(id)}" data-n="${k}">
           <rect x="${NODE_W - 22 - w}" y="${NODE_H / 2 - 9}" width="${w}" height="18" rx="9"/>
           <text x="${NODE_W - 22 - w / 2}" y="${NODE_H / 2 + 4}" text-anchor="middle">${txt}</text>
-          <title>${n ? "Reveal " + n + " linked record(s)" : "Fold this branch"}</title></g>`;
+          <title>${k ? "Reveal " + k + " linked record(s)" : "Fold this branch"}</title></g>`;
       }
       g += `<g class="lv-node ${dim} ${isSel} ${gap}${anim(id)}" data-node="${h(id)}" transform="translate(${p.x},${p.y})">
         <title>${h(tLabel(n.type))}: ${h(id)}${n.title && n.title !== id ? "\n" + h(n.title) : ""}</title>
         <rect class="box" width="${NODE_W}" height="${NODE_H}" rx="6"/>
         <rect width="5" height="${NODE_H}" rx="2" fill="${tColor(n.type)}"/>
         <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${h(short(label, more ? 23 : 30))}</text>
-        ${vcol ? `<circle cx="${NODE_W - 10}" cy="${NODE_H / 2}" r="5" fill="${vcol}"><title>${vText(ai.judge_verdict)}</title></circle>` : ""}
+        ${vcol ? `<circle cx="${NODE_W - 10}" cy="${NODE_H / 2}" r="5" fill="${vcol}"><title>Alert impact: ${vText(imp.judge_verdict)}</title></circle>` : ""}
         ${more}
       </g>`;
     });
@@ -1166,141 +1307,188 @@ select(start);
     $("lv-vp").innerHTML = g;
     fresh = new Set();
     stats(scope);
-    stepUi(vis);
+    toolsUi(vis);
   }
 
-  /* -------------------------------------------------------------------
-     8b. STEP-BY-STEP REVEAL
-         Start with the alert(s) only. Clicking a box reveals what it links
-         to (one layer). "Next step" reveals one more layer everywhere.
-     ------------------------------------------------------------------- */
-  function scopeAlerts() {
-    return cur === "ALL" ? DATA.nodes.filter((n) => n.type === "Alert").map((n) => n.id) : [cur];
-  }
-  function resetReveal() {
-    R = new Set(scopeAlerts()); fresh = new Set(R);
-  }
-  function reveal(ids) {
-    ids.forEach((k) => { if (!R.has(k)) { R.add(k); fresh.add(k); } });
-  }
-  function expand(id) { reveal(KIDS[id] || []); }
-  // Fold: hide everything below this box that no other visible box still holds.
-  function fold(id) {
-    (KIDS[id] || []).forEach((k) => {
-      if (!R.has(k)) return;
-      const otherParent = (PARENTS[k] || []).some((p) => p !== id && R.has(p));
-      if (!otherParent) { fold(k); R.delete(k); }
-    });
-  }
-  function nextStep() {
-    const frontier = [...R].filter((id) => (KIDS[id] || []).some((k) => !R.has(k)));
-    frontier.forEach(expand);
-    render();
-  }
-  // Make a record visible by revealing one path down to it from an alert.
-  function revealPath(id) {
-    let x = id, guard = 0;
-    while (x && !R.has(x) && guard++ < 50) {
-      R.add(x); fresh.add(x);
-      x = (PARENTS[x] || [])[0];
-    }
-  }
-  function stepUi(vis) {
-    const step = mode === "step";
-    $("lv-m-step").setAttribute("aria-pressed", step);
-    $("lv-m-all").setAttribute("aria-pressed", !step);
-    $("lv-next").hidden = !step; $("lv-reset").hidden = !step;
-    $("lv-next").disabled = ![...vis].some((id) => (KIDS[id] || []).some((k) => !vis.has(k)));
-    $("lv-hint").innerHTML = step
-      ? `<b>Step by step:</b> click a box to reveal what it links to (the red <b>+N</b> shows how many) · <b>Next step</b> reveals one more layer · click <b>−</b> to fold a branch · Reset starts again`
-      : `<b>Show all:</b> every link at once · click a box to highlight its links`;
-  }
-
-  $("lv-m-step").onclick = () => { mode = "step"; resetReveal(); selL = null; $("lv-grid").classList.remove("open"); render(); requestAnimationFrame(fit); };
-  $("lv-m-all").onclick  = () => { mode = "all"; render(); requestAnimationFrame(fit); };
-  $("lv-next").onclick   = nextStep;
-  $("lv-reset").onclick  = () => { resetReveal(); selL = null; $("lv-grid").classList.remove("open"); render(); };
-
-  function stats(vis) {
+  function stats(scope) {
     const c = {};
-    vis.forEach((id) => { const t = nodeById[id].type; c[t] = (c[t] || 0) + 1; });
-    const ai = DATA.edges.filter((e) => e.kind === "AI_LINK" && vis.has(e.source) && vis.has(e.target));
+    scope.forEach((id) => { const t = nodeById[id].type; c[t] = (c[t] || 0) + 1; });
+    const imp = DATA.edges.filter((e) => e._layer === "impact" && scope.has(e.source) && scope.has(e.target));
     const v = { agree: 0, disagree: 0, uncertain: 0, "": 0 };
-    ai.forEach((e) => { v[vClass(e.judge_verdict)]++; });
+    imp.forEach((e) => { v[vClass(e.judge_verdict)]++; });
     const order = ["Alert", "RGL", "RSM", "ROB", "Policy", "Procedure", "LR", "L1C", "1C", "Gap"];
     $("lv-stats").innerHTML =
       order.filter((t) => c[t]).map((t) =>
         `<div class="stat"><b style="color:${tColor(t)}">${c[t]}</b><span>${h(tLabel(t))}</span></div>`).join("") +
-      `<div class="stat wide"><b>${ai.length}</b><span>AI links ·
+      `<div class="stat wide"><b>${imp.length}</b><span>alert impact links ·
         <span style="color:var(--ok)">${v.agree} confirmed</span> ·
         <span style="color:var(--bad)">${v.disagree} disputed</span> ·
         <span style="color:var(--warn)">${v.uncertain} to SME</span> · ${v[""]} not judged</span></div>`;
   }
 
+  function toolsUi(vis) {
+    const step = mode === "step";
+    ["both", "structure", "impact"].forEach((l) => $("lv-l-" + l).setAttribute("aria-pressed", layer === l));
+    $("lv-m-step").setAttribute("aria-pressed", step);
+    $("lv-m-all").setAttribute("aria-pressed", !step);
+    $("lv-next").hidden = !step; $("lv-reset").hidden = !step;
+    $("lv-next").disabled = ![...vis].some((id) => (KIDS[id] || []).some((k) => !vis.has(k)));
+    const L = {
+      both: "<b>Structure + impact:</b> the ontology chain of everything the alert touches. The coloured dot on a box is the judge's verdict on the alert's impact on it.",
+      structure: "<b>Ontology structure:</b> how the impacted records relate to each other in RegMap, GPPS and Helios, with no alert links drawn.",
+      impact: "<b>Alert impact:</b> every record the alert touches directly, one line each, coloured by the judge's verdict.",
+    }[layer];
+    $("lv-hint").innerHTML = L + (step
+      ? " &nbsp;·&nbsp; <b>Step by step:</b> click a box to reveal what it links to (red <b>+N</b>), <b>Next step</b> reveals one more layer, <b>−</b> folds a branch."
+      : " &nbsp;·&nbsp; <b>Show all:</b> click a box to highlight its links.");
+  }
+
+  const relayout = () => { selL = null; $("lv-grid").classList.remove("open"); resetReveal(); render(); requestAnimationFrame(fit); };
+  ["both", "structure", "impact"].forEach((l) => { $("lv-l-" + l).onclick = () => { layer = l; relayout(); }; });
+  $("lv-m-step").onclick = () => { mode = "step"; relayout(); };
+  $("lv-m-all").onclick  = () => { mode = "all"; render(); requestAnimationFrame(fit); };
+  $("lv-next").onclick   = nextStep;
+  $("lv-reset").onclick  = () => { selL = null; $("lv-grid").classList.remove("open"); resetReveal(); render(); };
+
 
   /* -------------------------------------------------------------------
-     9. SIDE PANEL: record details and the evidence behind each link
+     11. SIDE PANEL: structured cards
+         1 · the record   2 · how the alert impacts it   3 · where it sits
      ------------------------------------------------------------------- */
   function openEx(html) {
     $("lv-ex").innerHTML = `<button class="ex-close" aria-label="Close">×</button>` + html;
     $("lv-ex").querySelector(".ex-close").onclick = clearSel;
     $("lv-grid").classList.add("open");
+    $("lv-ex").scrollTop = 0;
+    // Show "Show more" only where the text is actually cut.
+    $("lv-ex").querySelectorAll(".pn-text.clamp").forEach((t) => {
+      const b = t.nextElementSibling;
+      if (b && b.classList.contains("pn-more")) b.hidden = t.scrollHeight <= t.clientHeight + 2;
+    });
   }
   function clearSel() { selL = null; $("lv-grid").classList.remove("open"); render(); }
 
-  function proof(e) {
+  const secT = (n, t, extra = "") => `<div class="pn-sec"><span class="n">${n}</span>${t}${extra}</div>`;
+
+  // A record card: type chip, ID, title, its own text (clamped).
+  function card(n, lines = 6) {
+    const cls = T[n.type] ? T[n.type].cls : "";
+    const desc = cls && byId[cls] ? byId[cls].d : "";
+    const title = n.title && n.title !== n.id ? `<div class="pn-title">${h(n.title)}</div>` : "";
+    const text = !blank(n.text)
+      ? `<div class="pn-text clamp" style="--lines:${lines}">${h(n.text)}</div><button class="pn-more">Show more</button>`
+      : `<div class="muted" style="font-size:13px">${h(desc)}</div>`;
+    return `<div class="pn-card" style="--c:${tColor(n.type)}">
+      <div class="pn-head"><span class="pn-chip">${h(tShort(n.type))}</span><span class="tag">${h(n.id)}</span></div>
+      ${title}${text}</div>`;
+  }
+
+  // The relation between two cards.
+  function relBlock(e) {
+    const [name, sub, col] = LAYER_TXT[e._layer];
+    return `<div class="pn-rel" style="--kc:${col}"><span class="arrow">↓</span>
+      <span class="verb">${h(verb(e.relation))}</span>
+      <small>${h(name)} · ${h(sub)}${prop(e.relation) ? " · " + h(prop(e.relation)) : ""}</small>
+      <span class="arrow">↓</span></div>`;
+  }
+
+  // Evidence for an AI link: verdict, score, the two quotes, reasoning.
+  function evidence(e) {
+    if (e.kind !== "AI_LINK") return "";
     const s = nodeById[e.source], t = nodeById[e.target];
-    let x = `<div class="lv-proof">
-      <div><b>${h(s.title || s.id)}</b> → <i>${h(relL(e.relation))}</i> → <b>${h(t.title || t.id)}</b></div>
-      <div class="lv-row"><span>${h(KINDL[e.kind] || e.kind)}</span>${relP(e.relation) ? `<span class="tag">${h(relP(e.relation))}</span>` : ""}</div>`;
-    if (e.kind === "AI_LINK") {
-      x += `<div class="lv-row">
-        ${pill(vText(e.judge_verdict), vPill(e.judge_verdict))}
-        ${!blank(e.score) ? `<span>Score <b>${h(e.score)}</b>/10</span>` : ""}
-        ${!blank(e.confidence) ? `<span>Confidence <b>${h(e.confidence)}</b></span>` : ""}
-        ${!blank(e.grounding) ? `<span>Grounding <b>${h(e.grounding)}</b></span>` : ""}
-        ${!blank(e.route) ? `<span>Route <b>${h(e.route)}</b></span>` : ""}
-        ${!blank(e.tier) ? `<span>Tier <b>${h(e.tier)}</b></span>` : ""}</div>`;
-      if (!blank(e.sections)) x += `<div class="lv-row"><span>Linked sections <b>${h(e.sections)}</b></span></div>`;
-      if (!blank(e.evidence_from)) x += `<div class="lv-q">“${h(e.evidence_from)}”<small>from the ${h(tLabel(s.type).toLowerCase())}</small></div>`;
-      if (!blank(e.evidence_to)) x += `<div class="lv-q to">“${h(e.evidence_to)}”<small>from the ${h(tLabel(t.type).toLowerCase())}</small></div>`;
-      if (!blank(e.reasoning)) x += `<div><b>Reasoning.</b> ${h(e.reasoning)}</div>`;
-    }
+    const vc = vClass(e.judge_verdict);
+    const score = Number(e.score);
+    let x = `<div class="pn-evi"><div class="pn-vrow">
+      <span class="pn-verdict ${vc}">${vText(e.judge_verdict)}</span>
+      ${!blank(e.score) && !isNaN(score) ? `<span class="pn-meter">Score <i><b style="width:${Math.max(0, Math.min(10, score)) * 10}%"></b></i><b style="color:var(--fg)">${h(e.score)}/10</b></span>` : ""}
+      ${!blank(e.confidence) ? `<span>Confidence <b style="color:var(--fg)">${h(e.confidence)}</b></span>` : ""}
+      ${!blank(e.grounding) ? `<span>Quotes <b style="color:var(--fg)">${h(e.grounding)}</b></span>` : ""}</div>`;
+    if (!blank(e.sections)) x += `<div class="pn-vrow">Linked sections <b style="color:var(--fg)">${h(e.sections)}</b></div>`;
+    if (!blank(e.evidence_from))
+      x += `<div class="pn-q" style="--qc:${tColor(s.type)}"><span class="pn-ql">${h(tShort(s.type))} says</span>“${h(e.evidence_from)}”</div>`;
+    if (!blank(e.evidence_to))
+      x += `<div class="pn-q" style="--qc:${tColor(t.type)}"><span class="pn-ql">${h(tShort(t.type))} says</span>“${h(e.evidence_to)}”</div>`;
+    if (!blank(e.reasoning)) x += `<details><summary>Why the model linked them</summary><p>${h(e.reasoning)}</p></details>`;
     return x + `</div>`;
   }
 
+  // One row in "Where it sits": direction, relation, the other record.
+  function linkRow(e, dir) {
+    const o = nodeById[dir === "up" ? e.source : e.target];
+    const [, , col] = LAYER_TXT[e._layer];
+    return `<div class="pn-link"><span class="pn-dir">${dir === "up" ? "↑ from" : "↓ to"}</span>
+      <span class="pn-verb" style="--kc:${col}">${h(verb(e.relation))}</span>
+      <span><button class="pn-go" style="--c:${tColor(o.type)}" data-go="${h(o.id)}">${h(tShort(o.type))} · ${h(short(o.title || o.id, 30))}</button>${
+        e.kind === "AI_LINK" ? `<button class="pn-ev" data-proof="${e._i}">evidence</button>` : ""}</span></div>`;
+  }
+
   function showNode(id) {
-    const n = nodeById[id], ins = inE[id], outs = outE[id];
-    const conn = (e, dir) => {
-      const o = nodeById[dir === "in" ? e.source : e.target];
-      return `<li><span class="kbar" style="background:${tColor(o.type)}"></span><span>${dir === "in" ? "←" : "→"} ${h(relL(e.relation))}
-        <button class="lnk" data-go="${h(o.id)}">${h(short(o.title || o.id, 40))}</button>
-        ${e.kind === "AI_LINK" ? ` · <button class="lnk" data-proof="${e._i}">evidence</button>` : ""}</span></li>`;
-    };
+    const n = nodeById[id];
+    let x = secT(1, n.type === "Alert" ? "The alert" : "The record") + card(n, 8);
+
+    if (n.type === "Alert") {
+      // What it impacts, grouped by artefact type.
+      const groups = {};
+      outE[id].filter((e) => e._layer === "impact").forEach((e) => {
+        const t = nodeById[e.target].type; (groups[t] = groups[t] || []).push(e);
+      });
+      const order = ["RGL", "RSM", "ROB", "LR", "L1C", "1C"];
+      const total = Object.values(groups).reduce((a, l) => a + l.length, 0);
+      x += secT(2, "What this alert impacts", ` <span class="count">${total}</span>`) + `<div class="pn-grid">` +
+        order.filter((t) => groups[t]).map((t) => {
+          const l = groups[t], ok = l.filter((e) => vClass(e.judge_verdict) === "agree").length;
+          return `<div class="pn-group"><h5><span class="pn-chip" style="--c:${tColor(t)}">${h(tShort(t))}</span>
+              ${l.length}${ok ? ` <span class="muted" style="font-weight:400">· ${ok} judge-confirmed</span>` : ""}</h5>
+            <div class="pn-chips">${l.slice(0, 14).map((e) => {
+              const o = nodeById[e.target], vc = vClass(e.judge_verdict);
+              const dot = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc] || "var(--line)";
+              return `<button class="pn-go" style="--c:${dot}" data-go="${h(o.id)}">${h(short(o.title || o.id, 22))}</button>`;
+            }).join("")}${l.length > 14 ? `<span class="muted">+${l.length - 14} more</span>` : ""}</div></div>`;
+        }).join("") + `</div><div class="pn-note">Left border colour = judge verdict (green confirmed, red disputed, amber to SME). Click one to see the evidence.</div>`;
+    } else {
+      // 2 · How the alert impacts it.
+      const imps = inE[id].filter((e) => e._layer === "impact");
+      if (imps.length) {
+        x += secT(2, "How the alert impacts it", imps.length > 1 ? ` <span class="count">${imps.length}</span>` : "");
+        imps.forEach((e) => { x += card(nodeById[e.source], 3) + relBlock(e) + evidence(e); });
+      } else {
+        const viaStructure = inE[id].filter((e) => e._layer !== "impact");
+        x += secT(2, "Impact") + `<div class="pn-note">${n.type === "Gap"
+          ? "A rule-based finding, not an AI judgement: the structure below expects a link that is missing."
+          : viaStructure.length
+            ? "Not linked directly by the alert. It is reached through the ontology structure: it sits under an impacted record (see below), so it is in the blast radius."
+            : "Not linked directly by the alert."}</div>`;
+      }
+      // 3 · Where it sits in the ontology.
+      const up = inE[id].filter((e) => e._layer !== "impact"), down = outE[id];
+      if (up.length || down.length) {
+        x += secT(3, "Where it sits in the ontology") + `<div class="pn-links">` +
+          up.map((e) => linkRow(e, "up")).join("") + down.map((e) => linkRow(e, "down")).join("") + `</div>`;
+      }
+    }
     const cls = T[n.type] ? T[n.type].cls : "";
-    let x = `<div class="ex-head"><span class="dot" style="background:${tColor(n.type)}"></span>
-        <span class="muted">${h(tLabel(n.type))}</span><span class="tag">${h(n.id)}</span></div>
-      <h3>${h(n.title || n.id)}</h3>`;
-    x += !blank(n.text) ? `<div class="lv-text">${h(n.text)}</div>`
-                        : `<p class="muted">${h(cls && byId[cls] ? byId[cls].d : "")}</p>`;
-    const why = ins.filter((e) => e.kind === "AI_LINK");
-    if (why.length) x += `<h4>Why it is linked <span class="count">${why.length}</span></h4>` + why.map(proof).join("");
-    if (outs.length) x += `<h4>Links onward <span class="count">${outs.length}</span></h4><ul class="sent">${outs.map((e) => conn(e, "out")).join("")}</ul>`;
-    const up = ins.filter((e) => e.kind !== "AI_LINK");
-    if (up.length) x += `<h4>Sits under <span class="count">${up.length}</span></h4><ul class="sent">${up.map((e) => conn(e, "in")).join("")}</ul>`;
-    if (cls) x += `<p class="muted">Ontology class: <button class="lnk" data-cls="${h(cls)}">${h(byId[cls].l)}</button></p>`;
+    if (cls) x += `<p class="muted" style="font-size:12.5px">Ontology class: <button class="lnk" data-cls="${h(cls)}">${h(byId[cls].l)}</button></p>`;
     openEx(x);
   }
 
   function showEdge(i) {
     const e = DATA.edges[i];
-    openEx(`<h3>Link evidence</h3>` + proof(e) +
-      `<h4>Ends</h4><ul class="sent">
-        <li><button class="lnk" data-go="${h(e.source)}">${h(nodeById[e.source].title || e.source)}</button></li>
-        <li><button class="lnk" data-go="${h(e.target)}">${h(nodeById[e.target].title || e.target)}</button></li></ul>`);
+    let x = secT(1, "The connection") + card(nodeById[e.source], 4) + relBlock(e) + card(nodeById[e.target], 4);
+    if (e.kind === "AI_LINK") x += secT(2, "The evidence") + evidence(e);
+    else x += `<div class="pn-note">${e._layer === "gap"
+      ? "Created by a rule on the structure, not by the model."
+      : "A fact copied from the system of record. No AI involved, so no score or evidence."}</div>`;
+    openEx(x);
   }
 
   $("lv-ex").addEventListener("click", (ev) => {
+    const more = ev.target.closest(".pn-more");
+    if (more) {
+      const t = more.previousElementSibling;
+      const open = t.classList.toggle("clamp");
+      more.textContent = open ? "Show more" : "Show less";
+      return;
+    }
     const go = ev.target.closest("[data-go]"), pr = ev.target.closest("[data-proof]"), cl = ev.target.closest("[data-cls]");
     if (go) gotoNode(go.dataset.go);
     else if (pr) { selL = { kind: "edge", id: Number(pr.dataset.proof) }; render(); showEdge(selL.id); }
@@ -1309,17 +1497,17 @@ select(start);
 
   function gotoNode(id) {
     if (!DATA || !nodeById[id]) return;
-    if (!visible().has(id)) { cur = "ALL"; $("lv-alert").value = "ALL"; resetReveal(); }
+    if (!scopeSet().has(id)) { cur = "ALL"; $("lv-alert").value = "ALL"; resetReveal(); }
     selL = { kind: "node", id };
-    render();                                            // builds PARENTS for this scope
-    if (mode === "step" && !R.has(id)) { revealPath(id); render(); }
-    showNode(id);
+    if (!computeView().nodes.has(id)) { layer = "both"; resetReveal(); computeView(); }
+    if (mode === "step" && !R.has(id)) revealPath(id);
+    render(); showNode(id);
     requestAnimationFrame(() => centerOn(id));
   }
 
 
   /* -------------------------------------------------------------------
-     10. INTERACTION: click, pan, zoom, fit, search, alert filter
+     12. INTERACTION: click, pan, zoom, fit, search, alert filter
      ------------------------------------------------------------------- */
   const svgL = $("lv-svg");
   let drag = null, moved = false;
@@ -1336,7 +1524,7 @@ select(start);
   svgL.addEventListener("click", (e) => {
     if (moved) return;                                   // a pan, not a click
     const mo = e.target.closest("[data-more]");
-    if (mo) {                                            // +N / − badge
+    if (mo) {
       const id = mo.dataset.more;
       if (Number(mo.dataset.n) > 0) expand(id); else fold(id);
       render(); return;
@@ -1344,7 +1532,7 @@ select(start);
     const n = e.target.closest("[data-node]"), ed = e.target.closest("[data-edge]");
     if (n) {
       selL = { kind: "node", id: n.dataset.node };
-      if (mode === "step") expand(selL.id);              // reveal the next layer
+      if (mode === "step") expand(selL.id);
       render(); showNode(selL.id);
     }
     else if (ed) { selL = { kind: "edge", id: Number(ed.dataset.edge) }; render(); showEdge(selL.id); }
@@ -1375,7 +1563,7 @@ select(start);
   function centerOn(id) {
     const p = P[id]; if (!p) return;
     const r = svgL.getBoundingClientRect(), k = Math.max(TF.k, 0.9);
-    TF = { k, x: r.width * 0.35 - (p.x + NODE_W / 2) * k, y: r.height / 2 - (p.y + NODE_H / 2) * k };
+    TF = { k, x: r.width * 0.3 - (p.x + NODE_W / 2) * k, y: r.height / 2 - (p.y + NODE_H / 2) * k };
     applyTF();
   }
 
@@ -1384,10 +1572,7 @@ select(start);
   $("lv-fit").onclick = fit;
   addEventListener("resize", () => { clearTimeout(window._lvrz); window._lvrz = setTimeout(fit, 200); });
 
-  $("lv-alert").onchange = (e) => {
-    cur = e.target.value; selL = null; $("lv-grid").classList.remove("open");
-    resetReveal(); render(); requestAnimationFrame(fit);
-  };
+  $("lv-alert").onchange = (e) => { cur = e.target.value; relayout(); };
 
   $("lv-search").addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || !DATA) return;
