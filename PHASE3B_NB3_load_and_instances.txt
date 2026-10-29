@@ -1,0 +1,515 @@
+# ==============================================================================
+# PHASE 3b - NOTEBOOK 3: (1) load level 1 into the graph  (2) level 2 count
+#                         (3) level 2 LLM + judge  - built to run UNATTENDED
+# ------------------------------------------------------------------------------
+# STANDALONE : fresh kernel; settings in CELL 1; gateway pasted as CELL 0
+# runs after : PHASE3B_NB2 (l1c_results.parquet, l1c_audit_labelled.parquet)
+# reads      : {OUT_DIR}/nodes.parquet, edges.parquet, phase3b/* (NB1 + NB2 outputs)
+# writes     : {OUT_DIR}/edges.parquet  (+ backup edges_before_satisfiedByControl.parquet)
+#              {P3B_DIR}/ic_candidates.parquet, ic_results.parquet (+ckpt),
+#              ic_audit_labelled.parquet (+ckpt), ic_results.xlsx
+#
+# UNATTENDED SAFETY (Run All from CELL 1 and walk away):
+#   - every LLM cell is checkpointed: after a restart re-run CELL 1, CELL 0 and CELLs 4-5
+#     (cheap, no LLM), then the interrupted cell - it resumes, nothing is paid twice
+#   - CELL 2 refuses to load into the graph twice
+#   - CELL 5 STOPS the notebook if the estimated LLM + judge cost > MAX_COST_USD
+#   - CELL 7 runs 5 batches first and STOPS if they fail automatic checks
+#     (errors, unparsed answers, quotes not found)
+#   - an assert stops "Run All", so later cells never run on a bad state
+#
+# LEVEL 2 QUESTION: does this live control INSTANCE (a control operated by a US business)
+# actually perform what the obligation requires? Only instances of library controls the
+# judge CONFIRMED in level 1; RegMap ext 5 'not applicable' (N) pairs are excluded,
+# 'applicable' (Y) pairs are flagged and judged first.
+# ==============================================================================
+
+
+# ====== CELL 1: CONFIG + LOAD =================================================
+import os
+import re
+import json
+import math
+import shutil
+import asyncio
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+
+# ---- paths / prices / settings ---------------------------------------------------
+OUT_DIR = "../output/ontology_graph"
+P3B_DIR = f"{OUT_DIR}/phase3b"
+TOKEN_PRICE = {"in": 0.20 / 1e6, "out": 1.20 / 1e6}
+
+BATCH_SIZE     = 10          # instances per call (all of one obligation x library control)
+CONCURRENCY    = 15
+MAX_TOKENS     = 20000
+SAVE_EVERY     = 25
+LINK_THRESHOLD = 5
+MAX_COST_USD   = 40          # CELL 5 stops if level 2 (LLM + judge) is estimated above this
+EXCLUDE_REGMAP_N = True      # drop obligation -> instance pairs RegMap marks 'not applicable'
+AUDIT = {"rejected_sample": 300, "probes": 30, "seed": 7}
+
+# ---- load ------------------------------------------------------------------------
+N = pd.read_parquet(f"{OUT_DIR}/nodes.parquet")
+E = pd.read_parquet(f"{OUT_DIR}/edges.parquet")
+TITLE = dict(zip(N["id"], N["title"].fillna("")))
+TEXT = dict(zip(N["id"], N["text"].fillna("")))
+IS_REC = dict(zip(N["id"], N["record"]))
+l1c_res = pd.read_parquet(f"{P3B_DIR}/l1c_results.parquet")
+l1c_lab = pd.read_parquet(f"{P3B_DIR}/l1c_audit_labelled.parquet")
+pool = pd.read_parquet(f"{P3B_DIR}/instance_pool.parquet")
+print(f"graph {len(N):,} nodes | {len(E):,} edges | level-1 pairs {len(l1c_res):,} | "
+      f"audit rows {len(l1c_lab):,} | instance pool {len(pool):,}")
+
+
+def text_of(i):
+    return f"{TITLE.get(i, '')}\n{TEXT.get(i, '')}".strip()
+
+
+def clean_words(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+
+def quote_found(quote, text):
+    q = clean_words(quote)
+    if len(q) < 12 or q in ("null", "none"):
+        return False
+    t = clean_words(text)
+    if q in t:
+        return True
+    w = q.split()
+    return len(w) >= 6 and (" ".join(w[:8]) in t or " ".join(w[-8:]) in t)
+
+
+def wilson(k, n, z=1.96):
+    if n == 0:
+        return (np.nan, np.nan)
+    p, d = k / n, 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0, c - h), min(1, c + h))
+
+
+def save_text_safe(df, path):
+    """Parquet-safe save (mixed bool / text judge columns -> text)."""
+    out = df.copy()
+    for c_ in out.columns:
+        if out[c_].dtype == object:
+            out[c_] = out[c_].map(lambda v: None if v is None else str(v))
+    out.to_parquet(path, index=False)
+
+
+
+# ====== CELL 0: GATEWAY =======================================================
+# Paste here, unchanged, the GATEWAY SPINE + LLM CALLER cells of your working notebook
+# (call_llm, cost_report, USAGE_LOG, ERROR_LOG, CURRENT_STAGE). TOKEN_PRICE is in CELL 1.
+
+
+
+# ====== CELL 2: STEP 1 - LOAD LEVEL 1 INTO THE GRAPH ($0) =====================
+# All judged obligation -> library control pairs, same convention as every AI link:
+# decision column, judge verdict joined, 'structure_confirmed' = LINKED + judge AGREE.
+PROP = "satisfiedByControl"
+already = int((E["property"] == PROP).sum())
+assert already == 0, f"{PROP} already in edges.parquet ({already} rows) - skip CELL 2 (already loaded)"
+
+lab_links = l1c_lab[l1c_lab["bucket"].isin(["LINKED", "REJECTED_SAMPLE"])][
+    ["rob", "l1c", "audit_verdict_final", "audit_label", "audit_error_type"]].drop_duplicates(["rob", "l1c"])
+f = l1c_res.merge(lab_links, on=["rob", "l1c"], how="left")
+f["judge_verdict"] = f["audit_verdict_final"].fillna("NOT_AUDITED")
+f["structure_confirmed"] = (f["final_decision"] == "LINKED") & (f["judge_verdict"] == "AGREE")
+
+checks = {
+    "duplicate (obligation, control) pairs": int(f.duplicated(["rob", "l1c"]).sum()),
+    "obligations not in graph": int((~f["rob"].map(lambda x: IS_REC.get(x, False))).sum()),
+    "controls not in graph": int((~f["l1c"].map(lambda x: IS_REC.get(x, False))).sum()),
+    "LINKED pairs without a judge verdict": int(((f.final_decision == "LINKED") & (f.judge_verdict == "NOT_AUDITED")).sum()),
+}
+print("PRE-LOAD CHECKS (all must be 0)")
+for k, v in checks.items():
+    print(f"  {'OK ' if v == 0 else 'FIX'} {k}: {v}")
+assert all(v == 0 for v in checks.values()), "pre-load checks failed - nothing written"
+
+new_edges = pd.DataFrame({
+    "source": f["rob"], "target": f["l1c"], "property": PROP, "layer": "AI_STRUCTURE",
+    "source_system": "IA", "run_id": "PHASE3B-L1C+AUDIT",
+    "decision": f["final_decision"], "score": f["link_score"], "confidence": f["confidence_level"],
+    "evidence_from": f["evidence_from_obligation"], "evidence_to": f["evidence_from_control"],
+    "reasoning": f["reasoning"], "grounding": f["grounding_flag"],
+    "judge_verdict": f["judge_verdict"], "sme_status": "UNREVIEWED",
+    "structure_confirmed": f["structure_confirmed"], "audit_label": f["audit_label"],
+    "audit_error_type": f["audit_error_type"], "coverage": f["coverage"],
+    "candidate_routes": f["routes"], "tier": f["tier"],
+})
+shutil.copy(f"{OUT_DIR}/edges.parquet", f"{OUT_DIR}/edges_before_satisfiedByControl.parquet")
+edges_out = pd.concat([E, new_edges], ignore_index=True)
+for c_ in edges_out.columns:
+    edges_out[c_] = edges_out[c_].map(lambda v: "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
+edges_out.to_parquet(f"{OUT_DIR}/edges.parquet", index=False)
+E = edges_out
+print(f"LOADED {len(new_edges):,} {PROP} edges | confirmed {int(f.structure_confirmed.sum()):,} | "
+      f"edges now {len(E):,} | backup edges_before_satisfiedByControl.parquet")
+
+
+
+# ====== CELL 3: LEVEL 2 PROMPT (instance) =====================================
+PROMPT_IC = """ROLE:
+You are a lead Operational Risk & Controls AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate ONE regulatory obligation (obligation_text) against a LIST of control INSTANCES (controls as actually operated by specific US businesses / legal entities, from Helios) and decide, for EACH instance, whether it actually performs what this obligation requires.
+
+WHAT THE INPUT CONTAINS:
+* obligation_text: the obligation title and full text (what the bank must do, for whom, by when).
+* library_control: the bank-wide control STANDARD these instances implement. An independent review has already CONFIRMED that this standard is designed to address the obligation (fully or partly). Context only - it does NOT mean every instance does.
+* instances: up to 10 live instances of that standard, each with instance_id, business, legal_entity, regmap_applicable (Y = RegMap's own mapping marks this instance applicable to the obligation's regulation summary; "" = no RegMap mapping) and instance_text (its own objective, activity, operation, frequency, evidence).
+
+CORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING
+Evaluate EACH instance's OWN text. Instances often narrow the standard to one local process (e.g. a broad "sales journey oversight" standard vs an instance that only reviews pricing exceptions for one desk), so an instance can perform a different part of the standard than the one this obligation needs.
+An instance SATISFIES the obligation when its own activity performs, checks, prevents or detects non-compliance with the obligation's requirement, for a business / product / customer the obligation applies to.
+
+SEMANTIC BRIDGING:
+Obligations use regulatory language; instances use local process language (system names, team names, reports). Link on substance: the same action, record, timeline, approval, disclosure or check, even when the words differ.
+
+TWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):
+GUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING. If the instance's own activity checks something other than the obligation's requirement, decide NOT_LINKED, even though its library standard addresses the obligation.
+GUARD 2 - SCOPE. If the instance's business, legal entity, product or customer type clearly cannot be subject to the obligation (e.g. an institutional markets desk for a retail consumer-deposit rule), decide NOT_LINKED. When scope is unclear but the activity matches, LINK.
+regmap_applicable is a hint, NOT evidence.
+An instance whose text says it is retired / demised / replaced is NOT_LINKED.
+
+INSTRUCTIONS (for EACH instance):
+ * "reasoning": first sentence - what this instance's own activity checks and for which business; second sentence - how it performs the obligation's requirement, OR why not (different sub-activity, scope, retired) and therefore NOT_LINKED.
+ * "decision": "LINKED" | "NOT_LINKED" | "INSUFFICIENT_EVIDENCE" (instance text empty / unusable).
+ * "coverage": "FULL" | "PARTIAL" | "NONE".
+ * "link_score" (0-10): 8-10 the instance's activity directly performs the obligation's core requirement; 5-7 it performs part of it; 1-4 same standard, different sub-activity or scope; 0 unrelated.
+ * "confidence_level" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with gaps; 1 assumptions.
+ * "evidence_from_obligation" and "evidence_from_instance": verbatim substrings (copy exactly; null when NOT_LINKED).
+ * Copy instance_id exactly. One item per instance.
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).
+{
+"obligation_id": "string",
+"items": [
+  {
+  "instance_id": "string",
+  "reasoning": "string",
+  "decision": "LINKED | NOT_LINKED | INSUFFICIENT_EVIDENCE",
+  "coverage": "FULL | PARTIAL | NONE",
+  "link_score": integer,
+  "confidence_level": integer,
+  "evidence_from_obligation": "verbatim substring or null",
+  "evidence_from_instance": "verbatim substring or null"
+  }
+]
+}"""
+
+JUDGE_IC = """ROLE:
+You are a senior Controls Assurance reviewer at a Tier-1 Global Bank - HSBC (United States). You are auditing the output of ANOTHER AI model. That model decided whether a control INSTANCE (a control operated by a specific US business, instance_text) actually performs what a regulatory obligation (obligation_text) requires. Its library control standard was already confirmed to address the obligation; that does not make every instance correct. Judge whether the MODEL'S DECISION IS CORRECT. Look for errors first, then confirm only what the texts support.
+
+WHAT THE INPUT CONTAINS:
+* obligation_text, library_control (context), instance_text with business / legal_entity, and model_output (decision, coverage, link_score, reasoning, verbatim quotes).
+
+CHECK, IN THIS ORDER:
+1. Evidence: do the quotes appear in the texts and support the decision?
+2. Activity: does the INSTANCE'S OWN activity perform the obligation's requirement, or a different sub-activity of the standard?
+3. Scope: can the instance's business / entity / product be subject to the obligation?
+4. Reasoning: sound, or relying on the library standard / a generic theme?
+
+VERDICT: AGREE | DISAGREE | UNCERTAIN (texts not sufficient; SME needed).
+error_type (only when DISAGREE, else "NONE"): FALSE_LINK_THEMATIC | FALSE_LINK_WRONG_SCOPE | FALSE_LINK_UNSUPPORTED | MISSED_LINK.
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object. Do not use markdown formatting.
+{"verdict": "AGREE | DISAGREE | UNCERTAIN",
+ "error_type": "NONE | FALSE_LINK_THEMATIC | FALSE_LINK_WRONG_SCOPE | FALSE_LINK_UNSUPPORTED | MISSED_LINK",
+ "correct_decision": "LINKED | NOT_LINKED | UNCERTAIN",
+ "obligation_quote": "short verbatim substring of obligation_text, or null",
+ "instance_quote": "short verbatim substring of instance_text, or null",
+ "confidence_level": integer 1-5,
+ "rationale": "2-3 sentences"}"""
+print("prompts ready | level 2:", len(PROMPT_IC), "| judge:", len(JUDGE_IC))
+
+
+
+# ====== CELL 4: STEP 2 - LEVEL 2 CANDIDATES ($0) ==============================
+conf = l1c_lab[(l1c_lab["bucket"] == "LINKED") & (l1c_lab["audit_label"] == "CONFIRMED")][["rob", "l1c"]] \
+         .drop_duplicates()
+live = pool[pool["live"].astype(str) == "True"][["ic", "l1c"]]
+c2 = conf.merge(live, on="l1c")                                        # confirmed control x its live instances
+
+# RegMap ext 5 (summary -> instance, applicable Y / N) via the obligation's summary
+rob_rsm = E[E["property"] == "derivedFromSummary"][["source", "target"]].rename(columns={"source": "rob", "target": "rsm"})
+e5 = E[E["property"] == "regmapMapsControlInstance"][["source", "target", "applicable"]] \
+       .rename(columns={"source": "rsm", "target": "ic"})
+e5["applicable"] = e5["applicable"].astype(str).str.upper().str[:1]
+flag = (rob_rsm.merge(e5, on="rsm").groupby(["rob", "ic"])["applicable"]
+        .agg(lambda s: "Y" if (s == "Y").any() else ("N" if (s == "N").any() else "")).reset_index())
+c2 = c2.merge(flag, on=["rob", "ic"], how="left")
+c2["regmap_applicable"] = c2["applicable"].fillna("")
+c2 = c2.drop(columns="applicable")
+
+# business / legal entity of each instance (from the graph)
+names = dict(zip(N["id"], N["title"]))
+biz = E[E["property"] == "operatedIn"].groupby("source")["target"].agg(lambda s: "; ".join(names.get(x, x) for x in s))
+le = E[E["property"] == "operatedFor"].groupby("source")["target"].agg(lambda s: "; ".join(names.get(x, x) for x in s))
+c2["business"] = c2["ic"].map(biz).fillna("")
+c2["legal_entity"] = c2["ic"].map(le).fillna("")
+
+before = len(c2)
+dropped_n = int((c2["regmap_applicable"] == "N").sum())
+if EXCLUDE_REGMAP_N:
+    c2 = c2[c2["regmap_applicable"] != "N"]
+c2 = c2.sort_values(["regmap_applicable", "rob", "l1c"], ascending=[False, True, True]).reset_index(drop=True)
+c2.to_parquet(f"{P3B_DIR}/ic_candidates.parquet", index=False)
+
+print("LEVEL 2 CANDIDATES")
+print(f" confirmed obligation -> library control pairs {len(conf):,} | with >=1 live instance "
+      f"{conf.merge(live, on='l1c')[['rob', 'l1c']].drop_duplicates().shape[0]:,}")
+print(f" obligation -> live instance pairs {before:,} | RegMap N dropped {dropped_n:,} | kept {len(c2):,} "
+      f"(RegMap Y {int((c2.regmap_applicable == 'Y').sum()):,} | no RegMap row {int((c2.regmap_applicable == '').sum()):,})")
+print(f" obligations {c2.rob.nunique():,} | instances {c2.ic.nunique():,} | instances per (obligation, control) p50/p90 "
+      f"{c2.groupby(['rob', 'l1c']).size().quantile([.5, .9]).astype(int).tolist() if len(c2) else [0, 0]}")
+
+
+
+# ====== CELL 5: COST GATE (stops the notebook if too expensive) ===============
+batches = []
+for (rob, l1c), g in c2.groupby(["rob", "l1c"], sort=False):
+    rows = g.to_dict("records")
+    for i in range(0, len(rows), BATCH_SIZE):
+        batches.append({"rob": rob, "l1c": l1c, "items": rows[i:i + BATCH_SIZE]})
+
+
+def build_payload(b):
+    return {"obligation_id": b["rob"], "obligation_text": text_of(b["rob"]),
+            "library_control": {"control_id": b["l1c"], "control_text": text_of(b["l1c"])},
+            "instances": [{"instance_id": it["ic"], "business": it["business"], "legal_entity": it["legal_entity"],
+                           "regmap_applicable": it["regmap_applicable"], "instance_text": text_of(it["ic"])}
+                          for it in b["items"]]}
+
+
+in_tok = sum(len(json.dumps(build_payload(b), ensure_ascii=False)) / 4 + 1800 for b in batches)
+out_tok = len(c2) * 250
+llm_usd = in_tok * TOKEN_PRICE["in"] + out_tok * TOKEN_PRICE["out"]
+est_linked = int(len(c2) * 0.25)                            # assumption for the judge estimate only
+judge_usd = (est_linked + AUDIT["rejected_sample"] + AUDIT["probes"]) * (6000 * TOKEN_PRICE["in"] + 400 * TOKEN_PRICE["out"])
+total = llm_usd + judge_usd
+print(f"COST GATE | calls {len(batches):,} | input ~{in_tok / 1e6:.1f}M tok | LLM ~${llm_usd:.1f} + judge ~${judge_usd:.1f} "
+      f"= ~${total:.1f} (cap ${MAX_COST_USD})")
+assert total <= MAX_COST_USD, (f"estimated ${total:.1f} > MAX_COST_USD ${MAX_COST_USD}: stopped before any LLM call. "
+                               "Raise MAX_COST_USD in CELL 1 if this is acceptable.")
+print("cost gate passed")
+
+
+
+# ====== CELL 6: RUNNER + FINALISATION (library) ===============================
+def norm_id(x):
+    return re.sub(r"\s+", "", str(x or "")).upper()
+
+
+async def run_batches(batches, checkpoint_path, stage):
+    global CURRENT_STAGE
+    CURRENT_STAGE = stage
+    rows = []
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        prev = pd.read_parquet(checkpoint_path)
+        rows = prev[prev["model_decision"] != "ERROR"].to_dict("records")
+        print(f"[resume {stage}] {len(rows):,} pairs already judged")
+    done = {(r["rob"], r["ic"]) for r in rows}
+    todo = [{**b, "items": [it for it in b["items"] if (b["rob"], it["ic"]) not in done]} for b in batches]
+    todo = [b for b in todo if b["items"]]
+    print(f"[{stage}] {len(todo):,} calls to make")
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def one(b):
+        async with sem:
+            ans = await call_llm(PROMPT_IC, build_payload(b), None, MAX_TOKENS) or {}
+        got = {norm_id(x.get("instance_id")): x for x in (ans.get("items") or []) if isinstance(x, dict)}
+        out = []
+        for it in b["items"]:
+            x = got.get(norm_id(it["ic"]), {})
+            d = str(x.get("decision", "ERROR")).upper().strip().replace(" ", "_") if x else "ERROR"
+            out.append({"rob": b["rob"], "l1c": b["l1c"], "ic": it["ic"], "regmap_applicable": it["regmap_applicable"],
+                        "business": it["business"], "legal_entity": it["legal_entity"],
+                        "model_decision": d if d in ("LINKED", "NOT_LINKED", "INSUFFICIENT_EVIDENCE") else "ERROR",
+                        "coverage": x.get("coverage"), "link_score": x.get("link_score"),
+                        "confidence_level": x.get("confidence_level"), "reasoning": x.get("reasoning"),
+                        "evidence_from_obligation": x.get("evidence_from_obligation"),
+                        "evidence_from_instance": x.get("evidence_from_instance")})
+        return out
+
+    tasks = [asyncio.create_task(one(b)) for b in todo]
+    n = 0
+    for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=stage):
+        rows.extend(await fut)
+        n += 1
+        if checkpoint_path and n % SAVE_EVERY == 0:
+            pd.DataFrame(rows).astype(str).to_parquet(checkpoint_path + ".tmp", index=False)
+            os.replace(checkpoint_path + ".tmp", checkpoint_path)
+    res = pd.DataFrame(rows)
+    if checkpoint_path and len(res):
+        res.astype(str).to_parquet(checkpoint_path + ".tmp", index=False)
+        os.replace(checkpoint_path + ".tmp", checkpoint_path)
+    for c_ in res.columns:
+        res[c_] = res[c_].map(lambda v: None if v is None or str(v) in ("None", "nan", "") else v)
+    for c_ in ("link_score", "confidence_level"):
+        res[c_] = pd.to_numeric(res[c_], errors="coerce")
+    res["regmap_applicable"] = res["regmap_applicable"].fillna("")
+    print(f"[{stage}] {res['model_decision'].value_counts().to_dict()}")
+    return res
+
+
+def finalise(res):
+    out = res.copy()
+    ob_ok = [quote_found(q, text_of(r)) for q, r in zip(out["evidence_from_obligation"], out["rob"])]
+    ic_ok = [quote_found(q, text_of(i)) for q, i in zip(out["evidence_from_instance"], out["ic"])]
+    out["grounding_flag"] = np.select([np.array(ob_ok) & np.array(ic_ok), np.array(ob_ok) | np.array(ic_ok)],
+                                      ["GROUNDED", "PARTIAL"], default="UNGROUNDED")
+    linked = (out["model_decision"] == "LINKED") & (out["link_score"].fillna(0) >= LINK_THRESHOLD)
+    out["final_decision"] = np.select(
+        [out["model_decision"] == "ERROR", linked & (out["grounding_flag"] == "GROUNDED"), linked,
+         out["model_decision"] == "INSUFFICIENT_EVIDENCE"],
+        ["ERROR", "LINKED", "INSUFFICIENT_EVIDENCE", "INSUFFICIENT_EVIDENCE"], default="NOT_LINKED")
+    return out
+
+print("runner ready")
+
+
+
+# ====== CELL 7: AUTOMATIC TEST GATE - 5 batches (stops if anything looks wrong) =
+test_res = finalise(await run_batches(batches[:5], None, "p3b_ic_test"))
+cost_report("p3b_ic_test")
+n_err = int((test_res.model_decision == "ERROR").sum())
+m_linked = test_res[test_res.model_decision == "LINKED"]
+grounded = (m_linked.grounding_flag == "GROUNDED").mean() if len(m_linked) else 1.0
+print(test_res[["rob", "ic", "regmap_applicable", "model_decision", "final_decision", "link_score",
+                "grounding_flag"]].to_string(index=False))
+print(f"TEST GATE | pairs {len(test_res)} | ERROR {n_err} | model-LINKED {len(m_linked)} | grounded {grounded:.0%}")
+assert len(test_res) > 0 and n_err <= max(1, len(test_res) // 10), "too many ERROR answers in the test - stopped"
+assert grounded >= 0.7, "model quotes not found in the texts - stopped before the full run"
+test_res.to_excel(f"{P3B_DIR}/ic_test.xlsx", index=False)
+print("test gate passed")
+
+
+
+# ====== CELL 8: STEP 3a - FULL LEVEL 2 RUN (checkpointed; re-run to resume) ===
+ic_res = finalise(await run_batches(batches, f"{P3B_DIR}/ic_results_ckpt.parquet", "p3b_ic"))
+save_text_safe(ic_res, f"{P3B_DIR}/ic_results.parquet")
+cost_report("p3b_ic")
+print(f"LEVEL 2 RESULTS | pairs {len(ic_res):,} | {ic_res.final_decision.value_counts().to_dict()}")
+for flag_, g in ic_res.groupby("regmap_applicable"):
+    print(f"   RegMap applicable '{flag_ or '-'}': {len(g):,} pairs | LINKED {int((g.final_decision == 'LINKED').sum()):,}")
+
+
+
+# ====== CELL 9: STEP 3b - JUDGE AUDIT (checkpointed; re-run to resume) ========
+ic_res = pd.read_parquet(f"{P3B_DIR}/ic_results.parquet")
+for c_ in ("link_score", "confidence_level"):
+    ic_res[c_] = pd.to_numeric(ic_res[c_], errors="coerce")
+links = ic_res[ic_res.final_decision == "LINKED"].assign(bucket="LINKED")
+rejected = ic_res[ic_res.final_decision != "LINKED"]
+rej = rejected.sample(min(AUDIT["rejected_sample"], len(rejected)), random_state=AUDIT["seed"]).assign(bucket="REJECTED_SAMPLE")
+clear = rejected[rejected["link_score"].fillna(0) <= 2]
+probes = clear.sample(min(AUDIT["probes"], len(clear)), random_state=AUDIT["seed"] + 1).copy().assign(
+    bucket="PROBE", model_decision="LINKED", final_decision="LINKED", link_score=7, coverage="PARTIAL",
+    evidence_from_obligation=None, evidence_from_instance=None,
+    reasoning="The instance implements a library control that addresses this obligation, so the instance satisfies it.")
+audit = pd.concat([links, rej, probes], ignore_index=True)
+print(f"audit set: LINKED {len(links):,} | rejected {len(rej)} | probes {len(probes)}")
+
+
+async def run_judge(audit, ckpt):
+    global CURRENT_STAGE
+    CURRENT_STAGE = "p3b_ic_audit"
+    key = lambda df: list(zip(df["rob"], df["ic"], df["bucket"]))
+    rows, done = [], set()
+    if os.path.exists(ckpt):
+        prev = pd.read_parquet(ckpt)
+        prev = prev[prev["audit_verdict"] != "ERROR"]
+        rows, done = prev.to_dict("records"), set(key(prev))
+        print(f"[resume] {len(done):,} audits already done")
+    todo = audit[[k not in done for k in key(audit)]]
+    print(f"[audit] {len(todo):,} calls to make")
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def one(r):
+        payload = {"obligation_text": text_of(r.rob),
+                   "library_control": text_of(r.l1c),
+                   "instance_id": r.ic, "business": r.business, "legal_entity": r.legal_entity,
+                   "instance_text": text_of(r.ic),
+                   "model_output": {"decision": r.model_decision, "coverage": r.coverage,
+                                    "link_score": None if pd.isna(r.link_score) else float(r.link_score),
+                                    "reasoning": r.reasoning, "evidence_from_obligation": r.evidence_from_obligation,
+                                    "evidence_from_instance": r.evidence_from_instance}}
+        async with sem:
+            a = await call_llm(JUDGE_IC, payload, None, MAX_TOKENS) or {}
+        v = str(a.get("verdict", "ERROR")).upper().strip() if a else "ERROR"
+        return {"rob": r.rob, "ic": r.ic, "bucket": r.bucket,
+                "audit_verdict": v if v in ("AGREE", "DISAGREE", "UNCERTAIN") else "ERROR",
+                "audit_error_type": a.get("error_type"), "audit_correct_decision": a.get("correct_decision"),
+                "audit_obligation_quote": a.get("obligation_quote"), "audit_instance_quote": a.get("instance_quote"),
+                "audit_confidence_level": a.get("confidence_level"), "audit_rationale": a.get("rationale")}
+
+    tasks = [asyncio.create_task(one(r)) for r in todo.itertuples()]
+    n = 0
+    for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="p3b ic audit"):
+        rows.append(await fut)
+        n += 1
+        if n % 50 == 0:
+            pd.DataFrame(rows).astype(str).to_parquet(ckpt + ".tmp", index=False)
+            os.replace(ckpt + ".tmp", ckpt)
+    j = pd.DataFrame(rows)
+    j.astype(str).to_parquet(ckpt + ".tmp", index=False)
+    os.replace(ckpt + ".tmp", ckpt)
+    for c_ in j.columns:
+        j[c_] = j[c_].map(lambda v: None if v is None or str(v) in ("None", "nan") else v)
+    print("[audit]", j["audit_verdict"].value_counts().to_dict())
+    return j
+
+
+judged = await run_judge(audit, f"{P3B_DIR}/ic_audit_ckpt.parquet")
+cost_report("p3b_ic_audit")
+
+
+
+# ====== CELL 10: LABELS + METRICS + SAVE ======================================
+LABELS = {("LINKED", "AGREE"): "CONFIRMED", ("LINKED", "UNCERTAIN"): "NEEDS_SME", ("LINKED", "DISAGREE"): "DISPUTED",
+          ("REJECTED_SAMPLE", "AGREE"): "CORRECT_REJECTION", ("REJECTED_SAMPLE", "UNCERTAIN"): "NEEDS_SME",
+          ("REJECTED_SAMPLE", "DISAGREE"): "POSSIBLE_MISS", ("PROBE", "DISAGREE"): "PROBE_CAUGHT",
+          ("PROBE", "UNCERTAIN"): "PROBE_PARTLY_CAUGHT", ("PROBE", "AGREE"): "PROBE_MISSED"}
+lab = audit.merge(judged, on=["rob", "ic", "bucket"], how="left")
+lab["judge_ob_ok"] = [quote_found(q, text_of(r)) for q, r in zip(lab["audit_obligation_quote"], lab["rob"])]
+lab["judge_ic_ok"] = [quote_found(q, text_of(i)) for q, i in zip(lab["audit_instance_quote"], lab["ic"])]
+v = lab["audit_verdict"].fillna("NOT_AUDITED").astype(str)
+weak = (v == "AGREE") & (lab["bucket"] != "REJECTED_SAMPLE") & ~(lab["judge_ob_ok"] & lab["judge_ic_ok"])
+lab["audit_verdict_final"] = np.where(weak, "UNCERTAIN", v)
+lab["audit_label"] = [LABELS.get((b, x), "ERROR" if x == "ERROR" else "NOT_AUDITED")
+                      for b, x in zip(lab["bucket"], lab["audit_verdict_final"])]
+lab["score_band"] = np.where(lab["link_score"] >= 7, "7-10", "5-6")
+save_text_safe(lab, f"{P3B_DIR}/ic_audit_labelled.parquet")
+
+L = lab[lab.bucket == "LINKED"]
+R, P = lab[lab.bucket == "REJECTED_SAMPLE"], lab[lab.bucket == "PROBE"]
+k, n = int((L.audit_label == "CONFIRMED").sum()), len(L)
+lo, hi = wilson(k, n)
+
+
+def prec(df, col):
+    return " | ".join(f"{key or '-'} {int((g.audit_label == 'CONFIRMED').sum())}/{len(g)}="
+                      f"{100 * (g.audit_label == 'CONFIRMED').mean():.0f}%" for key, g in df.groupby(col))
+
+
+with pd.ExcelWriter(f"{P3B_DIR}/ic_results.xlsx") as xl:
+    L.to_excel(xl, sheet_name="links audited", index=False)
+    R.to_excel(xl, sheet_name="rejections audited", index=False)
+    P.to_excel(xl, sheet_name="probes", index=False)
+
+print("LEVEL 2 AUDIT (obligation -> control instance)")
+print(f" links {n:,} | CONFIRMED {k:,} ({100 * k / max(n, 1):.1f}%, CI {100 * lo:.0f}-{100 * hi:.0f}) | "
+      f"DISPUTED {int((L.audit_label == 'DISPUTED').sum())} {L[L.audit_label == 'DISPUTED'].audit_error_type.value_counts().to_dict()}")
+print(f"  by score  : {prec(L, 'score_band')}")
+print(f"  by RegMap : {prec(L, 'regmap_applicable')}")
+print(f" possible misses {int((R.audit_label == 'POSSIBLE_MISS').sum())}/{len(R)} | planted wrong links caught "
+      f"{(P.audit_label == 'PROBE_CAUGHT').mean():.0%} of {len(P)}")
+conf_ic = L[L.audit_label == "CONFIRMED"]
+print(f" obligations with >=1 CONFIRMED live instance: {conf_ic.rob.nunique():,} | instances {conf_ic.ic.nunique():,}")
+print(f" -> {P3B_DIR}/ic_results.xlsx | next: load level 2 into the graph (tomorrow)")
