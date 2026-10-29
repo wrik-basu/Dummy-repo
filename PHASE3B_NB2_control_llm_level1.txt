@@ -1,0 +1,515 @@
+# ==============================================================================
+# PHASE 3b - NOTEBOOK 2: obligation -> LIBRARY CONTROL, find (LLM) + confirm (judge)
+# ------------------------------------------------------------------------------
+# STANDALONE : fresh kernel; settings in CELL 1; gateway pasted as CELL 0
+# runs after : PHASE3B_NB1_control_candidates  (l1c_candidates.parquet, instance_pool.parquet)
+# reads      : {OUT_DIR}/nodes.parquet, {P3B_DIR}/l1c_candidates.parquet, instance_pool.parquet
+# writes     : {P3B_DIR}/l1c_results.parquet            every judged obligation -> control pair
+#              {P3B_DIR}/l1c_audit_labelled.parquet     judge verdicts + labels
+#              {P3B_DIR}/l1c_results.xlsx               summary, by tier / route, links, disputes
+#              checkpoints *_ckpt.parquet (re-run a cell to resume)
+#
+# QUESTION   : does this library control (a bank-wide control STANDARD) address what this
+#              regulatory OBLIGATION requires - i.e. is it designed to make the bank comply?
+# METHOD     : same as every other level of the project
+#   - one call per obligation, up to BATCH_SIZE candidate controls per call (full texts)
+#   - prompt in house structure (ROLE / INPUT / ANTI-ANCHORING / SEMANTIC BRIDGING /
+#     TWO GUARDS / INSTRUCTIONS / EXAMPLES / FORMAT), per-control fields:
+#     reasoning, decision, coverage, link_score, confidence_level, verbatim quotes
+#   - LINKED = model LINKED + link_score >= LINK_THRESHOLD + both quotes verified in code
+#   - independent judge on EVERY LINKED pair + rejected sample + planted wrong links
+#   - only judge-CONFIRMED pairs will be loaded as 'control satisfies obligation'
+# SCOPE (first run): obligations linked from alerts, all tiers (T1 + T2 + T3) -> precision
+#   by tier decides the tiers for the full-ontology run later.
+# ==============================================================================
+
+
+# ====== CELL 1: CONFIG + LOAD =================================================
+import os
+import re
+import json
+import math
+import asyncio
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+
+# ---- paths / prices / run settings ----------------------------------------------
+OUT_DIR = "../output/ontology_graph"
+P3B_DIR = f"{OUT_DIR}/phase3b"
+TOKEN_PRICE = {"in": 0.20 / 1e6, "out": 1.20 / 1e6}       # gateway rates (as phase 3)
+
+RUN_SCOPE      = "alert"         # "alert" = alert-linked obligations | "all" = every obligation
+RUN_TIERS      = ["T1", "T2", "T3"]
+BATCH_SIZE     = 10              # controls per call
+CONCURRENCY    = 15
+MAX_TOKENS     = 20000           # output ceiling per call
+SAVE_EVERY     = 25
+LINK_THRESHOLD = 5
+THIN_CHARS     = 200             # library control text below this -> add its live instances' text
+AUDIT = {"rejected_sample": 300, "probes": 30, "seed": 7}
+
+# ---- load ------------------------------------------------------------------------
+N = pd.read_parquet(f"{OUT_DIR}/nodes.parquet")
+TITLE = dict(zip(N["id"], N["title"].fillna("")))
+TEXT = dict(zip(N["id"], N["text"].fillna("")))
+cand_all = pd.read_parquet(f"{P3B_DIR}/l1c_candidates.parquet")
+pool = pd.read_parquet(f"{P3B_DIR}/instance_pool.parquet")
+
+cand = cand_all[cand_all["tier"].isin(RUN_TIERS)]
+if RUN_SCOPE == "alert":
+    cand = cand[cand["in_alert_scope"]]
+cand = cand.reset_index(drop=True)
+
+# live instances' text, used only as backup for thin library-control text
+live_inst = pool[pool["live"]].groupby("l1c")["ic"].apply(list).to_dict()
+
+
+def control_text(l1c):
+    """Full library control text; if thin, append its live instances' text (full)."""
+    base = f"{TITLE.get(l1c, '')}\n{TEXT.get(l1c, '')}".strip()
+    if len(base) >= THIN_CHARS:
+        return base, False
+    extra = [f"[live instance {i}] {TITLE.get(i, '')}: {TEXT.get(i, '')}" for i in live_inst.get(l1c, [])]
+    return (base + ("\n" + "\n".join(extra) if extra else "")).strip(), bool(extra)
+
+
+def obligation_text(rob):
+    return f"{TITLE.get(rob, '')}\n{TEXT.get(rob, '')}".strip()
+
+
+ROUTE_HINT = {"B1": "RegMap obligation->risk->control", "B2": "RegMap summary->risk->control",
+              "B3": "same risk taxonomy", "B4": "same alert (risk)", "C1": "RegMap summary->control",
+              "C3": "GPPS policy->control", "C4": "same alert (control)"}
+print(f"scope {RUN_SCOPE} | tiers {RUN_TIERS} | pairs {len(cand):,} | obligations {cand.rob.nunique():,} "
+      f"| controls {cand.l1c.nunique():,}")
+
+
+
+# ====== CELL 0: GATEWAY =======================================================
+# Paste here, unchanged, the GATEWAY SPINE + LLM CALLER cells of your working
+# notebook (call_llm(system, payload, schema, max_tokens), cost_report, USAGE_LOG,
+# ERROR_LOG, CURRENT_STAGE). TOKEN_PRICE is set in CELL 1.
+
+
+
+# ====== CELL 2: BATCHES + NO-TRUNCATION PROOF ($0) ============================
+batches = []
+for rob, g in cand.sort_values(["rob", "tier", "n_routes"], ascending=[True, True, False]).groupby("rob"):
+    rows = g.to_dict("records")
+    for i in range(0, len(rows), BATCH_SIZE):
+        batches.append({"rob": rob, "batch_id": f"{rob}#{i // BATCH_SIZE}", "items": rows[i:i + BATCH_SIZE]})
+
+
+def build_payload(batch):
+    controls = []
+    for it in batch["items"]:
+        text, with_instances = control_text(it["l1c"])
+        controls.append({
+            "control_id": it["l1c"],
+            "control_text": text,
+            "candidate_source": "; ".join(ROUTE_HINT.get(r, r) for r in it["routes"].split("+")),
+            "text_includes_live_instances": with_instances,
+        })
+    return {"obligation_id": batch["rob"], "obligation_text": obligation_text(batch["rob"]), "controls": controls}
+
+
+short, sizes = 0, []
+for b in batches:
+    p = build_payload(b)
+    short += int(len(p["obligation_text"]) < len(obligation_text(b["rob"])))
+    short += sum(int(len(c["control_text"]) < len(control_text(c["control_id"])[0])) for c in p["controls"])
+    sizes.append(len(json.dumps(p, ensure_ascii=False)))
+sizes = pd.Series(sizes)
+print(f"BATCHES {len(batches):,} calls for {len(cand):,} pairs | payload chars median {int(sizes.median()):,} "
+      f"| max {int(sizes.max()):,} (~{int(sizes.max() / 4):,} tok)")
+print(f"TRUNCATION CHECK: {short} texts shorter than source -> {'NONE TRUNCATED' if short == 0 else 'STOP'}")
+
+
+
+# ====== CELL 3: PROMPT (house structure) ======================================
+PROMPT_L1C = """ROLE:
+You are a lead Regulatory Compliance & Controls AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate ONE regulatory obligation (obligation_text, from the bank's RegMap inventory) against a LIST of library controls (bank-wide control STANDARDS from Helios) and decide, for EACH control, whether the control is designed to make the bank comply with what this obligation requires.
+
+WHAT THE INPUT CONTAINS:
+* obligation_text: the obligation title and full text (what the bank must do, for whom, by when).
+* controls: up to 10 library controls, each with control_id and control_text (title, objective / why, activity / what, operation / how, frequency, evidence). When the library text is thin, text_includes_live_instances = true and the text of its live US instances is appended.
+* candidate_source: how each control was proposed (RegMap human mappings at obligation or summary level, GPPS policy -> control links, same risk taxonomy, or the same alert). A hint, NOT evidence. Many candidates come from broad summary-level mappings: a summary holds 10-20 obligations, so a control mapped to the summary may serve a different obligation in it.
+
+CORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING
+Evaluate the ENTIRE control text - objective, activity, operation, evidence - not only its title. Do not anchor on a shared keyword or on the candidate source.
+A control SATISFIES an obligation when its objective or activity is designed to ensure, check, prevent or detect non-compliance with the specific requirement the obligation sets (the action, disclosure, record, timeline, approval, threshold or prohibition), for the products / customers / activities the obligation covers. A control may satisfy the obligation FULLY (it addresses the core requirement) or PARTIALLY (it addresses part of it, e.g. the record-keeping but not the deadline).
+
+SEMANTIC BRIDGING & BANK TAXONOMY:
+Obligations use regulatory language; controls use control language. Human experts link them on substance:
+ * Disclosure / notice / advertising requirements ARE SATISFIED by controls that review, approve or test that disclosure, notice or communication content and timing.
+ * Complaint, dispute and error-resolution requirements ARE SATISFIED by complaint-handling, dispute-investigation and response-timeline controls.
+ * Record-keeping, retention and information-request requirements ARE SATISFIED by records-management, retention-schedule and request-handling controls.
+ * Licensing, registration and training requirements ARE SATISFIED by staff registration, licence tracking and training-completion controls.
+ * Regulatory reporting / filing requirements ARE SATISFIED by controls that prepare, reconcile, review or validate THAT report or its data.
+ * AML / sanctions / KYC / beneficial-ownership requirements ARE SATISFIED by the matching screening, CDD / EDD, monitoring or SAR controls.
+ * Sales-practice / suitability / fair-treatment requirements ARE SATISFIED by sales-quality, suitability-review and product-governance controls.
+
+TWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):
+GUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING.
+If your reasoning concludes that the control checks a different requirement than the obligation sets, decide NOT_LINKED. Never write "the control addresses something else, but ... therefore LINKED." If you cannot name the concrete requirement of the obligation that the control's activity ensures, it is NOT_LINKED.
+GUARD 2 - A GENERIC CONTROL OR A DIFFERENT REGIME IS NOT A BRIDGE.
+(a) Generic controls ("monitor regulatory change", "maintain the policy framework", "compliance risk assessment", "regulatory reporting inventory") do not satisfy a specific obligation merely because they concern compliance. Link only if the control's activity checks THIS obligation's requirement.
+(b) A different regime, product or activity does not link: a trade-reporting reconciliation does not satisfy a consumer-disclosure obligation merely because both involve "accuracy". Require overlap in the actual requirement.
+When a genuine requirement overlap exists, LINK - including PARTIAL coverage.
+
+INSTRUCTIONS (for EACH control):
+ * "reasoning": first sentence - the obligation's core requirement and what this control's activity checks; second sentence - how the control ensures (fully / partly) that requirement, OR why it does not and therefore NOT_LINKED.
+ * "decision": "LINKED" (the control is designed to ensure the obligation's requirement, fully or partly) | "NOT_LINKED" | "INSUFFICIENT_EVIDENCE" (control text empty or unusable).
+ * "coverage": "FULL" | "PARTIAL" | "NONE" (NONE when NOT_LINKED).
+ * "link_score" (0-10): 8-10 the control's activity directly ensures the obligation's core requirement; 5-7 it ensures part of it, or the obligation falls inside the control's stated objective; 1-4 same domain, different requirement; 0 unrelated.
+ * "confidence_level" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with textual gaps; 1 relies heavily on assumptions.
+ * "evidence_from_obligation" and "evidence_from_control": verbatim substrings (copy exactly; null when NOT_LINKED).
+ * Copy control_id exactly. Return one item per control, in any order.
+
+EXAMPLE EVALUATION (valid link):
+obligation_text: "Respond to a consumer's written request for information within 10 business days and keep a record of the request and response."
+control_text: "Objective: ensure customer information requests are logged and answered within regulatory timelines. Activity: Monthly, the team lead samples 25 logged requests and checks response dates against the deadline and that the response is retained ..."
+reasoning: "The obligation requires a response to consumer information requests within 10 business days and a record of both; the control samples logged requests and checks response dates and retention. It directly tests the response deadline and the record, so it fully addresses the requirement."
+decision: "LINKED"   coverage: "FULL"   link_score: 9   confidence_level: 5
+
+EXAMPLE EVALUATION (Guard 2 - generic control):
+obligation_text: "Provide the annual privacy notice to customers in the prescribed form."
+control_text: "Objective: maintain an inventory of applicable regulations and assess regulatory change. Activity: Compliance reviews new regulations monthly and updates the obligations register ..."
+reasoning: "The obligation requires delivery of an annual privacy notice in a set form; the control maintains a regulatory inventory and change assessment. It does not check that the notice is produced or delivered - only a generic compliance theme overlaps."
+decision: "NOT_LINKED"   coverage: "NONE"   link_score: 2   confidence_level: 4
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).
+{
+"obligation_id": "string",
+"items": [
+  {
+  "control_id": "string",
+  "reasoning": "string",
+  "decision": "LINKED | NOT_LINKED | INSUFFICIENT_EVIDENCE",
+  "coverage": "FULL | PARTIAL | NONE",
+  "link_score": integer,
+  "confidence_level": integer,
+  "evidence_from_obligation": "verbatim substring or null",
+  "evidence_from_control": "verbatim substring or null"
+  }
+]
+}"""
+print("prompt ready | chars:", len(PROMPT_L1C))
+
+
+
+# ====== CELL 4: RUNNER + FINALISATION (library) ===============================
+def clean_words(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+
+def quote_found(quote, text):
+    """Verbatim check (case / punctuation-insensitive); long quotes may match on 8-word ends."""
+    q = clean_words(quote)
+    if len(q) < 12 or q in ("null", "none"):
+        return False
+    t = clean_words(text)
+    if q in t:
+        return True
+    w = q.split()
+    return len(w) >= 6 and (" ".join(w[:8]) in t or " ".join(w[-8:]) in t)
+
+
+def norm_id(x):
+    return re.sub(r"\s+", "", str(x or "")).upper()
+
+
+async def run_batches(batches, checkpoint_path, stage):
+    """One call per batch. Checkpointed per pair; ERROR pairs are retried on re-run."""
+    global CURRENT_STAGE
+    CURRENT_STAGE = stage
+    rows = []
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        prev = pd.read_parquet(checkpoint_path)
+        rows = prev[prev["model_decision"] != "ERROR"].to_dict("records")
+        print(f"[resume {stage}] {len(rows):,} pairs already judged")
+    done = {(r["rob"], r["l1c"]) for r in rows}
+    todo = []
+    for b in batches:
+        items = [it for it in b["items"] if (b["rob"], it["l1c"]) not in done]
+        if items:
+            todo.append({**b, "items": items})
+    print(f"[{stage}] {len(todo):,} calls to make")
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def one(b):
+        async with sem:
+            ans = await call_llm(PROMPT_L1C, build_payload(b), None, MAX_TOKENS) or {}
+        got = {norm_id(x.get("control_id")): x for x in (ans.get("items") or []) if isinstance(x, dict)}
+        out = []
+        for it in b["items"]:
+            x = got.get(norm_id(it["l1c"]), {})
+            d = str(x.get("decision", "ERROR")).upper().strip().replace(" ", "_") if x else "ERROR"
+            out.append({
+                "rob": b["rob"], "l1c": it["l1c"], "tier": it["tier"], "routes": it["routes"],
+                "n_routes": it["n_routes"], "in_alert_scope": it["in_alert_scope"],
+                "model_decision": d if d in ("LINKED", "NOT_LINKED", "INSUFFICIENT_EVIDENCE") else "ERROR",
+                "coverage": x.get("coverage"), "link_score": x.get("link_score"),
+                "confidence_level": x.get("confidence_level"), "reasoning": x.get("reasoning"),
+                "evidence_from_obligation": x.get("evidence_from_obligation"),
+                "evidence_from_control": x.get("evidence_from_control"),
+            })
+        return out
+
+    tasks = [asyncio.create_task(one(b)) for b in todo]
+    n = 0
+    for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=stage):
+        rows.extend(await fut)
+        n += 1
+        if checkpoint_path and n % SAVE_EVERY == 0:
+            pd.DataFrame(rows).astype(str).to_parquet(checkpoint_path + ".tmp", index=False)
+            os.replace(checkpoint_path + ".tmp", checkpoint_path)
+    res = pd.DataFrame(rows)
+    if checkpoint_path and len(res):
+        res.astype(str).to_parquet(checkpoint_path + ".tmp", index=False)
+        os.replace(checkpoint_path + ".tmp", checkpoint_path)
+    for c_ in res.columns:
+        res[c_] = res[c_].map(lambda v: None if v is None or str(v) in ("None", "nan") else v)
+    for c_ in ("link_score", "confidence_level", "n_routes"):
+        res[c_] = pd.to_numeric(res[c_], errors="coerce")
+    print(f"[{stage}] {res['model_decision'].value_counts().to_dict()}")
+    return res
+
+
+def finalise(res):
+    """Same rule as every level: LINKED = model LINKED + score >= threshold + both quotes verified."""
+    out = res.copy()
+    ob_ok = [quote_found(q, obligation_text(r)) for q, r in zip(out["evidence_from_obligation"], out["rob"])]
+    ct_ok = [quote_found(q, control_text(c)[0]) for q, c in zip(out["evidence_from_control"], out["l1c"])]
+    out["grounding_flag"] = np.select([np.array(ob_ok) & np.array(ct_ok), np.array(ob_ok) | np.array(ct_ok)],
+                                      ["GROUNDED", "PARTIAL"], default="UNGROUNDED")
+    linked = (out["model_decision"] == "LINKED") & (out["link_score"].fillna(0) >= LINK_THRESHOLD)
+    out["final_decision"] = np.select(
+        [out["model_decision"] == "ERROR", linked & (out["grounding_flag"] == "GROUNDED"), linked,
+         out["model_decision"] == "INSUFFICIENT_EVIDENCE"],
+        ["ERROR", "LINKED", "INSUFFICIENT_EVIDENCE", "INSUFFICIENT_EVIDENCE"], default="NOT_LINKED")
+    return out
+
+print("runner ready")
+
+
+
+# ====== CELL 5: TEST - 5 obligations (one from each tier mix) - check by eye ==
+test_robs = (cand.groupby("rob")["tier"].min().reset_index()
+             .groupby("tier").head(2)["rob"].head(5).tolist())
+test_b = [b for b in batches if b["rob"] in test_robs]
+test_res = finalise(await run_batches(test_b, None, "p3b_test"))
+cost_report("p3b_test")
+print(test_res[["rob", "l1c", "tier", "model_decision", "final_decision", "coverage", "link_score",
+                "confidence_level", "grounding_flag"]].to_string(index=False))
+test_res.to_excel(f"{P3B_DIR}/p3b_test.xlsx", index=False)
+print(f" full reasoning + quotes: {P3B_DIR}/p3b_test.xlsx")
+
+
+
+# ====== CELL 6: FULL RUN (checkpointed: re-run this cell to resume) ===========
+l1c_res = finalise(await run_batches(batches, f"{P3B_DIR}/l1c_results_ckpt.parquet", "p3b_l1c"))
+l1c_res.to_parquet(f"{P3B_DIR}/l1c_results.parquet", index=False)
+cost_report("p3b_l1c")
+
+s = (l1c_res.groupby("tier")
+     .agg(pairs=("l1c", "size"), linked=("final_decision", lambda x: int((x == "LINKED").sum())),
+          model_linked=("model_decision", lambda x: int((x == "LINKED").sum())),
+          errors=("final_decision", lambda x: int((x == "ERROR").sum())))
+     .reset_index())
+print("LEVEL 1 RESULTS (before audit)")
+for r in s.itertuples():
+    print(f" {r.tier}  pairs {r.pairs:6,} | LINKED {r.linked:5,} ({100 * r.linked / max(r.pairs, 1):.1f}%) "
+          f"| model said {r.model_linked:5,} | errors {r.errors}")
+lk = l1c_res[l1c_res.final_decision == "LINKED"]
+print(f" coverage: {lk.coverage.value_counts().to_dict()} | obligations with >=1 control {lk.rob.nunique():,} "
+      f"of {l1c_res.rob.nunique():,} | grounding of model-LINKED "
+      f"{l1c_res[l1c_res.model_decision == 'LINKED'].grounding_flag.value_counts().to_dict()}")
+
+
+
+# ====== CELL 7: JUDGE PROMPT (assurance reviewer, as every other audit) =======
+JUDGE_L1C = """ROLE:
+You are a senior Controls Assurance reviewer at a Tier-1 Global Bank - HSBC (United States). You are auditing the output of ANOTHER AI model. That model decided whether a library control (a bank-wide control standard, control_text) is designed to make the bank comply with a regulatory obligation (obligation_text). Your job is to judge whether the MODEL'S DECISION IS CORRECT. Do not assume it is: look for errors first, then confirm only what the texts support.
+
+WHAT THE INPUT CONTAINS:
+* obligation_text: the obligation (what the bank must do, for whom, by when).
+* control_text: the library control (objective, activity, operation, evidence); live instance text appended when the library text is thin.
+* model_output: the model's decision, coverage (FULL / PARTIAL), link_score (0-10), reasoning and verbatim quotes.
+
+WHAT "SATISFIES" MEANS:
+The control satisfies the obligation when its objective or activity is designed to ensure, check, prevent or detect non-compliance with the specific requirement the obligation sets, for the products / customers / activities it covers - fully or partly. It does NOT satisfy it when the only overlap is a generic compliance theme (inventory of regulations, policy framework, compliance monitoring in general), a neighbouring requirement in the same domain, or a different regime / product / activity.
+
+CHECK, IN THIS ORDER:
+1. Evidence: do the model's quotes really appear in the texts, and do they support its decision?
+2. Requirement: does the control's activity check THIS obligation's requirement, or a neighbouring one?
+3. Scope: are the regime, product, customer segment and activity compatible?
+4. Reasoning: is the model's reasoning sound, or does it rely on a generic theme or contradict itself?
+5. Coverage: if LINKED, is FULL vs PARTIAL right?
+
+VERDICT:
+* AGREE - the model's decision is correct.
+* DISAGREE - the model's decision is wrong.
+* UNCERTAIN - the texts are not sufficient to decide; an SME is needed.
+error_type (only when DISAGREE, else "NONE"):
+* FALSE_LINK_THEMATIC - linked on a generic theme or a neighbouring requirement only.
+* FALSE_LINK_WRONG_SCOPE - different regime / product / activity.
+* FALSE_LINK_UNSUPPORTED - the evidence does not exist or does not support the link.
+* MISSED_LINK - the model said NOT_LINKED but the control does address the obligation.
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object. Do not use markdown formatting.
+{"verdict": "AGREE | DISAGREE | UNCERTAIN",
+ "error_type": "NONE | FALSE_LINK_THEMATIC | FALSE_LINK_WRONG_SCOPE | FALSE_LINK_UNSUPPORTED | MISSED_LINK",
+ "correct_decision": "LINKED | NOT_LINKED | UNCERTAIN",
+ "coverage_correct": true or false or null,
+ "obligation_quote": "short verbatim substring of obligation_text, or null",
+ "control_quote": "short verbatim substring of control_text, or null",
+ "confidence_level": integer 1-5,
+ "rationale": "2-3 sentences"}"""
+print("judge prompt ready | chars:", len(JUDGE_L1C))
+
+
+
+# ====== CELL 8: AUDIT SET + JUDGE RUN (checkpointed) ==========================
+l1c_res = pd.read_parquet(f"{P3B_DIR}/l1c_results.parquet")
+links = l1c_res[l1c_res.final_decision == "LINKED"].assign(bucket="LINKED")
+rejected = l1c_res[l1c_res.final_decision != "LINKED"]
+rej = rejected.sample(min(AUDIT["rejected_sample"], len(rejected)), random_state=AUDIT["seed"]).assign(bucket="REJECTED_SAMPLE")
+clear = rejected[rejected["link_score"].fillna(0) <= 2]
+probes = clear.sample(min(AUDIT["probes"], len(clear)), random_state=AUDIT["seed"] + 1).copy()
+probes = probes.assign(bucket="PROBE", model_decision="LINKED", final_decision="LINKED", link_score=7,
+                       coverage="PARTIAL", evidence_from_obligation=None, evidence_from_control=None,
+                       reasoning="The control's objective covers regulatory compliance for the bank's products and "
+                                 "customers; the obligation is a regulatory requirement, so the control addresses it.")
+audit = pd.concat([links, rej, probes], ignore_index=True)
+print(f"audit set: LINKED {len(links):,} | rejected sample {len(rej)} | probes {len(probes)}")
+
+
+async def run_judge(audit, checkpoint_path):
+    global CURRENT_STAGE
+    CURRENT_STAGE = "p3b_audit"
+    key = lambda df: list(zip(df["rob"], df["l1c"], df["bucket"]))
+    rows, done = [], set()
+    if os.path.exists(checkpoint_path):
+        prev = pd.read_parquet(checkpoint_path)
+        prev = prev[prev["audit_verdict"] != "ERROR"]
+        rows, done = prev.to_dict("records"), set(key(prev))
+        print(f"[resume] {len(done):,} audits already done")
+    todo = audit[[k not in done for k in key(audit)]]
+    print(f"[audit] {len(todo):,} calls to make")
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def one(r):
+        payload = {"obligation_id": r.rob, "obligation_text": obligation_text(r.rob),
+                   "control_id": r.l1c, "control_text": control_text(r.l1c)[0],
+                   "model_output": {"decision": r.model_decision, "coverage": r.coverage,
+                                    "link_score": None if pd.isna(r.link_score) else float(r.link_score),
+                                    "reasoning": r.reasoning,
+                                    "evidence_from_obligation": r.evidence_from_obligation,
+                                    "evidence_from_control": r.evidence_from_control}}
+        async with sem:
+            a = await call_llm(JUDGE_L1C, payload, None, MAX_TOKENS) or {}
+        v = str(a.get("verdict", "ERROR")).upper().strip() if a else "ERROR"
+        return {"rob": r.rob, "l1c": r.l1c, "bucket": r.bucket,
+                "audit_verdict": v if v in ("AGREE", "DISAGREE", "UNCERTAIN") else "ERROR",
+                "audit_error_type": a.get("error_type"), "audit_correct_decision": a.get("correct_decision"),
+                "audit_coverage_ok": a.get("coverage_correct"), "audit_obligation_quote": a.get("obligation_quote"),
+                "audit_control_quote": a.get("control_quote"), "audit_confidence_level": a.get("confidence_level"),
+                "audit_rationale": a.get("rationale")}
+
+    tasks = [asyncio.create_task(one(r)) for r in todo.itertuples()]
+    n = 0
+    for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="p3b audit"):
+        rows.append(await fut)
+        n += 1
+        if n % 50 == 0:
+            pd.DataFrame(rows).astype(str).to_parquet(checkpoint_path + ".tmp", index=False)
+            os.replace(checkpoint_path + ".tmp", checkpoint_path)
+    j = pd.DataFrame(rows)
+    j.astype(str).to_parquet(checkpoint_path + ".tmp", index=False)
+    os.replace(checkpoint_path + ".tmp", checkpoint_path)
+    for c_ in j.columns:
+        j[c_] = j[c_].map(lambda v: None if v is None or str(v) in ("None", "nan") else v)
+    print("[audit]", j["audit_verdict"].value_counts().to_dict())
+    return j
+
+
+judged = await run_judge(audit, f"{P3B_DIR}/l1c_audit_ckpt.parquet")
+cost_report("p3b_audit")
+
+
+
+# ====== CELL 9: LABELS + METRICS + SAVE =======================================
+def wilson(k, n, z=1.96):
+    if n == 0:
+        return (np.nan, np.nan)
+    p, d = k / n, 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0, c - h), min(1, c + h))
+
+
+LABELS = {("LINKED", "AGREE"): "CONFIRMED", ("LINKED", "UNCERTAIN"): "NEEDS_SME", ("LINKED", "DISAGREE"): "DISPUTED",
+          ("REJECTED_SAMPLE", "AGREE"): "CORRECT_REJECTION", ("REJECTED_SAMPLE", "UNCERTAIN"): "NEEDS_SME",
+          ("REJECTED_SAMPLE", "DISAGREE"): "POSSIBLE_MISS", ("PROBE", "DISAGREE"): "PROBE_CAUGHT",
+          ("PROBE", "UNCERTAIN"): "PROBE_PARTLY_CAUGHT", ("PROBE", "AGREE"): "PROBE_MISSED"}
+lab = audit.merge(judged, on=["rob", "l1c", "bucket"], how="left")
+lab["judge_ob_quote_ok"] = [quote_found(q, obligation_text(r)) for q, r in zip(lab["audit_obligation_quote"], lab["rob"])]
+lab["judge_ct_quote_ok"] = [quote_found(q, control_text(c)[0]) for q, c in zip(lab["audit_control_quote"], lab["l1c"])]
+v = lab["audit_verdict"].fillna("NOT_AUDITED").astype(str)
+weak = (v == "AGREE") & (lab["bucket"] != "REJECTED_SAMPLE") & ~(lab["judge_ob_quote_ok"] & lab["judge_ct_quote_ok"])
+lab["audit_verdict_final"] = np.where(weak, "UNCERTAIN", v)
+lab["audit_label"] = [LABELS.get((b, x), "ERROR" if x == "ERROR" else "NOT_AUDITED")
+                      for b, x in zip(lab["bucket"], lab["audit_verdict_final"])]
+lab["score_band"] = np.where(lab["link_score"] >= 7, "7-10", "5-6")
+lab.to_parquet(f"{P3B_DIR}/l1c_audit_labelled.parquet", index=False)
+
+
+def prec(df, by):
+    out = []
+    for k_, g in df.groupby(by):
+        k, n = int((g.audit_label == "CONFIRMED").sum()), len(g)
+        lo, hi = wilson(k, n)
+        out.append({**dict(zip(by, k_ if isinstance(k_, tuple) else (k_,))), "links": n, "confirmed": k,
+                    "pct": round(100 * k / max(n, 1), 1), "ci": f"{100 * lo:.0f}-{100 * hi:.0f}",
+                    "disputed": int((g.audit_label == "DISPUTED").sum())})
+    return pd.DataFrame(out)
+
+
+L = lab[lab.bucket == "LINKED"].copy()
+L["has_B1"] = L["routes"].str.contains("B1")
+k, n = int((L.audit_label == "CONFIRMED").sum()), len(L)
+lo, hi = wilson(k, n)
+p_tier, p_band, p_cov = prec(L, ["tier"]), prec(L, ["score_band"]), prec(L, ["coverage"])
+p_nr, p_b1 = prec(L, ["n_routes"]), prec(L, ["has_B1"])
+R, P = lab[lab.bucket == "REJECTED_SAMPLE"], lab[lab.bucket == "PROBE"]
+
+with pd.ExcelWriter(f"{P3B_DIR}/l1c_results.xlsx") as xl:
+    pd.DataFrame({"How to read": [
+        "Obligation -> library control. CONFIRMED = model LINKED (score >= 5, quotes verified) AND judge AGREE with "
+        "verified quotes. Only CONFIRMED pairs will be loaded as 'control satisfies obligation'.",
+        "Tier: T1 = RegMap obligation-level risk route (B1) or >= 3 routes; T2 = 2 routes; T3 = 1 route.",
+        "POSSIBLE_MISS = rejected pair the judge thinks is a link. PROBE_CAUGHT = planted wrong link rejected (>= 70% expected).",
+    ]}).to_excel(xl, sheet_name="How to read", index=False)
+    for name, df in (("by tier", p_tier), ("by score band", p_band), ("by coverage", p_cov),
+                     ("by number of routes", p_nr), ("B1 route vs not", p_b1)):
+        df.to_excel(xl, sheet_name=name, index=False)
+    L.sort_values(["audit_label", "tier"]).to_excel(xl, sheet_name="links audited", index=False)
+    R.to_excel(xl, sheet_name="rejections audited", index=False)
+    P.to_excel(xl, sheet_name="probes", index=False)
+
+print("LEVEL 1 AUDIT (obligation -> library control)")
+print(f" links {n:,} | CONFIRMED {k:,} ({100 * k / max(n, 1):.1f}%, CI {100 * lo:.0f}-{100 * hi:.0f}) | "
+      f"NEEDS_SME {int((L.audit_label == 'NEEDS_SME').sum())} | DISPUTED {int((L.audit_label == 'DISPUTED').sum())} "
+      f"{L[L.audit_label == 'DISPUTED'].audit_error_type.value_counts().to_dict()}")
+for name, df in (("tier", p_tier), ("score", p_band), ("coverage", p_cov), ("B1 route", p_b1)):
+    print(f"  by {name:8s}: " + " | ".join(f"{r.iloc[0]} {r.confirmed}/{r.links}={r.pct}%" for _, r in df.iterrows()))
+print(f" possible misses {int((R.audit_label == 'POSSIBLE_MISS').sum())}/{len(R)} | planted wrong links caught "
+      f"{(P.audit_label == 'PROBE_CAUGHT').mean():.0%} of {len(P)}")
+print(f" obligations with >=1 CONFIRMED control: {L[L.audit_label == 'CONFIRMED'].rob.nunique():,} | "
+      f"confirmed controls with 0 live instances: "
+      f"{len(set(L[L.audit_label == 'CONFIRMED'].l1c) - set(pool[pool.live].l1c))}")
+print(f" -> {P3B_DIR}/l1c_results.xlsx")
