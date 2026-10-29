@@ -1,0 +1,1207 @@
+# ==============================================================================
+# ONTOLOGY BUILD v2  -  PHASE 1 (facts) + PHASE 2 (existing AI links)
+# ------------------------------------------------------------------------------
+# v2 FIXES (from the v1 run + CELL 9 diagnosis):
+#   1. alert -> 1C       Run B 1C IDs ('1C-00196042') live in the control file's
+#                        'name' column, not 'resource_id'  -> join on 'name'
+#   2. ROB -> LR         RegMap writes '-' for "no risk"; '-' is now treated as blank
+#   3. procedure->policy objRel PLCY: the policy ID is 'objId' (96% match), not
+#                        'cntlId' (that is the MCR's control) -> per-type ID keys
+#   4. GPPS hidden segments (sgmntDispInd = N) are skipped for objRel
+#   5. ROB -> policy links tagged with link_support / section numbers from the
+#      section-view output; hidden-text-only links can be dropped (CELL 1)
+#   6. GPPS policy objRel REG / PLCY now loaded (were counted, not loaded)
+#   7. rule check counts only real Helios control instances (not GPPS stubs)
+# ------------------------------------------------------------------------------
+# Builds the full ontology graph from the systems of record and the IA project
+# outputs. No LLM calls, $0.
+#
+#   Phase 1  FACTS     Rapid2, RegMap (7 extracts), Helios (risk, control, RTCL),
+#                      GPPS (policies, procedures, objRel)
+#   Phase 2  AI LINKS  IMPACT     alert -> RSM / RGL / ROB / LR / L1C / 1C
+#                                 (judge verdict joined on)
+#                      STRUCTURE  ROB -> policy / procedure
+#                                 (GenAI-built ontology links, NOT alert impact)
+#   NOT YET            alert -> policy / alert -> procedure impact (phase 3)
+#
+# Output (OUT_DIR):
+#   nodes.parquet       one row per entity
+#   edges.parquet       one row per relationship (ontology property + layer)
+#   manifest.json       sources, columns used, counts, run date
+#   build_checks.xlsx   notes, counts, ID-join coverage, rule checks, stubs
+#
+# HOW TO RUN
+#   - Paste each "# ====== CELL n" block into its own notebook cell.
+#   - Edit CELL 1 only (paths).
+#   - Run all cells in order, in ONE session.
+#   - Send back the "ONTOLOGY BUILD v2 DONE" block printed by CELL 8.
+# ==============================================================================
+
+
+# ====== CELL 1: CONFIG ========================================================
+
+# ------------------------------------------------------------------------------
+# 1.1  Source paths (the same files that loaded in STEP 0)
+# ------------------------------------------------------------------------------
+SOURCES = {
+    # --- Rapid2 alerts --------------------------------------------------------
+    "rapid2":          "../data/Rapid2_REGDEV_US_2020_2025.parquet",
+
+    # --- RegMap: 7 extracts ---------------------------------------------------
+    "regmap_e1":       "../data/Tactical_Regmap_Data/<extract 1>",   # regulator / regulation / RSM
+    "regmap_e2":       "../data/Tactical_Regmap_Data/<extract 2>",   # RSM text + taxonomy
+    "regmap_e3":       "../data/Tactical_Regmap_Data/<extract 3>",   # RSM -> LR -> L1/L2 library control
+    "regmap_e4":       "../data/Tactical_Regmap_Data/<extract 4>",   # RSM -> risk instance, applicable?
+    "regmap_e5":       "../data/Tactical_Regmap_Data/<extract 5>",   # RSM -> risk -> L1 control inst, applicable?
+    "regmap_e6":       "../data/Tactical_Regmap_Data/<extract 6>",   # obligations
+    "regmap_e7":       "../data/Tactical_Regmap_Data/<extract 7>",   # regulation assessments
+
+    # --- Helios ---------------------------------------------------------------
+    "helios_risk":     "../data/Helios/<US_Risk risk.parquet>",
+    "helios_ctrl":     "../data/Helios/<control file: 1C rows + L1C fields>",
+    "helios_rtcl":     "../data/Helios/<rtcl.parquet>",
+
+    # --- GPPS -----------------------------------------------------------------
+    "gpps_pol_us":     "<gpps folder>/us_policy_26_sep.parquet",
+    "gpps_pol_glob":   "<gpps folder>/global_policy_26_sep.parquet",
+    "gpps_proc":       "<gpps folder>/global_procedure_26_SEP.parquet",
+
+    # --- IA outputs: alert -> RSM / RGL / ROB ---------------------------------
+    "ia_rsm":          "<path>/rsm_linkage_pairs_....parquet",
+    "ia_rgl_audit":    "<path>/rgl_output_audit/audit_labelled_predictions.parquet",
+    "ia_rob":          "<path>/rob_linkage_pairs_....parquet",
+    "ia_rob_audit":    "<path>/rob_output_audit/audit_labelled_predictions.parquet",
+
+    # --- IA outputs: alert -> LR / L1C / 1C (Helios Run B = ..._RT_method2) ---
+    "ia_lr":           "<path>/helios_linkage_llm_RT_method2/links_risk.parquet",
+    "ia_l1c":          "<path>/helios_linkage_llm_RT_method2/links_control.parquet",
+    "ia_1c":           "<path>/helios_linkage_llm_RT_method2/links_instance.parquet",
+    "ia_helios_audit": "<path>/helios_audit_B/audit_labelled.parquet",
+
+    # --- IA outputs: ROB -> policy / procedure (structure) --------------------
+    "ia_rob_policy":   "<path>/policy_v2_verdicts.parquet",
+    "ia_rob_proc":     "<path>/procedure_v2_verdicts.parquet",
+
+    # --- Section view output (Policy_Section_Subsection_View_NOTEBOOK, CELL 5) -
+    #     one row per LINKED ROB -> policy: link_support, section / clause numbers
+    "ia_rob_policy_sections": "<path>/obligation_to_policy_links_with_sections.parquet",
+}
+
+OUT_DIR = "../output/ontology_graph"
+RUN_ID  = "ONTO-BUILD-v2"
+
+# ------------------------------------------------------------------------------
+# ROB -> policy links that rest ONLY on GPPS-hidden text
+#   True  = keep them, tagged link_support = "HIDDEN TEXT ONLY"
+#   False = drop them from the graph
+# ------------------------------------------------------------------------------
+KEEP_HIDDEN_ONLY_POLICY_LINKS = True
+
+# ------------------------------------------------------------------------------
+# 1.2  Intake fields NOT in the Rapid2 file yet (applicability, LOB, legal
+#      entity). Set a file + its columns when you have it, else leave None.
+# ------------------------------------------------------------------------------
+INTAKE_EXTRA = None
+# INTAKE_EXTRA = dict(
+#     path="<file>",
+#     alert_col="RECORD_ID",
+#     applicable_col="<col>",
+#     lob_col="<col>",
+#     le_col="<col>",
+# )
+
+# ------------------------------------------------------------------------------
+# 1.3  ROB -> procedure file mixes runs: keep only this one
+# ------------------------------------------------------------------------------
+ROB_PROC_RUN = "core"
+
+# ------------------------------------------------------------------------------
+# 1.4  Candidate column names: the first one that exists is used.
+#      The build records which one it picked (build_checks.xlsx -> columns_used).
+#      Add a name here if yours differs.
+# ------------------------------------------------------------------------------
+COLS = {
+    # --- Helios control file (1C rows + L1C fields) ---------------------------
+    "ctrl_instance_id":    ["name"],                    # holds '1C-...' (CELL 9: 100% of Run B targets)
+    "ctrl_instance_title": ["l1_control_title_alias"],
+    "ctrl_instance_text":  ["description", "control_description", "l1_control_description"],
+    "ctrl_library_id":     ["l1_library_control_id"],
+    "ctrl_library_title":  ["l1_library_control_title"],
+    "ctrl_library_text":   ["l1_library_control_description"],
+    "ctrl_library_status": ["l1_library_control_status"],
+    "ctrl_status":         ["l1_control_status"],
+    "ctrl_business":       ["business", "business_short_name"],
+    "ctrl_le":             ["legal_entity_short_name", "legal_entity"],
+    "ctrl_owner":          ["control_owner"],
+    "ctrl_steward":        ["primary_risk_steward"],
+
+    # --- Helios risk file -----------------------------------------------------
+    "risk_id":             ["library_risk_id", "library_id"],
+    "risk_title":          ["title"],
+    "risk_text":           ["library_risk_description", "library risk description"],
+    "risk_status":         ["risk_status"],
+    "risk_l1":             ["risk_taxonomy_l1", "risk_taxonomy_11"],
+    "risk_l2":             ["risk_taxonomy_l2", "risk_taxonomy_12"],
+    "risk_l3":             ["risk_taxonomy_l3", "risk_taxonomy_13"],
+    "risk_steward":        ["risk_steward"],
+    "risk_owner":          ["risk_owner"],
+
+    # --- RTCL -----------------------------------------------------------------
+    "rtcl_risk":           ["risk_library_id"],
+    "rtcl_l1c":            ["l1_control_library_id", "l1_control library_id"],
+
+    # --- IA outputs -----------------------------------------------------------
+    "verdict":             ["audit_verdict_final", "audit_verdict"],
+    "decision":            ["final_decision", "model_decision_label", "decision", "model_decision"],
+}
+
+
+
+# ====== CELL 2: HELPERS =======================================================
+import os
+import re
+import json
+import html
+from datetime import datetime
+
+import pandas as pd
+import pyarrow.parquet as pq
+
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# ------------------------------------------------------------------------------
+# Global build state
+# ------------------------------------------------------------------------------
+NODES  = {}    # node id -> node dict
+EDGES  = []    # list of edge dicts
+PICKED = {}    # COLS key -> column actually used
+REPORT = []    # (label, value) lines for build_checks.xlsx -> notes
+
+
+# ------------------------------------------------------------------------------
+# Readers
+# ------------------------------------------------------------------------------
+def read_any(path):
+    """Read parquet (dbdate-safe), xlsx/xls or csv. Full text, nothing truncated."""
+    if path.endswith(".parquet"):
+        table = pq.read_table(path).replace_schema_metadata(None)
+        return table.to_pandas(date_as_object=True)
+    if path.endswith((".xlsx", ".xls")):
+        return pd.read_excel(path)
+    return pd.read_csv(path)
+
+
+def col(df, key, required=True):
+    """Return the first candidate column from COLS[key] that exists in df."""
+    for candidate in COLS[key]:
+        if candidate in df.columns:
+            PICKED[key] = candidate
+            return candidate
+
+    if required:
+        raise KeyError(
+            f"{key}: none of {COLS[key]} found. "
+            f"Columns: {list(df.columns)[:40]}"
+        )
+
+    PICKED[key] = None
+    return None
+
+
+def pick_col(df, names):
+    """First name in `names` that is a column of df, else None."""
+    return next((n for n in names if n in df.columns), None)
+
+
+# ------------------------------------------------------------------------------
+# Value cleaning
+# ------------------------------------------------------------------------------
+def is_blank(value):
+    return value is None or (isinstance(value, float) and pd.isna(value))
+
+
+def cid(value):
+    """Clean an ID: drop hidden characters / spaces, 123.0 -> 123, '' if empty."""
+    if is_blank(value):
+        return ""
+
+    s = re.sub(r"[​ ﻿]", "", str(value)).strip()
+
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+
+    if s.lower() in ("nan", "none", "", "-"):          # RegMap writes '-' for "none"
+        return ""
+    return s
+
+
+def txt(value):
+    """Clean text: strip HTML tags, unescape entities, squash spaces. Full length."""
+    if is_blank(value):
+        return ""
+    s = re.sub(r"(?s)<[^>]+>", " ", str(value))
+    s = html.unescape(s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def slug(value):
+    """Text -> ID-safe slug (spaces -> underscores)."""
+    return re.sub(r"\s+", "_", txt(value))
+
+
+def split_multi(value):
+    """'A; B | C' -> ['A', 'B', 'C']"""
+    return [part.strip() for part in re.split(r"[;|\n]", txt(value)) if part.strip()]
+
+
+# ------------------------------------------------------------------------------
+# Graph builders
+# ------------------------------------------------------------------------------
+def node(nid, ntype, title="", text="", system="", rec=True, **props):
+    """
+    Add a node once; later calls only fill missing title / text / props.
+
+    rec=True  : loaded from its own system of record (or a value node)
+    rec=False : only referenced by another system (a 'stub' until found)
+    """
+    if not nid:
+        return ""
+
+    n = NODES.get(nid)
+    if n is None:
+        n = dict(id=nid, type=ntype, title="", text="",
+                 source_system=system, record=False, props={})
+        NODES[nid] = n
+
+    # Upgrade a stub to a record when its own system loads it
+    if rec and not n["record"]:
+        n["record"] = True
+        n["source_system"] = system
+
+    if title and not n["title"]:
+        n["title"] = txt(title)
+    if text and not n["text"]:
+        n["text"] = txt(text)
+
+    for key, value in props.items():
+        if value not in ("", None) and key not in n["props"]:
+            n["props"][key] = value
+
+    return nid
+
+
+def edge(src, tgt, prop, layer, system, **attrs):
+    """
+    Add one relationship.
+
+    layer:
+      FACT          from a system of record (RegMap, Helios, GPPS)
+      INTAKE        Rapid2 alert tags (applicability, category, ML tags)
+      AI_IMPACT     alert impact assertion (alert -> RGL/RSM/ROB/LR/L1C/1C)
+      AI_STRUCTURE  ontology link built with GenAI, not alert-specific
+                    (ROB -> policy, ROB -> procedure)
+      REFERENCE     RegMap's own human mapping, kept as a check only
+    """
+    if not src or not tgt:
+        return
+    EDGES.append(dict(
+        source=src,
+        target=tgt,
+        property=prop,
+        layer=layer,
+        source_system=system,
+        run_id=RUN_ID,
+        **attrs,
+    ))
+
+
+def taxonomy_chain(l1, l2, l3, system):
+    """Create L1 > L2 > L3 taxonomy nodes, link child -> parent, return deepest id."""
+    ids = []
+    for level, name in (("L1", l1), ("L2", l2), ("L3", l3)):
+        name = txt(name)
+        if not name:
+            break
+        ids.append(node(
+            f"TAX-{level}-{slug(name)}", "RiskTaxonomyNode", f"{level} · {name}",
+            system=system, level=level, name=name,
+        ))
+
+    for child, parent in zip(ids[1:], ids[:-1]):
+        edge(child, parent, "broaderRisk", "FACT", system)
+
+    return ids[-1] if ids else ""
+
+
+def note(label, value):
+    REPORT.append((label, value))
+
+
+print("helpers ready")
+
+
+
+# ====== CELL 3: PHASE 1a - RAPID2 (alerts + intake) ===========================
+r2 = read_any(SOURCES["rapid2"])
+
+for _, r in r2.iterrows():
+
+    # --- Alert node -----------------------------------------------------------
+    alert_text = " ".join(
+        x for x in [txt(r.get("SUMM_CONTENT")), txt(r.get("SUMM_UPDATE"))] if x
+    )
+    a = node(
+        f"ALERT-{cid(r['RECORD_ID'])}", "RegulatoryAlert", r.get("TITLE"), alert_text, "Rapid2",
+        alert_id=cid(r.get("ALERT_ID")),
+        category=cid(r.get("RECORD_CATEGORY_CODE")),
+        status=txt(r.get("RECORD_STATUS")),
+        start_date=str(r.get("RECORD_START_DATE") or ""),
+        active=cid(r.get("ACTIVE_INDICATOR")),
+        url=txt(r.get("URL_TEXT")),
+    )
+
+    # --- Jurisdiction ---------------------------------------------------------
+    jur = txt(r.get("RECORD_JURISDICTION_NAME"))
+    if jur:
+        j = node(f"JUR-{slug(jur)}", "Jurisdiction", jur, system="Rapid2")
+        edge(a, j, "inJurisdiction", "INTAKE", "Rapid2")
+
+    # --- Regulator ------------------------------------------------------------
+    reg = cid(r.get("REGULATOR_CODE"))
+    if reg:
+        g_ = node(f"REGULATOR-{reg}", "Regulator", reg, system="Rapid2")
+        edge(a, g_, "issuedByRegulator", "INTAKE", "Rapid2")
+
+    # --- Risk steward ---------------------------------------------------------
+    stew = txt(r.get("RISK_STEWARD_AREA_NAME"))
+    if stew:
+        s = node(f"STEW-{slug(stew)}", "Role", stew, system="Rapid2", role="Risk steward")
+        edge(a, s, "taggedSteward", "INTAKE", "Rapid2")
+
+    # --- Themes ---------------------------------------------------------------
+    for theme in split_multi(r.get("RECORD_THEMES")):
+        t = node(f"THEME-{slug(theme)}", "RegulatoryTheme", theme, system="Rapid2")
+        edge(a, t, "hasTheme", "INTAKE", "Rapid2")
+
+    # --- Risk taxonomy L1 > L2 > L3 -------------------------------------------
+    tax = taxonomy_chain(
+        r.get("LEVEL_1_RISK_TAXONOMY"),
+        r.get("LEVEL_2_RISK_TAXONOMY"),
+        r.get("LEVEL_3_RISK_TAXONOMY"),
+        "Rapid2",
+    )
+    if tax:
+        edge(a, tax, "taggedRisk", "INTAKE", "Rapid2")
+
+
+# --- Optional extra intake source (applicability, LOB, legal entity) ---------
+if INTAKE_EXTRA:
+    ex = read_any(INTAKE_EXTRA["path"])
+
+    for _, r in ex.iterrows():
+        a = f"ALERT-{cid(r[INTAKE_EXTRA['alert_col']])}"
+        if a not in NODES:
+            continue
+
+        if INTAKE_EXTRA.get("applicable_col"):
+            NODES[a]["props"]["applicable"] = txt(r[INTAKE_EXTRA["applicable_col"]])
+
+        if INTAKE_EXTRA.get("lob_col"):
+            lob = txt(r[INTAKE_EXTRA["lob_col"]])
+            if lob:
+                b = node(f"LOB-{slug(lob)}", "BusinessUnit", lob, system="Rapid2")
+                edge(a, b, "taggedBusiness", "INTAKE", "Rapid2")
+
+        if INTAKE_EXTRA.get("le_col"):
+            le = txt(r[INTAKE_EXTRA["le_col"]])
+            if le:
+                l_ = node(f"LE-{slug(le)}", "LegalEntity", le, system="Rapid2")
+                edge(a, l_, "taggedLegalEntity", "INTAKE", "Rapid2")
+
+note("Rapid2 alerts", len(r2))
+note("Intake: applicability / LOB / LE",
+     "loaded" if INTAKE_EXTRA else "NOT AVAILABLE (no source yet)")
+print(f"1a Rapid2: {len(r2)} alerts | nodes so far {len(NODES)} | edges {len(EDGES)}")
+
+
+
+# ====== CELL 4: PHASE 1b - REGMAP (7 extracts) ================================
+def rm(key):
+    """Read a RegMap extract and strip column names."""
+    df = read_any(SOURCES[key])
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def first(df, *names):
+    """First of `names` that is a column of df (required)."""
+    for name in names:
+        if name in df.columns:
+            return name
+    raise KeyError(f"none of {names} in {list(df.columns)}")
+
+
+# ------------------------------------------------------------------------------
+# Extract 1: regulator -> regulation -> summary
+# ------------------------------------------------------------------------------
+e1 = rm("regmap_e1")
+c_rgl = first(e1, "Regulation ID", "Regulation-ID")
+
+for _, r in e1.iterrows():
+    rgl = node(
+        cid(r[c_rgl]), "Regulation",
+        r.get("Regulation Title"), r.get("Regulation Description"), "RegMap",
+        status=txt(r.get("Regulation Status")),
+        version=cid(r.get("Regulation Version")),
+        jurisdiction=txt(r.get("Regulation Jurisdiction")),
+    )
+
+    reg = cid(r.get("Regulator Code"))
+    if reg:
+        regulator = node(f"REGULATOR-{reg}", "Regulator",
+                         r.get("Regulator Name") or reg, system="RegMap")
+        edge(regulator, rgl, "issues", "FACT", "RegMap")
+
+    jur = txt(r.get("Regulation Jurisdiction"))
+    if jur:
+        j = node(f"JUR-{slug(jur)}", "Jurisdiction", jur, system="RegMap")
+        edge(rgl, j, "appliesInJurisdiction", "FACT", "RegMap")
+
+    rsm = cid(r.get("Regulation Summary ID"))
+    if rsm:
+        node(rsm, "RegulatorySummary", system="RegMap",
+             status=txt(r.get("Regulation Summary Status")))
+        edge(rsm, rgl, "partOfRegulation", "FACT", "RegMap")
+
+
+# ------------------------------------------------------------------------------
+# Extract 2: summary text + taxonomy
+# ------------------------------------------------------------------------------
+e2 = rm("regmap_e2")
+c_rgl2 = first(e2, "Regulation ID", "Regulation-ID")
+
+for _, r in e2.iterrows():
+    tax_l1 = (r.get("Regulation Summary Risk Taxonomy L1")
+              or r.get("Regulation Summary Risk Taxonomy l1"))
+    rsm = node(
+        cid(r["Regulation Summary ID"]), "RegulatorySummary",
+        r.get("Regulation Summary Title"), r.get("Regulation Summary Detail Text"), "RegMap",
+        status=txt(r.get("Regulation Summary Status")),
+        steward_area=txt(r.get("Regulation Summary Risk Steward Area")),
+        tax_l1=txt(tax_l1),
+        tax_l2=txt(r.get("Regulation Summary Risk Taxonomy L2")),
+        tax_l3=txt(r.get("Regulation Summary Risk Taxonomy L3")),
+    )
+
+    rgl = cid(r[c_rgl2])
+    if rgl:
+        node(rgl, "Regulation", system="RegMap", rec=False)
+        edge(rsm, rgl, "partOfRegulation", "FACT", "RegMap")
+
+
+# ------------------------------------------------------------------------------
+# Extract 6: obligations (+ RegMap's own ROB -> LR mapping)
+# ------------------------------------------------------------------------------
+e6 = rm("regmap_e6")
+
+for _, r in e6.iterrows():
+    rob = cid(r["Obligation ID"])
+    if not rob:
+        continue
+
+    body = " ".join(x for x in [
+        txt(r.get("Obligation Detailed Text")),
+        txt(r.get("Obligation Expected Controls Description")),
+    ] if x)
+
+    node(
+        rob, "RegulatoryObligation", r.get("Obligation Title"), body, "RegMap",
+        status=txt(r.get("Obligation Status")),
+        version=cid(r.get("Obligation Version")),
+        citation=txt(r.get("Obligation Citation")),
+        tax_l1=txt(r.get("Obligation Risk Taxonomy L1")),
+        tax_l2=txt(r.get("Obligation Risk Taxonomy L2")),
+        tax_l3=txt(r.get("Obligation Risk Taxonomy L3")),
+    )
+
+    rsm = cid(r.get("Regulation Summary ID"))
+    if rsm:
+        node(rsm, "RegulatorySummary", system="RegMap", rec=False)
+        edge(rob, rsm, "derivedFromSummary", "FACT", "RegMap")
+
+    for lr in split_multi(r.get("Regulation Obligation Library Risk ID Number")):
+        lr = cid(lr)
+        if lr:
+            node(lr, "LibraryRisk", system="RegMap", rec=False)
+            edge(rob, lr, "givesRiseTo", "FACT", "RegMap")
+
+
+# ------------------------------------------------------------------------------
+# Extracts 3 / 4 / 5: RegMap's own RSM -> risk / control mappings.
+# Kept as REFERENCE (human mappings at summary level): candidates and checks
+# for the AI bridges, never treated as truth.
+# ------------------------------------------------------------------------------
+def rsm_map(key, target_col, prop, applicable_col=None):
+    df = rm(key)
+    if target_col not in df.columns:
+        note(f"{key}: column missing", target_col)
+        return 0
+
+    keep = [c for c in ["Regulation Summary ID", target_col, applicable_col]
+            if c and c in df.columns]
+    df = df[keep].copy()
+    df["_s"] = df["Regulation Summary ID"].map(cid)
+    df["_t"] = df[target_col].map(cid)
+    df = df[(df["_s"] != "") & (df["_t"] != "")].drop_duplicates(["_s", "_t"])
+
+    for _, r in df.iterrows():
+        applicable = txt(r.get(applicable_col)) if applicable_col else ""
+        edge(r["_s"], r["_t"], prop, "REFERENCE", "RegMap", applicable=applicable)
+
+    return len(df)
+
+
+n3r = rsm_map("regmap_e3", "Regulation Summary Library Risk ID Number",
+              "regmapMapsRisk")
+n3c = rsm_map("regmap_e3", "Regulation Summary L1 Library Control ID Number",
+              "regmapMapsLibraryControl")
+n4  = rsm_map("regmap_e4", "Risk ID",
+              "regmapMapsRiskInstance", "Risk Instance Applicable?")
+n5  = rsm_map("regmap_e5", "L1 Control ID",
+              "regmapMapsControlInstance", "L1 Control Instance Applicable?")
+
+
+# ------------------------------------------------------------------------------
+# Extract 7: regulation assessments (business scoping of obligations)
+# ------------------------------------------------------------------------------
+e7 = rm("regmap_e7")
+
+for _, r in e7.iterrows():
+    ra = node(
+        f"RA-{cid(r['Regulation Assessment ID'])}", "RegulationAssessment",
+        r.get("Regulation Assessment Title"), system="RegMap",
+        business=txt(r.get("Regulation Assessment Business")),
+        lob_path=txt(r.get("Regulation Assessment LoB Path")),
+        status=txt(r.get("Regulation Assessment Status")),
+        last_assessed=str(r.get("Regulation Assessment Last Assessed Date") or ""),
+    )
+
+    rgl = cid(r.get("Regulation ID"))
+    if rgl:
+        edge(ra, rgl, "assessesRegulation", "FACT", "RegMap")
+
+    biz = txt(r.get("Regulation Assessment Business"))
+    if biz:
+        b = node(f"LOB-{slug(biz)}", "BusinessUnit", biz, system="RegMap")
+        edge(ra, b, "assessedFor", "FACT", "RegMap")
+
+    rob = cid(r.get("Obligation Evaluation Obligation ID"))
+    if rob:
+        edge(ra, rob, "evaluatesObligation", "FACT", "RegMap",
+             in_scope=txt(r.get("Obligation Evaluation In-Scope?")))
+
+note("RegMap REFERENCE RSM->LR / RSM->L1C / ->risk inst / ->ctrl inst",
+     f"{n3r} / {n3c} / {n4} / {n5}")
+print(f"1b RegMap: nodes {len(NODES)} | edges {len(EDGES)}")
+
+
+
+# ====== CELL 5: PHASE 1c - HELIOS (risk, control, RTCL) =======================
+
+# ------------------------------------------------------------------------------
+# Library risks (LR) + taxonomy + steward + owner
+# ------------------------------------------------------------------------------
+hr = read_any(SOURCES["helios_risk"])
+
+risk_keys = ["risk_id", "risk_title", "risk_text", "risk_status",
+             "risk_l1", "risk_l2", "risk_l3", "risk_steward", "risk_owner"]
+c = {k: col(hr, k, required=(k == "risk_id")) for k in risk_keys}
+
+
+def rv(row, key):
+    """Value of COLS key `key` in a Helios row, '' if the column is missing."""
+    return row.get(c[key]) if c[key] else ""
+
+
+for _, r in hr.iterrows():
+    lr = node(
+        cid(r[c["risk_id"]]), "LibraryRisk",
+        rv(r, "risk_title"), rv(r, "risk_text"), "Helios",
+        status=txt(rv(r, "risk_status")),
+    )
+    if not lr:
+        continue
+
+    tax = taxonomy_chain(rv(r, "risk_l1"), rv(r, "risk_l2"), rv(r, "risk_l3"), "Helios")
+    if tax:
+        edge(lr, tax, "classifiedAs", "FACT", "Helios")
+
+    steward = txt(rv(r, "risk_steward"))
+    if steward:
+        s = node(f"STEW-{slug(steward)}", "Role", steward, system="Helios", role="Risk steward")
+        edge(lr, s, "stewardedBy", "FACT", "Helios")
+
+    owner = txt(rv(r, "risk_owner"))
+    if owner:
+        p = node(f"PERSON-{slug(owner)}", "Person", owner, system="Helios")
+        edge(lr, p, "ownedBy", "FACT", "Helios")
+
+
+# ------------------------------------------------------------------------------
+# Control file: one row per control instance (1C), library control (L1C) fields on it
+# ------------------------------------------------------------------------------
+hc = read_any(SOURCES["helios_ctrl"])
+
+ctrl_keys = ["ctrl_instance_id", "ctrl_instance_title", "ctrl_instance_text",
+             "ctrl_library_id", "ctrl_library_title", "ctrl_library_text",
+             "ctrl_library_status", "ctrl_status", "ctrl_business", "ctrl_le",
+             "ctrl_owner", "ctrl_steward"]
+c = {k: col(hc, k, required=(k in ("ctrl_instance_id", "ctrl_library_id"))) for k in ctrl_keys}
+
+for _, r in hc.iterrows():
+
+    # --- Library control (L1C) ------------------------------------------------
+    l1c = node(
+        cid(r[c["ctrl_library_id"]]), "LibraryControl",
+        rv(r, "ctrl_library_title"), rv(r, "ctrl_library_text"), "Helios",
+        status=txt(rv(r, "ctrl_library_status")),
+    )
+
+    # --- Control instance (1C) ------------------------------------------------
+    ic = node(
+        cid(r[c["ctrl_instance_id"]]), "Control",
+        rv(r, "ctrl_instance_title"), rv(r, "ctrl_instance_text"), "Helios",
+        status=txt(rv(r, "ctrl_status")),
+    )
+    if not ic:
+        continue
+
+    if l1c:
+        edge(ic, l1c, "instanceOf", "FACT", "Helios")
+
+    # --- Business, legal entity, owner ----------------------------------------
+    biz = txt(rv(r, "ctrl_business"))
+    if biz:
+        b = node(f"LOB-{slug(biz)}", "BusinessUnit", biz, system="Helios")
+        edge(ic, b, "operatedIn", "FACT", "Helios")
+
+    le = txt(rv(r, "ctrl_le"))
+    if le:
+        l_ = node(f"LE-{slug(le)}", "LegalEntity", le, system="Helios")
+        edge(ic, l_, "operatedFor", "FACT", "Helios")
+
+    owner = txt(rv(r, "ctrl_owner"))
+    if owner:
+        p = node(f"PERSON-{slug(owner)}", "Person", owner, system="Helios")
+        edge(ic, p, "ownedBy", "FACT", "Helios")
+
+
+# ------------------------------------------------------------------------------
+# RTCL: library risk <-> library control
+# ------------------------------------------------------------------------------
+rt = read_any(SOURCES["helios_rtcl"])
+c_r = col(rt, "rtcl_risk")
+c_c = col(rt, "rtcl_l1c")
+
+rt = rt.assign(_r=rt[c_r].map(cid), _c=rt[c_c].map(cid))
+rt = rt[(rt["_r"] != "") & (rt["_c"] != "")].drop_duplicates(["_r", "_c"])
+
+for _, r in rt.iterrows():
+    node(r["_r"], "LibraryRisk",
+         r.get("risk_library_risk_title"), r.get("risk_library_risk_description"), "Helios")
+    node(r["_c"], "LibraryControl",
+         r.get("l1_control_library_title"), r.get("l1_control_library_description"), "Helios")
+    edge(r["_r"], r["_c"], "mitigatedBy", "FACT", "Helios")
+
+note("Helios risks / control rows / RTCL pairs", f"{len(hr)} / {len(hc)} / {len(rt)}")
+print(f"1c Helios: nodes {len(NODES)} | edges {len(EDGES)}")
+
+
+
+# ====== CELL 6: PHASE 1d - GPPS (policies, procedures, objRel) ================
+ID_PATTERN = re.compile(r"\b(L1C-\d+|L2C-\d+|LR-\d+|1C-\d+|IC-\d+)\b")
+
+
+def parse_json(value):
+    """json_data cell -> dict ({} if empty)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        return json.loads(value)
+    return {}
+
+
+def load_gpps(paths, id_col):
+    """Concatenate files, keep the latest version per document, parse json_data."""
+    df = pd.concat([read_any(p) for p in paths], ignore_index=True)
+    df = df.sort_values("version_num", ascending=False).drop_duplicates(id_col)
+    df["doc"] = df["json_data"].map(parse_json)
+    return df
+
+
+HIDDEN_SKIPPED = {"segments": 0, "objRel": 0}
+
+
+def is_hidden(seg):
+    """GPPS hides a segment in the UI when its display flag is 'N'."""
+    flag = seg.get("sgmntDispInd") or seg.get("procSgmntDispInd") or ""
+    return str(flag).strip().upper() == "N"
+
+
+def obj_rels(segments):
+    """Yield (segment title, objRel entry) for every objRel in every VISIBLE segment."""
+    for seg in segments or []:
+        if is_hidden(seg):
+            HIDDEN_SKIPPED["segments"] += 1
+            HIDDEN_SKIPPED["objRel"] += len(seg.get("objRel") or [])
+            continue
+        seg_title = txt(seg.get("sgmntTitlText") or seg.get("procSgmntTitlText") or "")
+        for rel in seg.get("objRel") or []:
+            yield seg_title, rel
+
+
+# Which objRel field holds the target ID, per type (CELL 9 diagnosis):
+#   CNTRL : cntlId                    (control)
+#   PLCY  : objId                     (policy core id, 96% match; cntlId here is
+#                                      the policy MCR's control, kept as an attribute)
+#   RISK  : first 'LR-...' value, else objId / riskId
+#   REG   : objId
+ID_KEYS = {
+    "CNTRL": ["cntlId", "plcyObjId", "objId"],
+    "PLCY":  ["objId", "plcyObjId", "plcyCoreId"],
+    "RISK":  ["riskId", "objId"],
+    "REG":   ["objId", "plcyObjId"],
+}
+
+
+def rel_target(rel):
+    """(type code, target id) of one objRel entry."""
+    rel_type = str(rel.get("objTypeCde") or rel.get("plcyObjTypeCde") or "").upper()
+    base = next((t for t in ID_KEYS if rel_type.startswith(t)), None)
+
+    # RISK: prefer a value that looks like a library risk ID
+    if base == "RISK":
+        m = re.search(r"\bLR-\d+\b", json.dumps(rel, default=str))
+        if m:
+            return rel_type, m.group(0)
+
+    for key in ID_KEYS.get(base, ["objId", "cntlId", "plcyObjId", "id"]):
+        if cid(rel.get(key)):
+            return rel_type, cid(rel[key])
+
+    # Fallback: an ID written inside a name / description
+    m = ID_PATTERN.search(json.dumps(rel, default=str))
+    return rel_type, (m.group(1) if m else "")
+
+
+def control_type(tid):
+    return "LibraryControl" if tid.startswith("L1C") else "Control"
+
+
+rel_stats = {}
+
+
+def count_rel(label):
+    rel_stats[label] = rel_stats.get(label, 0) + 1
+
+
+# ------------------------------------------------------------------------------
+# Policies
+# ------------------------------------------------------------------------------
+pol = load_gpps([SOURCES["gpps_pol_us"], SOURCES["gpps_pol_glob"]], "policy_core_id")
+
+for _, r in pol.iterrows():
+    d = r["doc"]
+    pid = f"POL-{cid(r['policy_core_id'])}"
+
+    owner_raw = d.get("policyOwner")
+    owner = txt(owner_raw.get("name") if isinstance(owner_raw, dict) else owner_raw)
+
+    purpose = d.get("policyPurpose")
+    purpose_text = purpose.get("sgmntText", "") if isinstance(purpose, dict) else ""
+
+    node(
+        pid, "Policy", d.get("policyTitle"), purpose_text, "GPPS",
+        version=cid(r["version_num"]),
+        status=txt((d.get("versn") or {}).get("versStatCde")),
+        risk_type=txt(d.get("policyRiskTypePrimary")),
+    )
+
+    if owner:
+        p = node(f"PERSON-{slug(owner)}", "Person", owner, system="GPPS")
+        edge(pid, p, "ownedBy", "FACT", "GPPS")
+
+    segments = (d.get("policyApplication") or {}).get("segment")
+    for seg_title, rel in obj_rels(segments):
+        rel_type, tid = rel_target(rel)
+        count_rel(f"policy {rel_type}")
+
+        if not tid:
+            continue
+
+        if rel_type.startswith("CNTRL"):
+            node(tid, control_type(tid), system="GPPS", rec=False)
+            edge(pid, tid, "policyMapsToControl", "FACT", "GPPS", section=seg_title)
+
+        elif rel_type.startswith("REG"):
+            node(tid, "Regulation", system="GPPS", rec=False)
+            edge(pid, tid, "policyMapsToRegulation", "FACT", "GPPS", section=seg_title)
+
+        elif rel_type.startswith("PLCY"):
+            node(f"POL-{tid}", "Policy", system="GPPS", rec=False)
+            edge(pid, f"POL-{tid}", "relatedPolicy", "FACT", "GPPS", section=seg_title)
+
+
+# ------------------------------------------------------------------------------
+# Procedures
+# ------------------------------------------------------------------------------
+proc = load_gpps([SOURCES["gpps_proc"]], "procedure_core_id")
+
+for _, r in proc.iterrows():
+    d = r["doc"]
+    pid = f"PROC-{cid(r['procedure_core_id'])}"
+
+    purpose = d.get("procedurePurpose")
+    purpose_text = purpose.get("procSgmntText", "") if isinstance(purpose, dict) else ""
+
+    node(
+        pid, "Procedure", d.get("procedureTitle"), purpose_text, "GPPS",
+        version=cid(r["version_num"]),
+        risk_type=txt(d.get("procedureRiskType")),
+    )
+
+    segments = (d.get("procedureApplication") or {}).get("segment")
+    for seg_title, rel in obj_rels(segments):
+        rel_type, tid = rel_target(rel)
+        count_rel(f"procedure {rel_type}")
+        if not tid:
+            continue
+
+        if rel_type.startswith("PLCY"):
+            # the entry points at one MCR (minimum control requirement) of the policy
+            node(f"POL-{tid}", "Policy", system="GPPS", rec=False)
+            edge(pid, f"POL-{tid}", "implementsPolicy", "FACT", "GPPS",
+                 section=seg_title or txt(rel.get("mcrName")),
+                 policy_mcr=txt(rel.get("mcrName")),
+                 policy_mcr_control=cid(rel.get("cntlId")))
+
+        elif rel_type.startswith("CNTRL"):
+            node(tid, control_type(tid), system="GPPS", rec=False)
+            edge(pid, tid, "procedureMapsToControl", "FACT", "GPPS", section=seg_title)
+
+        elif rel_type.startswith("RISK"):
+            node(tid, "LibraryRisk", system="GPPS", rec=False)
+            edge(pid, tid, "procedureMapsToRisk", "FACT", "GPPS", section=seg_title)
+
+note("GPPS policies / procedures", f"{len(pol)} / {len(proc)}")
+note("GPPS objRel by type (visible segments)", rel_stats)
+note("GPPS hidden segments skipped / their objRel", f"{HIDDEN_SKIPPED['segments']} / {HIDDEN_SKIPPED['objRel']}")
+print(f"1d GPPS: {len(pol)} policies, {len(proc)} procedures | objRel {rel_stats}")
+print(f"   hidden segments skipped {HIDDEN_SKIPPED['segments']:,} (objRel on them {HIDDEN_SKIPPED['objRel']:,})")
+print(f"   nodes {len(NODES)} | edges {len(EDGES)}")
+
+
+
+# ====== CELL 7: PHASE 2 - AI LINKS FROM THE IA PROJECT ========================
+# Base = the FULL linkage output (every decision). Judge verdict joined on.
+# Pairs never audited -> NOT_AUDITED. Planted test pairs are not in the base
+# files, so they never enter the graph.
+
+def verdict_map(path, src, tgt, level=None):
+    """{(source id, target id): judge verdict} from an audit file."""
+    a = read_any(path)
+    if level is not None and "level" in a.columns:
+        a = a[a["level"].astype(str).str.upper() == level]
+    v = pick_col(a, COLS["verdict"])
+    return {(cid(s), cid(t)): txt(x).upper() for s, t, x in zip(a[src], a[tgt], a[v])}
+
+
+def ai_links(df, src_col, tgt_col, prop, system,
+             src_prefix="", tgt_prefix="", verdicts=None, extra=None, layer="AI_IMPACT"):
+    """Add one AI link edge per row (all decisions kept). Returns rows added."""
+
+    # --- resolve optional columns once ----------------------------------------
+    c_dec    = pick_col(df, COLS["decision"])
+    c_score  = pick_col(df, ["link_score", "max_score"])
+    c_conf   = pick_col(df, ["confidence_level", "confidence", "confidence_score", "model_confidence"])
+    c_ev_from = pick_col(df, ["evidence_from_alert", "evidence_from_obligation", "model_evidence_alert"])
+    c_ev_to  = pick_col(df, ["evidence_from_regulation", "evidence_from_target",
+                             "evidence_from_document", "model_evidence_reg"])
+    c_reason = pick_col(df, ["reasoning", "model_reasoning"])
+    c_ground = pick_col(df, ["grounding_flag"])
+    extra    = {k: v for k, v in (extra or {}).items() if v in df.columns}
+    verdicts = verdicts or {}
+
+    def get(row, column):
+        return txt(row.get(column)) if column else ""
+
+    n = 0
+    for _, r in df.iterrows():
+        s, t = cid(r[src_col]), cid(r[tgt_col])
+        if not s or not t:
+            continue
+
+        edge(
+            src_prefix + s, tgt_prefix + t, prop, layer, system,
+            decision=get(r, c_dec).upper(),
+            score=r.get(c_score) if c_score else None,
+            confidence=get(r, c_conf),
+            evidence_from=get(r, c_ev_from),
+            evidence_to=get(r, c_ev_to),
+            reasoning=get(r, c_reason),
+            grounding=get(r, c_ground),
+            judge_verdict=verdicts.get((s, t), "NOT_AUDITED"),
+            sme_status="UNREVIEWED",
+            **{k: txt(r.get(v)) for k, v in extra.items()},
+        )
+        n += 1
+    return n
+
+
+counts = {}
+
+# ------------------------------------------------------------------------------
+# Alert -> RSM, and alert -> RGL rolled up from the same file
+# (an alert -> RGL is LINKED if any of its RSMs is LINKED)
+# ------------------------------------------------------------------------------
+rsm = read_any(SOURCES["ia_rsm"])
+counts["alert->RSM"] = ai_links(rsm, "RECORD_ID", "RSM_ID", "assertsImpact:RSM", "IA", "ALERT-")
+
+dec = pick_col(rsm, COLS["decision"])
+rsm["_linked"] = rsm[dec].astype(str).str.upper() == "LINKED"
+rsm["_score"] = pd.to_numeric(rsm.get("link_score"), errors="coerce")
+rgl_v = verdict_map(SOURCES["ia_rgl_audit"], "RID", "RGL")
+
+counts["alert->RGL"] = 0
+for (a, g_), grp in rsm.groupby(["RECORD_ID", "REG_ID"]):
+    a, g_ = cid(a), cid(g_)
+    if not a or not g_:
+        continue
+
+    linked = grp[grp["_linked"]]
+    edge(
+        f"ALERT-{a}", g_, "assertsImpact:RGL", "AI_IMPACT", "IA",
+        decision="LINKED" if len(linked) else "NOT_LINKED",
+        score=grp["_score"].max(),
+        confidence="", evidence_from="", evidence_to="",
+        reasoning=f"Rolled up from {len(linked)} linked of {len(grp)} judged summaries",
+        grounding="",
+        judge_verdict=rgl_v.get((a, g_), "NOT_AUDITED"),
+        sme_status="UNREVIEWED",
+        linked_rsms=" | ".join(cid(x) for x in linked["RSM_ID"]),
+    )
+    counts["alert->RGL"] += 1
+
+
+# ------------------------------------------------------------------------------
+# Alert -> ROB
+# ------------------------------------------------------------------------------
+rob = read_any(SOURCES["ia_rob"])
+counts["alert->ROB"] = ai_links(
+    rob, "RECORD_ID", "ROB_ID", "assertsImpact:ROB", "IA", "ALERT-",
+    verdicts=verdict_map(SOURCES["ia_rob_audit"], "RID", "ROB"),
+    extra={"parent_rsm": "RSM_ID", "parent_rgl": "REG_ID"},
+)
+
+
+# ------------------------------------------------------------------------------
+# Alert -> LR / L1C / 1C (Helios Run B)
+# ------------------------------------------------------------------------------
+helios_audit = read_any(SOURCES["ia_helios_audit"])
+audit_levels = helios_audit["level"].astype(str).str.upper().unique().tolist()
+
+for key, tgt, level, label in [
+    ("ia_lr",  "LR",  "LR",  "alert->LR"),
+    ("ia_l1c", "L1C", "L1C", "alert->L1C"),
+    ("ia_1c",  "1C",  "1C",  "alert->1C"),
+]:
+    df = read_any(SOURCES[key])
+    tcol = tgt if tgt in df.columns else pick_col(df, ["LIC", "IC", "TARGET"])
+
+    # audit file may write the level as 1C or IC: match either
+    match = next((x for x in audit_levels
+                  if x.replace("I", "1") == level.replace("I", "1")), level)
+
+    counts[label] = ai_links(
+        df, "RID", tcol, f"assertsImpact:{level}", "IA", "ALERT-",
+        verdicts=verdict_map(SOURCES["ia_helios_audit"], "RID", "TARGET", match),
+        extra={"provenance": "provenance", "parent_control": "parent_control"},
+    )
+
+
+# ------------------------------------------------------------------------------
+# ROB -> policy / procedure: ONTOLOGY STRUCTURE built with GenAI.
+# NOT alert impact: which policy / procedure implements an obligation, for every
+# obligation, independent of any alert. Alert -> policy / procedure impact is
+# phase 3.
+# ------------------------------------------------------------------------------
+pp = read_any(SOURCES["ia_rob_policy"])
+
+# --- tag each link with where it sits in the policy (section view output) -----
+SECTION_COLS = ["link_support", "primary_section_no", "primary_clause_no", "sections_visible"]
+sv = read_any(SOURCES["ia_rob_policy_sections"])
+sv = sv.assign(_rob=sv["rob_id"].map(cid), _doc=sv["doc_id"].map(cid))
+sv = sv[["_rob", "_doc"] + [c_ for c_ in SECTION_COLS if c_ in sv.columns]].drop_duplicates(["_rob", "_doc"])
+
+pp = pp.assign(_rob=pp["rob_id"].map(cid), _doc=pp["doc_id"].map(cid))
+pp = pp.merge(sv, on=["_rob", "_doc"], how="left")
+
+pp_dec = pp[pick_col(pp, COLS["decision"])].astype(str).str.upper()
+hidden_only = pp["link_support"].astype(str).eq("HIDDEN TEXT ONLY") if "link_support" in pp.columns \
+    else pd.Series(False, index=pp.index)
+note("ROB->policy LINKED with section info",
+     f"{int(pp.loc[pp_dec == 'LINKED', 'link_support'].notna().sum()):,} of {int((pp_dec == 'LINKED').sum()):,}"
+     if "link_support" in pp.columns else "link_support column missing")
+note("ROB->policy hidden-text-only links",
+     f"{int(hidden_only.sum()):,} ({'kept, tagged' if KEEP_HIDDEN_ONLY_POLICY_LINKS else 'DROPPED'})")
+if not KEEP_HIDDEN_ONLY_POLICY_LINKS:
+    pp = pp[~hidden_only]
+
+counts["ROB->policy (structure)"] = ai_links(
+    pp, "rob_id", "doc_id", "implementedByPolicy", "IA", "", "POL-",
+    extra={"linked_sections": "linked_sections", "tier": "tier",
+           **{c_: c_ for c_ in SECTION_COLS}},
+    layer="AI_STRUCTURE",
+)
+print(f"   ROB->policy: hidden-text-only {int(hidden_only.sum()):,} "
+      f"({'kept, tagged' if KEEP_HIDDEN_ONLY_POLICY_LINKS else 'dropped'})")
+
+pr = read_any(SOURCES["ia_rob_proc"])
+if "run" in pr.columns and ROB_PROC_RUN:
+    pr = pr[pr["run"].astype(str) == ROB_PROC_RUN]
+
+counts["ROB->procedure (structure)"] = ai_links(
+    pr, "rob_id", "doc_id", "governsActivity", "IA", "", "PROC-",
+    extra={"linked_sections": "linked_sections", "tier": "tier"},
+    layer="AI_STRUCTURE",
+)
+
+note("AI links loaded (all decisions)", counts)
+print("2 AI links:", counts)
+print(f"   nodes {len(NODES)} | edges {len(EDGES)}")
+
+
+
+# ====== CELL 8: SAVE + CHECKS =================================================
+
+# ------------------------------------------------------------------------------
+# 8.1  Frames (parquet-safe types)
+# ------------------------------------------------------------------------------
+nodes_df = pd.DataFrame([
+    {
+        **{k: v for k, v in n.items() if k != "props"},
+        "props": json.dumps(n["props"], ensure_ascii=False, default=str),
+    }
+    for n in NODES.values()
+])
+
+edges_df = pd.DataFrame(EDGES)
+for c_ in edges_df.columns:
+    if edges_df[c_].dtype == object:
+        edges_df[c_] = edges_df[c_].map(lambda v: "" if is_blank(v) else str(v))
+edges_df = edges_df.drop_duplicates()
+
+
+# ------------------------------------------------------------------------------
+# 8.2  ID-join coverage: do both ends of each link exist as real records?
+#      A link end that is only referenced points to an ID mismatch between
+#      systems, or to data not loaded. KEY CHECK.
+# ------------------------------------------------------------------------------
+is_rec = nodes_df.set_index("id")["record"].to_dict()
+
+cov = []
+for prop, grp in edges_df.groupby("property"):
+    decision = grp["decision"] if "decision" in grp.columns else pd.Series("", index=grp.index)
+    cov.append(dict(
+        property=prop,
+        layer=grp["layer"].iloc[0],
+        edges=len(grp),
+        linked=int((decision == "LINKED").sum()),
+        source_found_pct=round(100 * grp["source"].map(lambda x: is_rec.get(x, False)).mean(), 1),
+        target_is_record_pct=round(100 * grp["target"].map(lambda x: is_rec.get(x, False)).mean(), 1),
+    ))
+cov = pd.DataFrame(cov).sort_values(["layer", "property"])
+
+stubs = nodes_df[~nodes_df["record"]]     # referenced, never loaded from own system
+
+
+# ------------------------------------------------------------------------------
+# 8.3  Rule checks
+# ------------------------------------------------------------------------------
+def ids_of(node_type):
+    return set(nodes_df.loc[nodes_df["type"] == node_type, "id"])
+
+
+def sources_of(prop):
+    return set(edges_df.loc[edges_df["property"] == prop, "source"])
+
+
+inst = edges_df[edges_df["property"] == "instanceOf"].groupby("source")["target"].nunique()
+ic_ids = set(nodes_df.loc[(nodes_df["type"] == "Control") & nodes_df["record"], "id"])   # Helios only
+
+rules = pd.DataFrame([
+    ("Every control instance has exactly one library control",
+     f"{int((inst == 1).sum())} of {len(ic_ids)}"),
+    ("Control instances with no library control",
+     len(ic_ids - set(inst.index))),
+    ("Library risks with no mitigating library control",
+     len(ids_of("LibraryRisk") - sources_of("mitigatedBy"))),
+    ("Obligations with no parent summary",
+     len(ids_of("RegulatoryObligation") - sources_of("derivedFromSummary"))),
+    ("Stub nodes (referenced, no record of their own)",
+     len(stubs)),
+], columns=["rule", "result"])
+
+
+# ------------------------------------------------------------------------------
+# 8.4  Save
+# ------------------------------------------------------------------------------
+nodes_df.to_parquet(f"{OUT_DIR}/nodes.parquet", index=False)
+edges_df.to_parquet(f"{OUT_DIR}/edges.parquet", index=False)
+
+manifest = dict(
+    run_id=RUN_ID,
+    built=datetime.now().isoformat(timespec="minutes"),
+    sources=SOURCES,
+    columns_used=PICKED,
+    rob_procedure_run=ROB_PROC_RUN,
+    nodes=len(nodes_df),
+    edges=len(edges_df),
+    nodes_by_type=nodes_df["type"].value_counts().to_dict(),
+    edges_by_property=edges_df["property"].value_counts().to_dict(),
+    notes={k: (v if isinstance(v, (int, str)) else str(v)) for k, v in REPORT},
+)
+with open(f"{OUT_DIR}/manifest.json", "w") as fh:
+    json.dump(manifest, fh, indent=2, default=str)
+
+with pd.ExcelWriter(f"{OUT_DIR}/build_checks.xlsx") as xl:
+    pd.DataFrame(REPORT, columns=["item", "value"]).astype(str) \
+        .to_excel(xl, sheet_name="notes", index=False)
+    nodes_df["type"].value_counts().rename_axis("type").reset_index(name="nodes") \
+        .to_excel(xl, sheet_name="nodes_by_type", index=False)
+    cov.to_excel(xl, sheet_name="edges_and_coverage", index=False)
+    rules.to_excel(xl, sheet_name="rule_checks", index=False)
+    pd.DataFrame(sorted(PICKED.items()), columns=["field", "column_used"]) \
+        .to_excel(xl, sheet_name="columns_used", index=False)
+    stubs.groupby(["type", "source_system"]).size().rename("stubs").reset_index() \
+        .to_excel(xl, sheet_name="stubs", index=False)
+
+
+# ------------------------------------------------------------------------------
+# 8.5  Screen output (short, photo-friendly)
+# ------------------------------------------------------------------------------
+KEY_FACTS = ["instanceOf", "mitigatedBy", "givesRiseTo",
+             "implementsPolicy", "policyMapsToControl", "procedureMapsToControl",
+             "procedureMapsToRisk", "policyMapsToRegulation", "relatedPolicy"]
+show = cov[cov["layer"].isin(["AI_IMPACT", "AI_STRUCTURE"]) | cov["property"].isin(KEY_FACTS)]
+
+print("ONTOLOGY BUILD v2 DONE")
+print(f" nodes {len(nodes_df):,} | edges {len(edges_df):,}")
+print(" nodes:", nodes_df["type"].value_counts().to_dict())
+print(" ID-join coverage (target is a real record %), AI links + key facts:")
+for r in show.itertuples():
+    print(f"   {r.property:28s} {r.edges:>8,} edges | linked {r.linked} "
+          f"| target found {r.target_is_record_pct}%")
+for r in rules.itertuples():
+    print(f" rule: {r.rule}: {r.result}")
+print(f" detail: {OUT_DIR}/build_checks.xlsx")
