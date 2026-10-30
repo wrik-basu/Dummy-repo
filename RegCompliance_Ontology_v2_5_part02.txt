@@ -1,4 +1,36 @@
-name, sub, col] = LAYER_TXT[e._layer];
+it sits
+     ------------------------------------------------------------------- */
+  function openEx(html) {
+    $("lv-ex").innerHTML = `<button class="ex-close" aria-label="Close">×</button>` + html;
+    $("lv-ex").querySelector(".ex-close").onclick = clearSel;
+    $("lv-grid").classList.add("open");
+    $("lv-ex").scrollTop = 0;
+    // Show "Show more" only where the text is actually cut.
+    $("lv-ex").querySelectorAll(".pn-text.clamp").forEach((t) => {
+      const b = t.nextElementSibling;
+      if (b && b.classList.contains("pn-more")) b.hidden = t.scrollHeight <= t.clientHeight + 2;
+    });
+  }
+  function clearSel() { selL = null; $("lv-grid").classList.remove("open"); render(); }
+
+  const secT = (n, t, extra = "") => `<div class="pn-sec"><span class="n">${n}</span>${t}${extra}</div>`;
+
+  // A record card: type chip, ID, title, its own text (clamped).
+  function card(n, lines = 6) {
+    const cls = T[n.type] ? T[n.type].cls : "";
+    const desc = cls && byId[cls] ? byId[cls].d : "";
+    const title = n.title && n.title !== n.id ? `<div class="pn-title">${h(n.title)}</div>` : "";
+    const text = !blank(n.text)
+      ? `<div class="pn-text clamp" style="--lines:${lines}">${h(n.text)}</div><button class="pn-more">Show more</button>`
+      : `<div class="muted" style="font-size:13px">${h(desc)}</div>`;
+    return `<div class="pn-card" style="--c:${tColor(n.type)}">
+      <div class="pn-head"><span class="pn-chip">${h(tShort(n.type))}</span><span class="tag">${h(n.id)}</span></div>
+      ${title}${text}</div>`;
+  }
+
+  // The relation between two cards.
+  function relBlock(e) {
+    const [name, sub, col] = LAYER_TXT[e._layer];
     const sent = ontoSentence(e.relation), o = ontoRel(e.relation);
     return `<div class="pn-rel" style="--kc:${col}"><span class="arrow">↓</span>
       <span class="verb">${h(verb(e.relation))}</span>
@@ -262,6 +294,19 @@ name, sub, col] = LAYER_TXT[e._layer];
   });
 
   applyPage();
+
+  // Data embedded by "Save as standalone HTML" loads by itself.
+  const emb = document.getElementById("lv-embedded");
+  if (emb) {
+    lastText = emb.textContent; load(JSON.parse(lastText));
+    $("lv-standalone").hidden = false;
+    $("lv-loadbtn").textContent = "Load other data";
+  } else {
+    // Silent attempt when the page is served from the data folder.
+    fetch("ontology_demo_data.json").then((r) => (r.ok ? r.text() : null))
+      .then((t) => { if (t) { lastText = t; load(JSON.parse(t)); $("lv-standalone").hidden = false; } }).catch(() => {});
+  }
+
 })();
 </script>
 

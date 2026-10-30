@@ -1,4 +1,5 @@
-.r}`})});
+dir=e.f===e.t?"↻":(e.f===sel?"→":"←");
+      (tags[other]=tags[other]||[]).push({e,txt:`${dir} ${e.r}`})});
     Object.entries(tags).forEach(([id,list])=>{const p=pos[id]; if(!p) return;
       let x=p.x+NW/2; const total=list.reduce((a,t)=>a+t.txt.length*6.5+18,0)+(list.length-1)*4; let cx=x-total/2;
       list.forEach(t=>{const w=t.txt.length*6.5+18, h=18, y=p.y-h/2, kc=KIND[t.e.k][1];
@@ -395,6 +396,18 @@ select(start);
 </style>
 
 <script>
+(function () {   // untouched markup between the two scripts (standalone save)
+  const s1 = document.scripts[0], s2 = document.currentScript; let x = "", n = s1.nextSibling;
+  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  while (n && n !== s2) {
+    if (n.nodeType === 1 && n.id !== "lv-embedded") x += n.outerHTML;
+    else if (n.nodeType === 3) x += esc(n.nodeValue);
+    n = n.nextSibling;
+  }
+  window.__MID = x;
+})();
+</script>
+<script>
 /* =====================================================================
    v2.3 LIVE DATA ADD-ON
    ---------------------------------------------------------------------
@@ -645,6 +658,7 @@ select(start);
       <button class="ex-toggle" id="lv-loadbtn">Load live data</button>
       <input type="file" id="lv-file" multiple hidden>
       <button class="btn2" id="lv-save" hidden title="Save the joined parts as one ontology_demo_data.json">Save as one file</button>
+      <button class="btn2" id="lv-standalone" hidden title="One HTML file with the loaded data inside: opens anywhere, no data files needed">Save as standalone HTML</button>
       <span class="lv-size" title="Page width and size. Remembered on this computer.">
         Width <span class="zoom"><button id="pw-full" aria-pressed="true">Full</button><button id="pw-1600">Wide</button><button id="pw-1240">Narrow</button></span>
         Size <span class="zoom"><button id="pz-out" aria-label="Smaller">A−</button><button id="pz-val">100%</button><button id="pz-in" aria-label="Bigger">A+</button></span>
@@ -693,6 +707,7 @@ select(start);
       try {
         load(JSON.parse(clean));
         lastText = clean;
+        $("lv-standalone").hidden = false;
         $("lv-save").hidden = files.length < 2;
       } catch (err) {
         alert("Could not read the data.\n\nIf you loaded split parts, select ALL parts together.\n\n" + err.message);
@@ -709,9 +724,23 @@ select(start);
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   };
 
-  // Silent attempt when the page is served from the data folder.
-  fetch("ontology_demo_data.json").then((r) => (r.ok ? r.json() : null))
-    .then((d) => { if (d) load(d); }).catch(() => {});
+  // Standalone save: the untouched page + the loaded data embedded in it.
+  $("lv-standalone").onclick = () => {
+    if (!lastText || !window.__PRE) return;
+    const pre = window.__PRE.replace(/<\/body>\s*<\/html>\s*$/i, "");
+    const data = lastText.replace(/</g, "\\u003c");            // safe inside a script tag
+    const js = [...document.scripts].filter((x) => x.id !== "lv-embedded");   // [main, capture, add-on]
+    const cap = js[1].textContent, addon = js[2].textContent;
+    const html = "<!DOCTYPE html>\n" + pre + window.__MID +
+      `<script>${cap}<\/script>\n<script id="lv-embedded" type="application/json">${data}<\/script>\n` +
+      `<script>${addon}<\/script>\n</body></html>`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    a.download = "RegCompliance_Ontology_v2_5_standalone.html";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+
 
 
   /* -------------------------------------------------------------------
@@ -1327,36 +1356,4 @@ select(start);
 
   /* -------------------------------------------------------------------
      11. SIDE PANEL: structured cards
-         1 · the record   2 · how the alert impacts it   3 · where it sits
-     ------------------------------------------------------------------- */
-  function openEx(html) {
-    $("lv-ex").innerHTML = `<button class="ex-close" aria-label="Close">×</button>` + html;
-    $("lv-ex").querySelector(".ex-close").onclick = clearSel;
-    $("lv-grid").classList.add("open");
-    $("lv-ex").scrollTop = 0;
-    // Show "Show more" only where the text is actually cut.
-    $("lv-ex").querySelectorAll(".pn-text.clamp").forEach((t) => {
-      const b = t.nextElementSibling;
-      if (b && b.classList.contains("pn-more")) b.hidden = t.scrollHeight <= t.clientHeight + 2;
-    });
-  }
-  function clearSel() { selL = null; $("lv-grid").classList.remove("open"); render(); }
-
-  const secT = (n, t, extra = "") => `<div class="pn-sec"><span class="n">${n}</span>${t}${extra}</div>`;
-
-  // A record card: type chip, ID, title, its own text (clamped).
-  function card(n, lines = 6) {
-    const cls = T[n.type] ? T[n.type].cls : "";
-    const desc = cls && byId[cls] ? byId[cls].d : "";
-    const title = n.title && n.title !== n.id ? `<div class="pn-title">${h(n.title)}</div>` : "";
-    const text = !blank(n.text)
-      ? `<div class="pn-text clamp" style="--lines:${lines}">${h(n.text)}</div><button class="pn-more">Show more</button>`
-      : `<div class="muted" style="font-size:13px">${h(desc)}</div>`;
-    return `<div class="pn-card" style="--c:${tColor(n.type)}">
-      <div class="pn-head"><span class="pn-chip">${h(tShort(n.type))}</span><span class="tag">${h(n.id)}</span></div>
-      ${title}${text}</div>`;
-  }
-
-  // The relation between two cards.
-  function relBlock(e) {
-    const [
+         1 · the record   2 · how the alert impacts it   3 · where 
