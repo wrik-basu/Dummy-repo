@@ -1,4 +1,11 @@
-ass="arrow">↓</span></div>`;
+name, sub, col] = LAYER_TXT[e._layer];
+    const sent = ontoSentence(e.relation), o = ontoRel(e.relation);
+    return `<div class="pn-rel" style="--kc:${col}"><span class="arrow">↓</span>
+      <span class="verb">${h(verb(e.relation))}</span>
+      <small>${h(name)} · ${h(sub)}</small>
+      ${sent ? `<div class="pn-onto"><span class="pn-ql" style="--qc:var(--muted)">Ontology</span>${sent}
+        ${o ? ` <button class="lnk" data-cls="${h(o.f)}">see on Map</button>` : ""}</div>` : ""}
+      <span class="arrow">↓</span></div>`;
   }
 
   // Evidence for an AI link: verdict, score, the two quotes, reasoning.

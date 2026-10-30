@@ -287,9 +287,10 @@ select(start);
 .lv-node{cursor:pointer}
 .lv-node rect.box{fill:var(--surface);stroke:var(--line);stroke-width:1.3}
 .lv-node:hover rect.box{stroke:var(--fg)}
-.lv-node.sel rect.box{stroke:var(--accent);stroke-width:2.6}
+.lv-node.sel rect.box{stroke:var(--accent);stroke-width:4}
+.lv-node.hlink rect.box{stroke:var(--fg);stroke-width:2.4}
 .lv-node.gap rect.box{stroke:var(--bad);stroke-dasharray:4 3;fill:var(--bad-soft)}
-.lv-node text{font:14px var(--sans);fill:var(--fg);pointer-events:none}
+.lv-node text{font:500 16px var(--sans);fill:var(--fg);pointer-events:none}
 .lv-dim{opacity:.13}
 .lv-edge{fill:none;stroke-width:1.6}
 .lv-edge.structure{stroke:var(--lineage);stroke-dasharray:3 3;opacity:.85}
@@ -302,7 +303,7 @@ select(start);
 .lv-edge.derived{stroke:#8a6d00;stroke-dasharray:2 4;stroke-width:2}
 .pn-cr{display:inline-block;background:var(--bad);color:#fff;font-weight:700;font-size:11px;padding:1px 7px;border-radius:9px}
 .pn-rr{display:inline-block;background:var(--warn);color:#000;font-weight:700;font-size:11px;padding:1px 7px;border-radius:9px}
-.lv-elab.context rect{stroke:var(--context)}
+.lv-elab.context rect{fill:var(--context)}
 /* intake journey strip */
 .jr{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap}
 .jr .js{flex:1 1 150px;min-width:0;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--surface);display:flex;flex-direction:column;gap:2px;cursor:pointer;font-size:12.5px;color:var(--muted)}
@@ -322,11 +323,15 @@ select(start);
 .lv-edge.hl{stroke-width:3.4}
 .lv-hit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer}
 .lv-elab{cursor:pointer}
-.lv-elab rect{fill:var(--surface);stroke:var(--line)}
-.lv-elab text{font:600 11.5px var(--mono);fill:var(--fg);pointer-events:none}
-.lv-elab.impact rect{stroke:var(--accent)}
-.lv-elab.gap rect{stroke:var(--bad)}
-.lv-elab:hover rect{stroke:var(--fg)}
+.lv-elab rect{fill:var(--lineage);stroke:none}
+.lv-elab text{font:700 12.5px var(--sans);fill:#fff;pointer-events:none}
+.lv-elab.impact rect{fill:var(--accent)}
+.lv-elab.structure-ai rect{fill:#1f6fb2}
+.lv-elab.derived rect{fill:#8a6d00}
+.lv-elab.path rect{fill:#7a7f87}
+.lv-elab.gap rect{fill:var(--bad)}
+.lv-elab:hover rect{stroke:var(--fg);stroke-width:2}
+.lv-elab.lv-dim{opacity:.15}
 .lv-lane{fill:var(--sunk);stroke:var(--line)}
 .lv-lane-t{font:700 14px var(--sans);letter-spacing:.06em;fill:var(--muted)}
 .lv-col-t{font:600 12px var(--sans);letter-spacing:.06em;fill:var(--muted)}
@@ -942,7 +947,7 @@ select(start);
         layer  = which kinds of links are drawn
         reveal = which records are shown so far (step mode)
      ------------------------------------------------------------------- */
-  const COL_W = 380, ROW_H = 44, NODE_W = 270, NODE_H = 34, LANE_GAP = 100, TOP = 60;
+  const COL_W = 440, ROW_H = 54, NODE_W = 310, NODE_H = 42, LANE_GAP = 100, TOP = 60;
 
   function scopeSet() {
     if (cur === "ALL") return new Set(DATA.nodes.map((n) => n.id));
@@ -1148,7 +1153,7 @@ select(start);
     } else if (mode === "all" && selL && selL.kind === "edge") {
       const e = DATA.edges[selL.id]; fs = new Set([e.source, e.target]);
     }
-    const labelOn = (e) => mode === "step" || (fs && fs.has(e.source) && fs.has(e.target));
+    const labelOn = () => true;
 
     let order = 0;
     const anim = (id) => fresh.has(id) ? ` lv-new" style="animation-delay:${Math.min(order++ * 35, 900)}ms` : "";
@@ -1203,21 +1208,22 @@ select(start);
       const key = e.target + "|" + e.relation;
       if (labelOn(e) && !labelSeen.has(key)) {
         labelSeen.add(key);
-        const t = verb(e.relation), w = t.length * 7.2 + 16;
-        labels.push(`<g class="lv-elab ${e._layer}${an}" data-edge="${e._i}">
-          <rect x="${back ? x2 - w / 2 : x2 - 8 - w}" y="${back ? y2 - 30 : y2 - 9}" width="${w}" height="18" rx="9"/>
-          <text x="${back ? x2 : x2 - 8 - w / 2}" y="${back ? y2 - 17.5 : y2 + 3.5}" text-anchor="middle">${h(t)}</text>
+        const t = verb(e.relation), w = t.length * 7.4 + 18;
+        labels.push(`<g class="lv-elab ${e._layer} ${dim}${an}" data-edge="${e._i}">
+          <rect x="${back ? x2 - w / 2 : x2 - 8 - w}" y="${back ? y2 - 30 : y2 - 10}" width="${w}" height="20" rx="10"/>
+          <text x="${back ? x2 : x2 - 8 - w / 2}" y="${back ? y2 - 16 : y2 + 4.5}" text-anchor="middle">${h(t)}</text>
           <title>${h(t)} · ${h(prop(e.relation))}</title></g>`);
       }
     });
-    g += labels.join("");
 
     // --- Boxes ------------------------------------------------------------
     vis.forEach((id) => {
       const n = nodeById[id], p = P[id];
       if (!p) return;
       const dim = fs && !fs.has(id) ? "lv-dim" : "";
-      const isSel = selL && selL.kind === "node" && selL.id === id ? "sel" : "";
+      const isSel = selL && selL.kind === "node" && selL.id === id ? "sel"
+        : (selL && ((selL.kind === "node" && shown.some((e) => (e.source === selL.id && e.target === id) || (e.target === selL.id && e.source === id)))
+            || (selL.kind === "edge" && DATA.edges[selL.id] && (DATA.edges[selL.id].source === id || DATA.edges[selL.id].target === id)))) ? "hlink" : "";
       const gap = n.type === "Gap" ? "gap"
         : (n.type !== "Alert" && !CTX_TYPES.has(n.type) &&
            !inE[id].some((e) => e._layer === "impact" && (cur === "ALL" || e.source === cur))) ? "inchain" : "";
@@ -1238,12 +1244,13 @@ select(start);
         <title>${h(tLabel(n.type))}: ${h(id)}${n.title && n.title !== id ? "\n" + h(n.title) : ""}</title>
         <rect class="box" width="${NODE_W}" height="${NODE_H}" rx="6"/>
         <rect width="5" height="${NODE_H}" rx="2" fill="${tColor(n.type)}"/>
-        <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${h(short(label, more ? 23 : 30))}</text>
+        <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${h(short(label, more ? 26 : 32))}</text>
         ${vcol ? `<circle cx="${NODE_W - 10}" cy="${NODE_H / 2}" r="5" fill="${vcol}"><title>Alert impact: ${vText(imp.judge_verdict)}</title></circle>` : ""}
         ${more}
       </g>`;
     });
 
+    g += labels.join("");                       // labels on top of boxes, never hidden
     $("lv-vp").innerHTML = g;
     fresh = new Set();
     stats(scope);
@@ -1352,11 +1359,4 @@ select(start);
 
   // The relation between two cards.
   function relBlock(e) {
-    const [name, sub, col] = LAYER_TXT[e._layer];
-    const sent = ontoSentence(e.relation), o = ontoRel(e.relation);
-    return `<div class="pn-rel" style="--kc:${col}"><span class="arrow">↓</span>
-      <span class="verb">${h(verb(e.relation))}</span>
-      <small>${h(name)} · ${h(sub)}</small>
-      ${sent ? `<div class="pn-onto"><span class="pn-ql" style="--qc:var(--muted)">Ontology</span>${sent}
-        ${o ? ` <button class="lnk" data-cls="${h(o.f)}">see on Map</button>` : ""}</div>` : ""}
-      <span cl
+    const [
