@@ -1,4 +1,14 @@
-style="--qc:${tColor(s.type)}"><span class="pn-ql">${h(tShort(s.type))} says</span>“${h(e.evidence_from)}”</div>`;
+}%"></b></i><b style="color:var(--fg)">${h(e.score)}/10</b></span>` : ""}
+      ${!blank(e.confidence) ? `<span>Confidence <b style="color:var(--fg)">${h(e.confidence)}</b></span>` : ""}
+      ${!blank(e.grounding) ? `<span>Quotes <b style="color:var(--fg)">${h(e.grounding)}</b></span>` : ""}</div>`;
+    if (!blank(e.impact_type) || !blank(e.coverage)) x += `<div class="pn-vrow">${
+      String(e.impact_type).toUpperCase() === "CHANGE_REQUIRED" ? `<span class="pn-cr">CHANGE REQUIRED</span>`
+      : !blank(e.impact_type) ? `<span class="pn-rr">${h(String(e.impact_type).replace(/_/g, " "))}</span>` : ""}${
+      !blank(e.coverage) ? ` <span>Coverage <b style="color:var(--fg)">${h(e.coverage)}</b></span>` : ""}</div>`;
+    if (!blank(e.change_needed)) x += `<div class="pn-q" style="--qc:var(--bad)"><span class="pn-ql">Change needed</span>${h(e.change_needed)}</div>`;
+    if (!blank(e.sections)) x += `<div class="pn-vrow">Linked sections <b style="color:var(--fg)">${h(e.sections)}</b></div>`;
+    if (!blank(e.evidence_from))
+      x += `<div class="pn-q" style="--qc:${tColor(s.type)}"><span class="pn-ql">${h(tShort(s.type))} says</span>“${h(e.evidence_from)}”</div>`;
     if (!blank(e.evidence_to))
       x += `<div class="pn-q" style="--qc:${tColor(t.type)}"><span class="pn-ql">${h(tShort(t.type))} says</span>“${h(e.evidence_to)}”</div>`;
     if (!blank(e.reasoning)) x += `<details><summary>Why the model linked them</summary><p>${h(e.reasoning)}</p></details>`;

@@ -289,7 +289,7 @@ select(start);
 .lv-node:hover rect.box{stroke:var(--fg)}
 .lv-node.sel rect.box{stroke:var(--accent);stroke-width:2.6}
 .lv-node.gap rect.box{stroke:var(--bad);stroke-dasharray:4 3;fill:var(--bad-soft)}
-.lv-node text{font:12px var(--sans);fill:var(--fg);pointer-events:none}
+.lv-node text{font:14px var(--sans);fill:var(--fg);pointer-events:none}
 .lv-dim{opacity:.13}
 .lv-edge{fill:none;stroke-width:1.6}
 .lv-edge.structure{stroke:var(--lineage);stroke-dasharray:3 3;opacity:.85}
@@ -321,13 +321,13 @@ select(start);
 .lv-hit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer}
 .lv-elab{cursor:pointer}
 .lv-elab rect{fill:var(--surface);stroke:var(--line)}
-.lv-elab text{font:600 10px var(--mono);fill:var(--fg);pointer-events:none}
+.lv-elab text{font:600 11.5px var(--mono);fill:var(--fg);pointer-events:none}
 .lv-elab.impact rect{stroke:var(--accent)}
 .lv-elab.gap rect{stroke:var(--bad)}
 .lv-elab:hover rect{stroke:var(--fg)}
 .lv-lane{fill:var(--sunk);stroke:var(--line)}
-.lv-lane-t{font:700 12px var(--sans);letter-spacing:.06em;fill:var(--muted)}
-.lv-col-t{font:600 10.5px var(--sans);letter-spacing:.06em;fill:var(--muted)}
+.lv-lane-t{font:700 14px var(--sans);letter-spacing:.06em;fill:var(--muted)}
+.lv-col-t{font:600 12px var(--sans);letter-spacing:.06em;fill:var(--muted)}
 .lv-select{font:14px var(--sans);padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);max-width:440px}
 .lv-stats .stat b{font-size:22px}
 .lv-stats .stat.wide{grid-column:span 2}
@@ -937,7 +937,7 @@ select(start);
         layer  = which kinds of links are drawn
         reveal = which records are shown so far (step mode)
      ------------------------------------------------------------------- */
-  const COL_W = 330, ROW_H = 36, NODE_W = 220, NODE_H = 28, LANE_GAP = 100, TOP = 60;
+  const COL_W = 380, ROW_H = 44, NODE_W = 270, NODE_H = 34, LANE_GAP = 100, TOP = 60;
 
   function scopeSet() {
     if (cur === "ALL") return new Set(DATA.nodes.map((n) => n.id));
@@ -987,6 +987,25 @@ select(start);
       (KIDS[e.source] = KIDS[e.source] || []).push(e.target);
       (PARENTS[e.target] = PARENTS[e.target] || []).push(e.source);
     });
+    // A record with no parent in view (e.g. the regulation above an impacted
+    // summary) opens from the alert(s) that reach it, so only alerts start visible.
+    const alertsIn = [...nodes].filter((id) => nodeById[id].type === "Alert");
+    if (alertsIn.length) {
+      const reach = {};
+      alertsIn.forEach((a) => {
+        const seen = new Set([a]), q = [a];
+        (nodeById[a].story_extra || []).forEach((x) => { if (nodes.has(x)) { seen.add(x); q.push(x); } });
+        while (q.length) (KIDS[q.shift()] || []).forEach((k) => { if (!seen.has(k)) { seen.add(k); q.push(k); } });
+        reach[a] = seen;
+      });
+      nodes.forEach((o) => {
+        if (nodeById[o].type === "Alert" || (PARENTS[o] || []).length) return;
+        let from = alertsIn.filter((a) => reach[a].has(o));
+        if (!from.length) from = alertsIn.filter((a) => (KIDS[o] || []).some((k) => reach[a].has(k)));
+        if (!from.length) from = alertsIn;
+        from.forEach((a) => { (KIDS[a] = KIDS[a] || []).push(o); (PARENTS[o] = PARENTS[o] || []).push(a); });
+      });
+    }
     return { scope, edges, nodes };
   }
 
@@ -1171,7 +1190,7 @@ select(start);
       const key = e.target + "|" + e.relation;
       if (labelOn(e) && !labelSeen.has(key)) {
         labelSeen.add(key);
-        const t = verb(e.relation), w = t.length * 6.2 + 14;
+        const t = verb(e.relation), w = t.length * 7.2 + 16;
         labels.push(`<g class="lv-elab ${e._layer}${an}" data-edge="${e._i}">
           <rect x="${back ? x2 - w / 2 : x2 - 8 - w}" y="${back ? y2 - 30 : y2 - 9}" width="${w}" height="18" rx="9"/>
           <text x="${back ? x2 : x2 - 8 - w / 2}" y="${back ? y2 - 17.5 : y2 + 3.5}" text-anchor="middle">${h(t)}</text>
@@ -1340,14 +1359,4 @@ select(start);
     const score = Number(e.score);
     let x = `<div class="pn-evi"><div class="pn-vrow">
       <span class="pn-verdict ${vc}">${vText(e.judge_verdict)}</span>
-      ${!blank(e.score) && !isNaN(score) ? `<span class="pn-meter">Score <i><b style="width:${Math.max(0, Math.min(10, score)) * 10}%"></b></i><b style="color:var(--fg)">${h(e.score)}/10</b></span>` : ""}
-      ${!blank(e.confidence) ? `<span>Confidence <b style="color:var(--fg)">${h(e.confidence)}</b></span>` : ""}
-      ${!blank(e.grounding) ? `<span>Quotes <b style="color:var(--fg)">${h(e.grounding)}</b></span>` : ""}</div>`;
-    if (!blank(e.impact_type) || !blank(e.coverage)) x += `<div class="pn-vrow">${
-      String(e.impact_type).toUpperCase() === "CHANGE_REQUIRED" ? `<span class="pn-cr">CHANGE REQUIRED</span>`
-      : !blank(e.impact_type) ? `<span class="pn-rr">${h(String(e.impact_type).replace(/_/g, " "))}</span>` : ""}${
-      !blank(e.coverage) ? ` <span>Coverage <b style="color:var(--fg)">${h(e.coverage)}</b></span>` : ""}</div>`;
-    if (!blank(e.change_needed)) x += `<div class="pn-q" style="--qc:var(--bad)"><span class="pn-ql">Change needed</span>${h(e.change_needed)}</div>`;
-    if (!blank(e.sections)) x += `<div class="pn-vrow">Linked sections <b style="color:var(--fg)">${h(e.sections)}</b></div>`;
-    if (!blank(e.evidence_from))
-      x += `<div class="pn-q" 
+      ${!blank(e.score) && !isNaN(score) ? `<span class="pn-meter">Score <i><b style="width:${Math.max(0, Math.min(10, score)) * 10
