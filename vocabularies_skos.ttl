@@ -1,0 +1,582 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix vc: <https://ontology.hsbc.internal/regcomp/vocab/> .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AlertCategory/CONSULTATION> a skos:Concept ;
+    skos:inScheme vc:AlertCategory ;
+    skos:notation "CONSULTATION" ;
+    skos:prefLabel "Consultation"@en ;
+    skos:topConceptOf vc:AlertCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AlertCategory/FINE> a skos:Concept ;
+    skos:inScheme vc:AlertCategory ;
+    skos:notation "FINE" ;
+    skos:prefLabel "Fine"@en ;
+    skos:topConceptOf vc:AlertCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AlertCategory/NEWS> a skos:Concept ;
+    skos:inScheme vc:AlertCategory ;
+    skos:notation "NEWS" ;
+    skos:prefLabel "News"@en ;
+    skos:topConceptOf vc:AlertCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AlertCategory/RD> a skos:Concept ;
+    skos:inScheme vc:AlertCategory ;
+    skos:notation "RD" ;
+    skos:prefLabel "Rd"@en ;
+    skos:topConceptOf vc:AlertCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Applicability/NO> a skos:Concept ;
+    skos:inScheme vc:Applicability ;
+    skos:notation "NO" ;
+    skos:prefLabel "No"@en ;
+    skos:topConceptOf vc:Applicability .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Applicability/YES> a skos:Concept ;
+    skos:inScheme vc:Applicability ;
+    skos:notation "YES" ;
+    skos:prefLabel "Yes"@en ;
+    skos:topConceptOf vc:Applicability .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AssessmentStatus/CLOSED> a skos:Concept ;
+    skos:inScheme vc:AssessmentStatus ;
+    skos:notation "CLOSED" ;
+    skos:prefLabel "Closed"@en ;
+    skos:topConceptOf vc:AssessmentStatus .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AssessmentStatus/IN_REVIEW> a skos:Concept ;
+    skos:inScheme vc:AssessmentStatus ;
+    skos:notation "IN_REVIEW" ;
+    skos:prefLabel "In Review"@en ;
+    skos:topConceptOf vc:AssessmentStatus .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AssessmentStatus/OPEN> a skos:Concept ;
+    skos:inScheme vc:AssessmentStatus ;
+    skos:notation "OPEN" ;
+    skos:prefLabel "Open"@en ;
+    skos:topConceptOf vc:AssessmentStatus .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/CONFIRMED> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "CONFIRMED" ;
+    skos:prefLabel "Confirmed"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/CORRECT_REJECTION> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "CORRECT_REJECTION" ;
+    skos:prefLabel "Correct Rejection"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/DISPUTED> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "DISPUTED" ;
+    skos:prefLabel "Disputed"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/NEEDS_SME> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "NEEDS_SME" ;
+    skos:prefLabel "Needs Sme"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/POSSIBLE_MISS> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "POSSIBLE_MISS" ;
+    skos:prefLabel "Possible Miss"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/PROBE_CAUGHT> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "PROBE_CAUGHT" ;
+    skos:prefLabel "Probe Caught"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/PROBE_MISSED> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "PROBE_MISSED" ;
+    skos:prefLabel "Probe Missed"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/AuditLabel/PROBE_PARTLY_CAUGHT> a skos:Concept ;
+    skos:inScheme vc:AuditLabel ;
+    skos:notation "PROBE_PARTLY_CAUGHT" ;
+    skos:prefLabel "Probe Partly Caught"@en ;
+    skos:topConceptOf vc:AuditLabel .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ChangeType/AMENDMENT> a skos:Concept ;
+    skos:inScheme vc:ChangeType ;
+    skos:notation "AMENDMENT" ;
+    skos:prefLabel "Amendment"@en ;
+    skos:topConceptOf vc:ChangeType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ChangeType/CONSULTATION> a skos:Concept ;
+    skos:inScheme vc:ChangeType ;
+    skos:notation "CONSULTATION" ;
+    skos:prefLabel "Consultation"@en ;
+    skos:topConceptOf vc:ChangeType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ChangeType/ENFORCEMENT> a skos:Concept ;
+    skos:inScheme vc:ChangeType ;
+    skos:notation "ENFORCEMENT" ;
+    skos:prefLabel "Enforcement"@en ;
+    skos:topConceptOf vc:ChangeType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ChangeType/GUIDANCE> a skos:Concept ;
+    skos:inScheme vc:ChangeType ;
+    skos:notation "GUIDANCE" ;
+    skos:prefLabel "Guidance"@en ;
+    skos:topConceptOf vc:ChangeType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ChangeType/NEW> a skos:Concept ;
+    skos:inScheme vc:ChangeType ;
+    skos:notation "NEW" ;
+    skos:prefLabel "New"@en ;
+    skos:topConceptOf vc:ChangeType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ChangeType/REPEAL> a skos:Concept ;
+    skos:inScheme vc:ChangeType ;
+    skos:notation "REPEAL" ;
+    skos:prefLabel "Repeal"@en ;
+    skos:topConceptOf vc:ChangeType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ControlNature/CORRECTIVE> a skos:Concept ;
+    skos:inScheme vc:ControlNature ;
+    skos:notation "CORRECTIVE" ;
+    skos:prefLabel "Corrective"@en ;
+    skos:topConceptOf vc:ControlNature .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ControlNature/DETECTIVE> a skos:Concept ;
+    skos:inScheme vc:ControlNature ;
+    skos:notation "DETECTIVE" ;
+    skos:prefLabel "Detective"@en ;
+    skos:topConceptOf vc:ControlNature .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ControlNature/DIRECTIVE> a skos:Concept ;
+    skos:inScheme vc:ControlNature ;
+    skos:notation "DIRECTIVE" ;
+    skos:prefLabel "Directive"@en ;
+    skos:topConceptOf vc:ControlNature .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ControlNature/PREVENTIVE> a skos:Concept ;
+    skos:inScheme vc:ControlNature ;
+    skos:notation "PREVENTIVE" ;
+    skos:prefLabel "Preventive"@en ;
+    skos:topConceptOf vc:ControlNature .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Coverage/FULL> a skos:Concept ;
+    skos:inScheme vc:Coverage ;
+    skos:notation "FULL" ;
+    skos:prefLabel "Full"@en ;
+    skos:topConceptOf vc:Coverage .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Coverage/NONE> a skos:Concept ;
+    skos:inScheme vc:Coverage ;
+    skos:notation "NONE" ;
+    skos:prefLabel "None"@en ;
+    skos:topConceptOf vc:Coverage .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Coverage/PARTIAL> a skos:Concept ;
+    skos:inScheme vc:Coverage ;
+    skos:notation "PARTIAL" ;
+    skos:prefLabel "Partial"@en ;
+    skos:topConceptOf vc:Coverage .
+
+<https://ontology.hsbc.internal/regcomp/vocab/CustomerSegment/CORPORATE> a skos:Concept ;
+    skos:inScheme vc:CustomerSegment ;
+    skos:notation "CORPORATE" ;
+    skos:prefLabel "Corporate"@en ;
+    skos:topConceptOf vc:CustomerSegment .
+
+<https://ontology.hsbc.internal/regcomp/vocab/CustomerSegment/INSTITUTIONAL> a skos:Concept ;
+    skos:inScheme vc:CustomerSegment ;
+    skos:notation "INSTITUTIONAL" ;
+    skos:prefLabel "Institutional"@en ;
+    skos:topConceptOf vc:CustomerSegment .
+
+<https://ontology.hsbc.internal/regcomp/vocab/CustomerSegment/RETAIL> a skos:Concept ;
+    skos:inScheme vc:CustomerSegment ;
+    skos:notation "RETAIL" ;
+    skos:prefLabel "Retail"@en ;
+    skos:topConceptOf vc:CustomerSegment .
+
+<https://ontology.hsbc.internal/regcomp/vocab/CustomerSegment/SME> a skos:Concept ;
+    skos:inScheme vc:CustomerSegment ;
+    skos:notation "SME" ;
+    skos:prefLabel "Sme"@en ;
+    skos:topConceptOf vc:CustomerSegment .
+
+<https://ontology.hsbc.internal/regcomp/vocab/CustomerSegment/VULNERABLE> a skos:Concept ;
+    skos:inScheme vc:CustomerSegment ;
+    skos:notation "VULNERABLE" ;
+    skos:prefLabel "Vulnerable"@en ;
+    skos:topConceptOf vc:CustomerSegment .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GapCategory/COVERED> a skos:Concept ;
+    skos:definition "A confirmed live instance with FULL coverage somewhere, or two or more confirmed instances."@en ;
+    skos:inScheme vc:GapCategory ;
+    skos:notation "COVERED" ;
+    skos:prefLabel "Covered"@en ;
+    skos:topConceptOf vc:GapCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GapCategory/DESIGN_ONLY> a skos:Concept ;
+    skos:definition "A control standard is confirmed but none of them has a live instance."@en ;
+    skos:inScheme vc:GapCategory ;
+    skos:notation "DESIGN_ONLY" ;
+    skos:prefLabel "Design Only"@en ;
+    skos:topConceptOf vc:GapCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GapCategory/NOT_OPERATED> a skos:Concept ;
+    skos:definition "Confirmed standard(s) with live instances, but no live instance confirmed to perform the obligation."@en ;
+    skos:inScheme vc:GapCategory ;
+    skos:notation "NOT_OPERATED" ;
+    skos:prefLabel "Not Operated"@en ;
+    skos:topConceptOf vc:GapCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GapCategory/NO_CONTROL> a skos:Concept ;
+    skos:definition "No control standard confirmed for the obligation."@en ;
+    skos:inScheme vc:GapCategory ;
+    skos:notation "NO_CONTROL" ;
+    skos:prefLabel "No Control"@en ;
+    skos:topConceptOf vc:GapCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GapCategory/PARTIAL_ONLY> a skos:Concept ;
+    skos:definition "Live instance(s) confirmed, but only with PARTIAL coverage."@en ;
+    skos:inScheme vc:GapCategory ;
+    skos:notation "PARTIAL_ONLY" ;
+    skos:prefLabel "Partial Only"@en ;
+    skos:topConceptOf vc:GapCategory .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/CONTROL_1C> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "CONTROL_1C" ;
+    skos:prefLabel "Control 1C"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/L1C> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "L1C" ;
+    skos:prefLabel "L1C"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/LR> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "LR" ;
+    skos:prefLabel "Lr"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/POLICY_REQ> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "POLICY_REQ" ;
+    skos:prefLabel "Policy Req"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/PROC_STEP> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "PROC_STEP" ;
+    skos:prefLabel "Proc Step"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/RGL> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "RGL" ;
+    skos:prefLabel "Rgl"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/ROB> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "ROB" ;
+    skos:prefLabel "Rob"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Granularity/RSM> a skos:Concept ;
+    skos:inScheme vc:Granularity ;
+    skos:notation "RSM" ;
+    skos:prefLabel "Rsm"@en ;
+    skos:topConceptOf vc:Granularity .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GroundingFlag/GROUNDED> a skos:Concept ;
+    skos:inScheme vc:GroundingFlag ;
+    skos:notation "GROUNDED" ;
+    skos:prefLabel "Grounded"@en ;
+    skos:topConceptOf vc:GroundingFlag .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GroundingFlag/PARTIAL> a skos:Concept ;
+    skos:inScheme vc:GroundingFlag ;
+    skos:notation "PARTIAL" ;
+    skos:prefLabel "Partial"@en ;
+    skos:topConceptOf vc:GroundingFlag .
+
+<https://ontology.hsbc.internal/regcomp/vocab/GroundingFlag/UNGROUNDED> a skos:Concept ;
+    skos:inScheme vc:GroundingFlag ;
+    skos:notation "UNGROUNDED" ;
+    skos:prefLabel "Ungrounded"@en ;
+    skos:topConceptOf vc:GroundingFlag .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ImpactType/CHANGE_REQUIRED> a skos:Concept ;
+    skos:inScheme vc:ImpactType ;
+    skos:notation "CHANGE_REQUIRED" ;
+    skos:prefLabel "Change Required"@en ;
+    skos:topConceptOf vc:ImpactType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ImpactType/NONE> a skos:Concept ;
+    skos:inScheme vc:ImpactType ;
+    skos:notation "NONE" ;
+    skos:prefLabel "None"@en ;
+    skos:topConceptOf vc:ImpactType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ImpactType/REVIEW_REQUIRED> a skos:Concept ;
+    skos:inScheme vc:ImpactType ;
+    skos:notation "REVIEW_REQUIRED" ;
+    skos:prefLabel "Review Required"@en ;
+    skos:topConceptOf vc:ImpactType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/JudgeVerdict/AGREE> a skos:Concept ;
+    skos:inScheme vc:JudgeVerdict ;
+    skos:notation "AGREE" ;
+    skos:prefLabel "Agree"@en ;
+    skos:topConceptOf vc:JudgeVerdict .
+
+<https://ontology.hsbc.internal/regcomp/vocab/JudgeVerdict/DISAGREE> a skos:Concept ;
+    skos:inScheme vc:JudgeVerdict ;
+    skos:notation "DISAGREE" ;
+    skos:prefLabel "Disagree"@en ;
+    skos:topConceptOf vc:JudgeVerdict .
+
+<https://ontology.hsbc.internal/regcomp/vocab/JudgeVerdict/NOT_AUDITED> a skos:Concept ;
+    skos:inScheme vc:JudgeVerdict ;
+    skos:notation "NOT_AUDITED" ;
+    skos:prefLabel "Not Audited"@en ;
+    skos:topConceptOf vc:JudgeVerdict .
+
+<https://ontology.hsbc.internal/regcomp/vocab/JudgeVerdict/UNCERTAIN> a skos:Concept ;
+    skos:inScheme vc:JudgeVerdict ;
+    skos:notation "UNCERTAIN" ;
+    skos:prefLabel "Uncertain"@en ;
+    skos:topConceptOf vc:JudgeVerdict .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkDecision/INSUFFICIENT_EVIDENCE> a skos:Concept ;
+    skos:inScheme vc:LinkDecision ;
+    skos:notation "INSUFFICIENT_EVIDENCE" ;
+    skos:prefLabel "Insufficient Evidence"@en ;
+    skos:topConceptOf vc:LinkDecision .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkDecision/LINKED> a skos:Concept ;
+    skos:inScheme vc:LinkDecision ;
+    skos:notation "LINKED" ;
+    skos:prefLabel "Linked"@en ;
+    skos:topConceptOf vc:LinkDecision .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkDecision/NOT_LINKED> a skos:Concept ;
+    skos:inScheme vc:LinkDecision ;
+    skos:notation "NOT_LINKED" ;
+    skos:prefLabel "Not Linked"@en ;
+    skos:topConceptOf vc:LinkDecision .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkMethod/CURATED_SOURCE> a skos:Concept ;
+    skos:inScheme vc:LinkMethod ;
+    skos:notation "CURATED_SOURCE" ;
+    skos:prefLabel "Curated Source"@en ;
+    skos:topConceptOf vc:LinkMethod .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkMethod/EMBEDDING> a skos:Concept ;
+    skos:inScheme vc:LinkMethod ;
+    skos:notation "EMBEDDING" ;
+    skos:prefLabel "Embedding"@en ;
+    skos:topConceptOf vc:LinkMethod .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkMethod/GOLDEN_IMPORT> a skos:Concept ;
+    skos:inScheme vc:LinkMethod ;
+    skos:notation "GOLDEN_IMPORT" ;
+    skos:prefLabel "Golden Import"@en ;
+    skos:topConceptOf vc:LinkMethod .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkMethod/LLM_JUDGE> a skos:Concept ;
+    skos:inScheme vc:LinkMethod ;
+    skos:notation "LLM_JUDGE" ;
+    skos:prefLabel "Llm Judge"@en ;
+    skos:topConceptOf vc:LinkMethod .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkMethod/RULE> a skos:Concept ;
+    skos:inScheme vc:LinkMethod ;
+    skos:notation "RULE" ;
+    skos:prefLabel "Rule"@en ;
+    skos:topConceptOf vc:LinkMethod .
+
+<https://ontology.hsbc.internal/regcomp/vocab/LinkMethod/SME_MANUAL> a skos:Concept ;
+    skos:inScheme vc:LinkMethod ;
+    skos:notation "SME_MANUAL" ;
+    skos:prefLabel "Sme Manual"@en ;
+    skos:topConceptOf vc:LinkMethod .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Modality/MAY> a skos:Concept ;
+    skos:inScheme vc:Modality ;
+    skos:notation "MAY" ;
+    skos:prefLabel "May"@en ;
+    skos:topConceptOf vc:Modality .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Modality/MUST> a skos:Concept ;
+    skos:inScheme vc:Modality ;
+    skos:notation "MUST" ;
+    skos:prefLabel "Must"@en ;
+    skos:topConceptOf vc:Modality .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Modality/MUST_NOT> a skos:Concept ;
+    skos:inScheme vc:Modality ;
+    skos:notation "MUST_NOT" ;
+    skos:prefLabel "Must Not"@en ;
+    skos:topConceptOf vc:Modality .
+
+<https://ontology.hsbc.internal/regcomp/vocab/Modality/SHOULD> a skos:Concept ;
+    skos:inScheme vc:Modality ;
+    skos:notation "SHOULD" ;
+    skos:prefLabel "Should"@en ;
+    skos:topConceptOf vc:Modality .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ReliabilityTier/AUTHORITATIVE> a skos:Concept ;
+    skos:inScheme vc:ReliabilityTier ;
+    skos:notation "AUTHORITATIVE" ;
+    skos:prefLabel "Authoritative"@en ;
+    skos:topConceptOf vc:ReliabilityTier .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ReliabilityTier/SPECULATIVE> a skos:Concept ;
+    skos:inScheme vc:ReliabilityTier ;
+    skos:notation "SPECULATIVE" ;
+    skos:prefLabel "Speculative"@en ;
+    skos:topConceptOf vc:ReliabilityTier .
+
+<https://ontology.hsbc.internal/regcomp/vocab/ReliabilityTier/SUPPORTING> a skos:Concept ;
+    skos:inScheme vc:ReliabilityTier ;
+    skos:notation "SUPPORTING" ;
+    skos:prefLabel "Supporting"@en ;
+    skos:topConceptOf vc:ReliabilityTier .
+
+<https://ontology.hsbc.internal/regcomp/vocab/SMEStatus/CONFIRMED> a skos:Concept ;
+    skos:inScheme vc:SMEStatus ;
+    skos:notation "CONFIRMED" ;
+    skos:prefLabel "Confirmed"@en ;
+    skos:topConceptOf vc:SMEStatus .
+
+<https://ontology.hsbc.internal/regcomp/vocab/SMEStatus/MODIFIED> a skos:Concept ;
+    skos:inScheme vc:SMEStatus ;
+    skos:notation "MODIFIED" ;
+    skos:prefLabel "Modified"@en ;
+    skos:topConceptOf vc:SMEStatus .
+
+<https://ontology.hsbc.internal/regcomp/vocab/SMEStatus/REJECTED> a skos:Concept ;
+    skos:inScheme vc:SMEStatus ;
+    skos:notation "REJECTED" ;
+    skos:prefLabel "Rejected"@en ;
+    skos:topConceptOf vc:SMEStatus .
+
+<https://ontology.hsbc.internal/regcomp/vocab/SMEStatus/UNREVIEWED> a skos:Concept ;
+    skos:inScheme vc:SMEStatus ;
+    skos:notation "UNREVIEWED" ;
+    skos:prefLabel "Unreviewed"@en ;
+    skos:topConceptOf vc:SMEStatus .
+
+<https://ontology.hsbc.internal/regcomp/vocab/TemporalType/DEADLINE> a skos:Concept ;
+    skos:inScheme vc:TemporalType ;
+    skos:notation "DEADLINE" ;
+    skos:prefLabel "Deadline"@en ;
+    skos:topConceptOf vc:TemporalType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/TemporalType/DURATION> a skos:Concept ;
+    skos:inScheme vc:TemporalType ;
+    skos:notation "DURATION" ;
+    skos:prefLabel "Duration"@en ;
+    skos:topConceptOf vc:TemporalType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/TemporalType/EFFECTIVE_PERIOD> a skos:Concept ;
+    skos:inScheme vc:TemporalType ;
+    skos:notation "EFFECTIVE_PERIOD" ;
+    skos:prefLabel "Effective Period"@en ;
+    skos:topConceptOf vc:TemporalType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/TemporalType/RECURRENCE> a skos:Concept ;
+    skos:inScheme vc:TemporalType ;
+    skos:notation "RECURRENCE" ;
+    skos:prefLabel "Recurrence"@en ;
+    skos:topConceptOf vc:TemporalType .
+
+<https://ontology.hsbc.internal/regcomp/vocab/TemporalType/TRANSITION_PERIOD> a skos:Concept ;
+    skos:inScheme vc:TemporalType ;
+    skos:notation "TRANSITION_PERIOD" ;
+    skos:prefLabel "Transition Period"@en ;
+    skos:topConceptOf vc:TemporalType .
+
+vc:Applicability a skos:ConceptScheme ;
+    skos:definition "Intake decision: does the alert apply to HSBC?"@en ;
+    skos:prefLabel "Applicability"@en .
+
+vc:AssessmentStatus a skos:ConceptScheme ;
+    skos:definition "Lifecycle of an impact assessment"@en ;
+    skos:prefLabel "Assessment Status"@en .
+
+vc:Coverage a skos:ConceptScheme ;
+    skos:definition "How fully a requirement is covered"@en ;
+    skos:prefLabel "Coverage"@en .
+
+vc:GroundingFlag a skos:ConceptScheme ;
+    skos:definition "Whether the model's verbatim quotes were found in both texts by code"@en ;
+    skos:prefLabel "Grounding Flag"@en .
+
+vc:ImpactType a skos:ConceptScheme ;
+    skos:definition "What an impact means for the document owner"@en ;
+    skos:prefLabel "Impact Type"@en .
+
+vc:LinkDecision a skos:ConceptScheme ;
+    skos:definition "Outcome of a linkage judgement"@en ;
+    skos:prefLabel "Link Decision"@en .
+
+vc:ReliabilityTier a skos:ConceptScheme ;
+    skos:definition "How strongly evidence is treated as truth"@en ;
+    skos:prefLabel "Reliability Tier"@en .
+
+vc:AlertCategory a skos:ConceptScheme ;
+    skos:definition "Intake category of an alert"@en ;
+    skos:prefLabel "Alert Category"@en .
+
+vc:ControlNature a skos:ConceptScheme ;
+    skos:definition "Control classification"@en ;
+    skos:prefLabel "Control Nature"@en .
+
+vc:JudgeVerdict a skos:ConceptScheme ;
+    skos:definition "Independent judge verdict on a model decision"@en ;
+    skos:prefLabel "Judge Verdict"@en .
+
+vc:Modality a skos:ConceptScheme ;
+    skos:definition "Normative strength of a requirement"@en ;
+    skos:prefLabel "Modality"@en .
+
+vc:SMEStatus a skos:ConceptScheme ;
+    skos:definition "Human review state of an assertion"@en ;
+    skos:prefLabel "S M E Status"@en .
+
+vc:CustomerSegment a skos:ConceptScheme ;
+    skos:definition "Customer segment qualifier for scope"@en ;
+    skos:prefLabel "Customer Segment"@en .
+
+vc:GapCategory a skos:ConceptScheme ;
+    skos:definition "Control gap category of an obligation (from judge-confirmed links only)"@en ;
+    skos:prefLabel "Gap Category"@en .
+
+vc:TemporalType a skos:ConceptScheme ;
+    skos:definition "Kind of time bound"@en ;
+    skos:prefLabel "Temporal Type"@en .
+
+vc:ChangeType a skos:ConceptScheme ;
+    skos:definition "Kind of regulatory change"@en ;
+    skos:prefLabel "Change Type"@en .
+
+vc:LinkMethod a skos:ConceptScheme ;
+    skos:definition "How an assertion was produced"@en ;
+    skos:prefLabel "Link Method"@en .
+
+vc:AuditLabel a skos:ConceptScheme ;
+    skos:definition "Label from the judge audit"@en ;
+    skos:prefLabel "Audit Label"@en .
+
+vc:Granularity a skos:ConceptScheme ;
+    skos:definition "Level at which an assertion is made"@en ;
+    skos:prefLabel "Granularity"@en .
+

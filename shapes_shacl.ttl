@@ -1,0 +1,110 @@
+@prefix rc: <https://ontology.hsbc.internal/regcomp/def#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+rc:ConfirmedLinkShape a sh:NodeShape ;
+    rdfs:comment "A link may be marked confirmed only if the model said LINKED, the judge AGREEd and both quotes were verified."@en ;
+    sh:severity sh:Violation ;
+    sh:sparql [ sh:message "Confirmed link without LINKED + judge AGREE + GROUNDED quotes" ;
+            sh:select """PREFIX rc: <https://ontology.hsbc.internal/regcomp/def#>
+PREFIX vc: <https://ontology.hsbc.internal/regcomp/vocab/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+SELECT $this WHERE {
+  $this rc:confirmed true .
+  FILTER NOT EXISTS { $this rc:hasDecision <https://ontology.hsbc.internal/regcomp/vocab/LinkDecision/LINKED> ;
+                             rc:hasJudgeVerdict <https://ontology.hsbc.internal/regcomp/vocab/JudgeVerdict/AGREE> ;
+                             rc:hasGrounding <https://ontology.hsbc.internal/regcomp/vocab/GroundingFlag/GROUNDED> . }
+}""" ] ;
+    sh:targetClass rc:LinkAssertion .
+
+rc:ControlInstanceShape a sh:NodeShape ;
+    rdfs:comment "A control instance belongs to exactly one control standard."@en ;
+    sh:property [ sh:class rc:LibraryControl ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:instanceOf ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:Control .
+
+rc:GapShape a sh:NodeShape ;
+    rdfs:comment "A gap sits on exactly one requirement and has exactly one category."@en ;
+    sh:property [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasGapCategory ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:onRequirement ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:Gap .
+
+rc:LinkAssertionShape a sh:NodeShape ;
+    rdfs:comment "Every AI link has subject, object, decision, score 0-10, judge verdict, SME status and the model run that produced it."@en ;
+    sh:property [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:assertionObject ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasDecision ],
+        [ sh:maxCount 1 ;
+            sh:maxInclusive 10 ;
+            sh:minInclusive 0 ;
+            sh:path rc:linkScore ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasSMEStatus ],
+        [ sh:class rc:ModelRun ;
+            sh:minCount 1 ;
+            sh:path rc:producedBy ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:hasJudgeVerdict ],
+        [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:assertionSubject ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:LinkAssertion .
+
+rc:ModelRunShape a sh:NodeShape ;
+    rdfs:comment "Every model run carries its run ID."@en ;
+    sh:property [ sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:runId ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:ModelRun .
+
+rc:ObligationShape a sh:NodeShape ;
+    rdfs:comment "Every obligation has an ID, a label and exactly one parent summary."@en ;
+    sh:property [ sh:class rc:RegulatorySummary ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:derivedFromSummary ],
+        [ sh:datatype xsd:string ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:sourceId ],
+        [ sh:minCount 1 ;
+            sh:path rc:label ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:RegulatoryObligation .
+
+rc:SummaryShape a sh:NodeShape ;
+    rdfs:comment "Every summary belongs to exactly one regulation."@en ;
+    sh:property [ sh:class rc:Regulation ;
+            sh:maxCount 1 ;
+            sh:minCount 1 ;
+            sh:path rc:partOfRegulation ] ;
+    sh:severity sh:Violation ;
+    sh:targetClass rc:RegulatorySummary .
+
+rc:UncoveredObligationWarning a sh:NodeShape ;
+    rdfs:comment "Every obligation should either be satisfied by a control or carry a gap finding."@en ;
+    sh:severity sh:Warning ;
+    sh:sparql [ sh:message "Obligation has no confirmed control and no gap finding" ;
+            sh:select """PREFIX rc: <https://ontology.hsbc.internal/regcomp/def#>
+SELECT $this WHERE {
+  FILTER NOT EXISTS { $this rc:satisfiedBy ?c . }
+  FILTER NOT EXISTS { $this rc:hasGap ?g . }
+}""" ] ;
+    sh:targetClass rc:RegulatoryObligation .
+

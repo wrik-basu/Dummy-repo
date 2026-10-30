@@ -1,0 +1,1366 @@
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rc: <https://ontology.hsbc.internal/regcomp/def#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+rc:addressesRiskType a owl:ObjectProperty ;
+    rdfs:label "addresses risk type"@en ;
+    rdfs:comment "GPPS procedure addresses a risk taxonomy node (GPPS objRel RISK, text only)."@en ;
+    rdfs:domain rc:Procedure ;
+    rdfs:range rc:RiskTaxonomyNode ;
+    rc:graphProperty "addressesRiskType" .
+
+rc:affectsObligation a owl:ObjectProperty ;
+    rdfs:label "affects obligation"@en ;
+    rdfs:comment "Materialised from CONFIRMED assertions only"@en ;
+    rdfs:domain rc:RegulatoryChange ;
+    rdfs:range rc:RegulatoryObligation .
+
+rc:affectsSummary a owl:ObjectProperty ;
+    rdfs:label "affects summary"@en ;
+    rdfs:comment "Materialised from CONFIRMED assertions only"@en ;
+    rdfs:domain rc:RegulatoryChange ;
+    rdfs:range rc:RegulatorySummary .
+
+rc:amendedBy a owl:ObjectProperty ;
+    rdfs:label "amended by"@en ;
+    owl:inverseOf rc:amends .
+
+rc:answeredUsing a owl:ObjectProperty ;
+    rdfs:label "answered using"@en ;
+    rdfs:comment "Class traceability"@en ;
+    rdfs:domain rc:CompetencyQuestion ;
+    rdfs:range rc:Entity .
+
+rc:appliesInJurisdiction a owl:ObjectProperty ;
+    rdfs:label "applies in jurisdiction"@en ;
+    rdfs:domain rc:Regulation ;
+    rdfs:range rc:Jurisdiction .
+
+rc:appliesToScope a owl:ObjectProperty ;
+    rdfs:label "applies to scope"@en ;
+    rdfs:domain rc:Requirement ;
+    rdfs:range rc:ApplicabilityScope .
+
+rc:arisesFrom a owl:ObjectProperty ;
+    rdfs:label "arises from"@en ;
+    owl:inverseOf rc:givesRiseTo .
+
+rc:assertionObject a owl:ObjectProperty ;
+    rdfs:label "assertion object"@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range rc:Entity .
+
+rc:assertionSubject a owl:ObjectProperty ;
+    rdfs:label "assertion subject"@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range rc:Entity .
+
+rc:assessedFor a owl:ObjectProperty ;
+    rdfs:label "assessed for"@en ;
+    rdfs:comment "The business the assessment is for."@en ;
+    rdfs:domain rc:RegulationAssessment ;
+    rdfs:range rc:BusinessUnit ;
+    rc:graphProperty "assessedFor" .
+
+rc:assessesRegulation a owl:ObjectProperty ;
+    rdfs:label "assesses regulation"@en ;
+    rdfs:comment "The regulation the assessment covers."@en ;
+    rdfs:domain rc:RegulationAssessment ;
+    rdfs:range rc:Regulation ;
+    rc:graphProperty "assessesRegulation" .
+
+rc:assessmentOf a owl:ObjectProperty ;
+    rdfs:label "assessment of"@en ;
+    owl:inverseOf rc:initiatesAssessment .
+
+rc:assessmentStatus a owl:DatatypeProperty ;
+    rdfs:comment "OPEN, IN_REVIEW or CLOSED."@en ;
+    rdfs:domain rc:ImpactAssessment ;
+    rdfs:range xsd:string .
+
+rc:assignedTo a owl:ObjectProperty ;
+    rdfs:label "assigned to"@en ;
+    rdfs:comment "Risk Steward"@en ;
+    rdfs:domain rc:ImpactAssessment ;
+    rdfs:range rc:Person .
+
+rc:automatedBy a owl:ObjectProperty ;
+    rdfs:label "automated by"@en ;
+    rdfs:domain rc:Control ;
+    rdfs:range rc:System .
+
+rc:candidateRoute a owl:DatatypeProperty ;
+    rdfs:comment "Candidate-generation route (e.g. RGL→RSM)."@en ;
+    rdfs:domain rc:ModelRun ;
+    rdfs:range xsd:string .
+
+rc:changeNeeded a owl:DatatypeProperty ;
+    rdfs:comment "What the document owner should look at (impact links)."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range xsd:string .
+
+rc:changes a owl:ObjectProperty ;
+    rdfs:label "changes"@en ;
+    rdfs:domain rc:RemediationAction ;
+    rdfs:range rc:Entity .
+
+rc:charEnd a owl:DatatypeProperty ;
+    rdfs:comment "Exclusive end offset in the source text."@en ;
+    rdfs:domain rc:EvidenceOccurrence ;
+    rdfs:range xsd:integer .
+
+rc:charStart a owl:DatatypeProperty ;
+    rdfs:comment "Inclusive start offset in the source text."@en ;
+    rdfs:domain rc:EvidenceOccurrence ;
+    rdfs:range xsd:integer .
+
+rc:citesProvision a owl:ObjectProperty ;
+    rdfs:label "cites provision"@en ;
+    rdfs:domain rc:RegulatoryObligation ;
+    rdfs:range rc:Provision .
+
+rc:classifiedAs a owl:ObjectProperty ;
+    rdfs:label "classified as"@en ;
+    rdfs:comment "L1–L3"@en ;
+    rdfs:domain rc:LibraryRisk ;
+    rdfs:range rc:RiskTaxonomyNode .
+
+rc:concerns a owl:ObjectProperty ;
+    rdfs:label "concerns"@en ;
+    rdfs:comment "Obligation, control, policy requirement or procedure step"@en ;
+    rdfs:domain rc:ImpactFinding ;
+    rdfs:range rc:Entity .
+
+rc:confidenceScore a owl:DatatypeProperty ;
+    rdfs:comment "Model confidence 1–5."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range xsd:integer .
+
+rc:configHash a owl:DatatypeProperty ;
+    rdfs:comment "Hash of run configuration for replay."@en ;
+    rdfs:domain rc:ModelRun ;
+    rdfs:range xsd:string .
+
+rc:confirmed a owl:DatatypeProperty ;
+    rdfs:comment "LINKED + judge AGREE with verified quotes: the only links that count."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range xsd:boolean .
+
+rc:contextualisedBy a owl:ObjectProperty ;
+    rdfs:label "contextualised by"@en ;
+    rdfs:comment "Intake classifiers that produced the tags (replayable)"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:ModelRun .
+
+rc:cqText a owl:DatatypeProperty ;
+    rdfs:comment "The question in business language."@en ;
+    rdfs:domain rc:CompetencyQuestion ;
+    rdfs:range xsd:string .
+
+rc:dataStatus a owl:AnnotationProperty .
+
+rc:decomposesTo a owl:ObjectProperty ;
+    rdfs:label "decomposes to"@en ;
+    owl:inverseOf rc:derivedFromSummary .
+
+rc:definesTerm a owl:ObjectProperty ;
+    rdfs:label "defines term"@en ;
+    rdfs:domain rc:Provision ;
+    rdfs:range rc:DefinedTerm .
+
+rc:definitionText a owl:DatatypeProperty ;
+    rdfs:comment "Gloss of a defined term."@en ;
+    rdfs:domain rc:DefinedTerm ;
+    rdfs:range xsd:string .
+
+rc:derivedFrom a owl:ObjectProperty ;
+    rdfs:label "derived from"@en ;
+    rdfs:comment "No orphan findings"@en ;
+    rdfs:domain rc:ImpactFinding ;
+    rdfs:range rc:LinkAssertion .
+
+rc:effectiveDate a owl:DatatypeProperty ;
+    rdfs:comment "Date a regulation, change or requirement takes effect."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:date .
+
+rc:enforcesIn a owl:ObjectProperty ;
+    rdfs:label "enforces in"@en ;
+    rdfs:domain rc:Regulator ;
+    rdfs:range rc:Jurisdiction .
+
+rc:evaluatesObligation a owl:ObjectProperty ;
+    rdfs:label "evaluates obligation"@en ;
+    rdfs:comment "An obligation evaluated (in scope or not) by the assessment."@en ;
+    rdfs:domain rc:RegulationAssessment ;
+    rdfs:range rc:RegulatoryObligation ;
+    rc:graphProperty "evaluatesObligation" .
+
+rc:evidenceFor a owl:ObjectProperty ;
+    rdfs:label "evidence for"@en ;
+    owl:inverseOf rc:hasEvidence .
+
+rc:evidenceSide a owl:DatatypeProperty ;
+    rdfs:comment "SUBJECT or OBJECT: which side of an assertion the quote comes from."@en ;
+    rdfs:domain rc:EvidenceOccurrence ;
+    rdfs:range xsd:string .
+
+rc:exempts a owl:ObjectProperty ;
+    rdfs:label "exempts"@en ;
+    rdfs:domain rc:Exception ;
+    rdfs:range rc:ProcedureStep .
+
+rc:explosionApproved a owl:DatatypeProperty ;
+    rdfs:comment "True only when a coarse (RGL) link is explicitly approved to fan out to controls."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range xsd:boolean .
+
+rc:extractedFrom a owl:ObjectProperty ;
+    rdfs:label "extracted from"@en ;
+    rdfs:comment "Source document / record"@en ;
+    rdfs:domain rc:EvidenceOccurrence ;
+    rdfs:range rc:Entity .
+
+rc:gateStatus a owl:DatatypeProperty ;
+    rdfs:comment "Quality gate result: PASS, FAIL or NOT_MEASURED."@en ;
+    rdfs:domain rc:ModelRun ;
+    rdfs:range xsd:string .
+
+rc:governsActivity a owl:ObjectProperty ;
+    rdfs:label "governs activity"@en ;
+    rdfs:domain rc:Requirement ;
+    rdfs:range rc:ProcedureStep ;
+    rc:graphProperty "governsActivity" .
+
+rc:graphProperty a owl:AnnotationProperty ;
+    rdfs:comment "Name of the edge property in the working property graph (edges.parquet)."@en .
+
+rc:hasApplicability a owl:ObjectProperty ;
+    rdfs:comment "Value from the Applicability concept scheme."@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range skos:Concept .
+
+rc:hasAuditLabel a owl:ObjectProperty ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasBlastRadius a owl:ObjectProperty ;
+    rdfs:label "has blast radius"@en ;
+    rdfs:domain rc:ImpactAssessment ;
+    rdfs:range rc:BlastRadius .
+
+rc:hasCategory a owl:ObjectProperty ;
+    rdfs:comment "Value from the AlertCategory concept scheme."@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range skos:Concept .
+
+rc:hasChangeType a owl:ObjectProperty ;
+    rdfs:comment "Value from the ChangeType concept scheme."@en ;
+    rdfs:domain rc:RegulatoryChange ;
+    rdfs:range skos:Concept .
+
+rc:hasCondition a owl:ObjectProperty ;
+    rdfs:label "has condition"@en ;
+    rdfs:domain rc:Requirement ;
+    rdfs:range rc:Condition .
+
+rc:hasControlNature a owl:ObjectProperty ;
+    rdfs:comment "Value from the ControlNature concept scheme."@en ;
+    rdfs:domain rc:Control ;
+    rdfs:range skos:Concept .
+
+rc:hasCoverage a owl:ObjectProperty ;
+    rdfs:comment "Value from the Coverage concept scheme."@en ;
+    rdfs:domain rc:Gap ;
+    rdfs:range skos:Concept .
+
+rc:hasDecision a owl:ObjectProperty ;
+    rdfs:comment "Value from the LinkDecision concept scheme."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasFinding a owl:ObjectProperty ;
+    rdfs:label "has finding"@en ;
+    rdfs:domain rc:ImpactAssessment ;
+    rdfs:range rc:ImpactFinding .
+
+rc:hasGapCategory a owl:ObjectProperty ;
+    rdfs:domain rc:Gap ;
+    rdfs:range skos:Concept .
+
+rc:hasGranularity a owl:ObjectProperty ;
+    rdfs:comment "Value from the Granularity concept scheme."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasGrounding a owl:ObjectProperty ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasImpactType a owl:ObjectProperty ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasInstance a owl:ObjectProperty ;
+    rdfs:label "has instance"@en ;
+    owl:inverseOf rc:instanceOf .
+
+rc:hasJudgeVerdict a owl:ObjectProperty ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasMethod a owl:ObjectProperty ;
+    rdfs:comment "Value from the LinkMethod concept scheme."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasModality a owl:ObjectProperty ;
+    rdfs:comment "Value from the Modality concept scheme."@en ;
+    rdfs:domain rc:Requirement ;
+    rdfs:range skos:Concept .
+
+rc:hasReliabilityTier a owl:ObjectProperty ;
+    rdfs:comment "Value from the ReliabilityTier concept scheme."@en ;
+    rdfs:domain rc:EvidenceOccurrence ;
+    rdfs:range skos:Concept .
+
+rc:hasRole a owl:ObjectProperty ;
+    rdfs:label "has role"@en ;
+    rdfs:domain rc:Person ;
+    rdfs:range rc:Role .
+
+rc:hasSMEStatus a owl:ObjectProperty ;
+    rdfs:comment "Value from the SMEStatus concept scheme."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range skos:Concept .
+
+rc:hasSummary a owl:ObjectProperty ;
+    rdfs:label "has summary"@en ;
+    owl:inverseOf rc:partOfRegulation .
+
+rc:hasTemporalConstraint a owl:ObjectProperty ;
+    rdfs:label "has temporal constraint"@en ;
+    rdfs:domain rc:Requirement ;
+    rdfs:range rc:TemporalConstraint .
+
+rc:hasTemporalType a owl:ObjectProperty ;
+    rdfs:comment "Value from the TemporalType concept scheme."@en ;
+    rdfs:domain rc:TemporalConstraint ;
+    rdfs:range skos:Concept .
+
+rc:identifiesGap a owl:ObjectProperty ;
+    rdfs:label "identifies gap"@en ;
+    rdfs:domain rc:ImpactAssessment ;
+    rdfs:range rc:Gap .
+
+rc:impactsControl a owl:ObjectProperty ;
+    rdfs:label "impacts control"@en ;
+    rdfs:comment "Materialised from CONFIRMED assertions only"@en ;
+    rdfs:domain rc:RegulatoryChange ;
+    rdfs:range rc:Control .
+
+rc:impactsPolicyRequirement a owl:ObjectProperty ;
+    rdfs:label "impacts policy requirement"@en ;
+    rdfs:comment "Materialised from CONFIRMED assertions only"@en ;
+    rdfs:domain rc:RegulatoryChange ;
+    rdfs:range rc:PolicyRequirement .
+
+rc:implementedByPolicyViaControl a owl:ObjectProperty ;
+    rdfs:label "implemented by policy via control"@en ;
+    rdfs:comment "Derived by rule (no AI): obligation -> its confirmed control standard -> the same control mapped in GPPS to the policy. Superseded by LLM + judge links where they exist."@en ;
+    rdfs:domain rc:RegulatoryObligation ;
+    rdfs:range rc:Policy ;
+    rdfs:subPropertyOf rc:implementedByPolicy ;
+    rc:graphProperty "implementedByPolicyViaControl" .
+
+rc:implementsPolicy a owl:ObjectProperty ;
+    rdfs:label "implements policy"@en ;
+    rdfs:domain rc:Procedure ;
+    rdfs:range rc:Policy ;
+    rc:graphProperty "implementsPolicy" .
+
+rc:inJurisdiction a owl:ObjectProperty ;
+    rdfs:label "in jurisdiction"@en ;
+    rdfs:comment "Intake: location of the alert"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:Jurisdiction ;
+    rc:graphProperty "inJurisdiction" .
+
+rc:initiates a owl:ObjectProperty ;
+    rdfs:label "initiates"@en ;
+    rdfs:domain rc:Trigger ;
+    rdfs:range rc:Requirement .
+
+rc:issueOf a owl:ObjectProperty ;
+    rdfs:label "issue of"@en ;
+    owl:inverseOf rc:hasIssue .
+
+rc:issuedBy a owl:ObjectProperty ;
+    rdfs:label "issued by"@en ;
+    owl:inverseOf rc:issues .
+
+rc:issuedByRegulator a owl:ObjectProperty ;
+    rdfs:label "issued by regulator"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:Regulator ;
+    rc:graphProperty "issuedByRegulator" .
+
+rc:label a owl:DatatypeProperty ;
+    rdfs:comment "Human-readable name or title."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:string .
+
+rc:leadsTo a owl:ObjectProperty ;
+    rdfs:label "leads to"@en ;
+    rdfs:comment "Sequence"@en ;
+    rdfs:domain rc:ProcedureStep ;
+    rdfs:range rc:ProcedureStep .
+
+rc:licensedIn a owl:ObjectProperty ;
+    rdfs:label "licensed in"@en ;
+    rdfs:domain rc:LegalEntity ;
+    rdfs:range rc:Jurisdiction .
+
+rc:linkScore a owl:DatatypeProperty ;
+    rdfs:comment "Model link score 0-10."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range xsd:integer .
+
+rc:linkedSections a owl:DatatypeProperty ;
+    rdfs:comment "GPPS sections the link rests on, e.g. 'S5 | 4 Third Party Agreements'."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range xsd:string .
+
+rc:memberOf a owl:ObjectProperty ;
+    rdfs:label "member of"@en ;
+    rdfs:domain rc:Person ;
+    rdfs:range rc:Team .
+
+rc:mitigates a owl:ObjectProperty ;
+    rdfs:label "mitigates"@en ;
+    owl:inverseOf rc:mitigatedBy .
+
+rc:modelId a owl:DatatypeProperty ;
+    rdfs:comment "Model identifier on the GenAI gateway."@en ;
+    rdfs:domain rc:ModelRun ;
+    rdfs:range xsd:string .
+
+rc:module a owl:AnnotationProperty .
+
+rc:nBusinesses a owl:DatatypeProperty ;
+    rdfs:comment "Count of businesses in scope."@en ;
+    rdfs:domain rc:BlastRadius ;
+    rdfs:range xsd:integer .
+
+rc:nControls a owl:DatatypeProperty ;
+    rdfs:comment "Count of impacted controls."@en ;
+    rdfs:domain rc:BlastRadius ;
+    rdfs:range xsd:integer .
+
+rc:nLegalEntities a owl:DatatypeProperty ;
+    rdfs:comment "Count of legal entities in scope."@en ;
+    rdfs:domain rc:BlastRadius ;
+    rdfs:range xsd:integer .
+
+rc:nObligations a owl:DatatypeProperty ;
+    rdfs:comment "Count of affected obligations."@en ;
+    rdfs:domain rc:BlastRadius ;
+    rdfs:range xsd:integer .
+
+rc:nPolicyRequirements a owl:DatatypeProperty ;
+    rdfs:comment "Count of impacted policy requirements."@en ;
+    rdfs:domain rc:BlastRadius ;
+    rdfs:range xsd:integer .
+
+rc:narrowerJurisdiction a owl:ObjectProperty ;
+    rdfs:label "narrower jurisdiction"@en ;
+    owl:inverseOf rc:broaderJurisdiction .
+
+rc:narrowerRisk a owl:ObjectProperty ;
+    rdfs:label "narrower risk"@en ;
+    owl:inverseOf rc:broaderRisk .
+
+rc:onRequirement a owl:ObjectProperty ;
+    rdfs:label "on requirement"@en ;
+    rdfs:domain rc:Gap ;
+    rdfs:range rc:Requirement ;
+    owl:inverseOf rc:hasGap .
+
+rc:ontologyVersion a owl:DatatypeProperty ;
+    rdfs:comment "Ontology version the node was written under."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:string .
+
+rc:operatedFor a owl:ObjectProperty ;
+    rdfs:label "operated for"@en ;
+    rdfs:domain rc:Control ;
+    rdfs:range rc:LegalEntity .
+
+rc:operatedIn a owl:ObjectProperty ;
+    rdfs:label "operated in"@en ;
+    rdfs:domain rc:Control ;
+    rdfs:range rc:BusinessUnit .
+
+rc:overriddenBy a owl:ObjectProperty ;
+    rdfs:label "overridden by"@en ;
+    owl:inverseOf rc:overrides .
+
+rc:ownedBy a owl:ObjectProperty ;
+    rdfs:label "owned by"@en ;
+    rdfs:comment "Control owner | Policy owner"@en ;
+    rdfs:domain [ a owl:Class ;
+            owl:unionOf ( rc:Control rc:Policy ) ] ;
+    rdfs:range rc:Actor .
+
+rc:partOfBusiness a owl:ObjectProperty ;
+    rdfs:label "part of business"@en ;
+    rdfs:domain rc:BusinessUnit ;
+    rdfs:range rc:BusinessUnit .
+
+rc:performedBy a owl:ObjectProperty ;
+    rdfs:label "performed by"@en ;
+    rdfs:domain [ a owl:Class ;
+            owl:unionOf ( rc:ProcedureStep rc:SMEValidation ) ] ;
+    rdfs:range [ a owl:Class ;
+            owl:unionOf ( rc:Person rc:Role ) ] .
+
+rc:policyMapsToControl a owl:ObjectProperty ;
+    rdfs:label "policy maps to control"@en ;
+    rdfs:comment "GPPS policy section maps a Helios control standard (GPPS objRel CNTRL)."@en ;
+    rdfs:domain rc:Policy ;
+    rdfs:range rc:LibraryControl ;
+    rc:graphProperty "policyMapsToControl" .
+
+rc:policyMapsToRegulation a owl:ObjectProperty ;
+    rdfs:label "policy maps to regulation"@en ;
+    rdfs:comment "GPPS policy maps a RegMap regulation (GPPS objRel REG)."@en ;
+    rdfs:domain rc:Policy ;
+    rdfs:range rc:Regulation ;
+    rc:graphProperty "policyMapsToRegulation" .
+
+rc:priority a owl:DatatypeProperty ;
+    rdfs:comment "MUST, SHOULD or COULD."@en ;
+    rdfs:domain rc:CompetencyQuestion ;
+    rdfs:range xsd:string .
+
+rc:procedureMapsToControl a owl:ObjectProperty ;
+    rdfs:label "procedure maps to control"@en ;
+    rdfs:comment "GPPS procedure section maps a Helios control standard (GPPS objRel CNTRL)."@en ;
+    rdfs:domain rc:Procedure ;
+    rdfs:range rc:LibraryControl ;
+    rc:graphProperty "procedureMapsToControl" .
+
+rc:producedBy a owl:ObjectProperty ;
+    rdfs:label "produced by"@en ;
+    rdfs:comment "Required when method is AI"@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range rc:ModelRun .
+
+rc:promptVersion a owl:DatatypeProperty ;
+    rdfs:comment "Prompt version used."@en ;
+    rdfs:domain rc:ModelRun ;
+    rdfs:range xsd:string .
+
+rc:provisionOf a owl:ObjectProperty ;
+    rdfs:label "provision of"@en ;
+    owl:inverseOf rc:hasProvision .
+
+rc:publishedAs a owl:ObjectProperty ;
+    rdfs:label "published as"@en ;
+    rdfs:domain rc:Regulation ;
+    rdfs:range rc:RegulatoryDocument .
+
+rc:rationale a owl:DatatypeProperty ;
+    rdfs:comment "Reasoning text for a decision, finding or validation."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:string .
+
+rc:recordedAt a owl:DatatypeProperty ;
+    rdfs:comment "System time the fact was recorded (bitemporal)."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:dateTime .
+
+rc:relatedPolicy a owl:ObjectProperty ;
+    rdfs:label "related policy"@en ;
+    rdfs:comment "GPPS policy references another policy (GPPS objRel PLCY)."@en ;
+    rdfs:domain rc:Policy ;
+    rdfs:range rc:Policy ;
+    rc:graphProperty "relatedPolicy" .
+
+rc:relevanceScore a owl:DatatypeProperty ;
+    rdfs:comment "Model relevance 0–10."@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range xsd:decimal .
+
+rc:remediatedBy a owl:ObjectProperty ;
+    rdfs:label "remediated by"@en ;
+    rdfs:domain rc:Gap ;
+    rdfs:range rc:RemediationAction .
+
+rc:reportedBy a owl:ObjectProperty ;
+    rdfs:label "reported by"@en ;
+    owl:inverseOf rc:reportsChange .
+
+rc:requirementOf a owl:ObjectProperty ;
+    rdfs:label "requirement of"@en ;
+    owl:inverseOf rc:hasRequirement .
+
+rc:responsibleParty a owl:ObjectProperty ;
+    rdfs:label "responsible party"@en ;
+    rdfs:comment "Who the duty falls on"@en ;
+    rdfs:domain rc:Requirement ;
+    rdfs:range rc:Actor .
+
+rc:runId a owl:DatatypeProperty ;
+    rdfs:comment "Run identifier written on every edge (run_id)."@en ;
+    rdfs:domain rc:ModelRun ;
+    rdfs:range xsd:string .
+
+rc:satisfiedByControlInstance a owl:ObjectProperty ;
+    rdfs:label "satisfied by control instance"@en ;
+    rdfs:comment "Obligation is performed by a live control instance (phase 3b level 2; confirmed = LLM + judge)."@en ;
+    rdfs:domain rc:RegulatoryObligation ;
+    rdfs:range rc:Control ;
+    rdfs:subPropertyOf rc:satisfiedBy ;
+    rc:graphProperty "satisfiedByControlInstance" .
+
+rc:scopesBusiness a owl:ObjectProperty ;
+    rdfs:label "scopes business"@en ;
+    rdfs:domain rc:ApplicabilityScope ;
+    rdfs:range rc:BusinessUnit .
+
+rc:scopesJurisdiction a owl:ObjectProperty ;
+    rdfs:label "scopes jurisdiction"@en ;
+    rdfs:domain rc:ApplicabilityScope ;
+    rdfs:range rc:Jurisdiction .
+
+rc:scopesLegalEntity a owl:ObjectProperty ;
+    rdfs:label "scopes legal entity"@en ;
+    rdfs:domain rc:ApplicabilityScope ;
+    rdfs:range rc:LegalEntity .
+
+rc:scopesProcess a owl:ObjectProperty ;
+    rdfs:label "scopes process"@en ;
+    rdfs:domain rc:ApplicabilityScope ;
+    rdfs:range rc:Process .
+
+rc:scopesProduct a owl:ObjectProperty ;
+    rdfs:label "scopes product"@en ;
+    rdfs:domain rc:ApplicabilityScope ;
+    rdfs:range rc:Product .
+
+rc:sectionRef a owl:DatatypeProperty ;
+    rdfs:comment "Section, article or field the quote comes from."@en ;
+    rdfs:domain rc:EvidenceOccurrence ;
+    rdfs:range xsd:string .
+
+rc:signedOffBy a owl:ObjectProperty ;
+    rdfs:label "signed off by"@en ;
+    rdfs:domain rc:ImpactAssessment ;
+    rdfs:range rc:Person .
+
+rc:sourceId a owl:DatatypeProperty ;
+    rdfs:comment "Identifier in the system of record (REG_ID, SUM_ID, ROB_ID, RECORD_ID, Helios id …)."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:string .
+
+rc:sourceSystem a owl:AnnotationProperty,
+        owl:DatatypeProperty ;
+    rdfs:comment "System of record the node was loaded from."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:string .
+
+rc:sparql a owl:DatatypeProperty ;
+    rdfs:comment "Executable SPARQL that answers the question."@en ;
+    rdfs:domain rc:CompetencyQuestion ;
+    rdfs:range xsd:string .
+
+rc:statement a owl:DatatypeProperty ;
+    rdfs:comment "Full text of a requirement, summary, control or step."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:string .
+
+rc:status a owl:DatatypeProperty ;
+    rdfs:comment "Lifecycle status in the source system (PUBLISHED, RETIRED …)."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:string .
+
+rc:stepOf a owl:ObjectProperty ;
+    rdfs:label "step of"@en ;
+    owl:inverseOf rc:hasStep .
+
+rc:stepOrder a owl:DatatypeProperty ;
+    rdfs:comment "Position of the step in its ordered list."@en ;
+    rdfs:domain rc:ProcedureStep ;
+    rdfs:range xsd:integer .
+
+rc:stewardOf a owl:ObjectProperty ;
+    rdfs:label "steward of"@en ;
+    owl:inverseOf rc:taggedSteward .
+
+rc:stewardedBy a owl:ObjectProperty ;
+    rdfs:label "stewarded by"@en ;
+    rdfs:comment "Risk Steward"@en ;
+    rdfs:domain rc:LibraryRisk ;
+    rdfs:range rc:Actor .
+
+rc:supersededBy a owl:ObjectProperty ;
+    rdfs:label "superseded by"@en ;
+    owl:inverseOf rc:supersedes .
+
+rc:taggedBusiness a owl:ObjectProperty ;
+    rdfs:label "tagged business"@en ;
+    rdfs:comment "Intake step 3: ML-tagged line of business"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:BusinessUnit ;
+    rc:graphProperty "taggedBusiness" .
+
+rc:taggedLegalEntity a owl:ObjectProperty ;
+    rdfs:label "tagged legal entity"@en ;
+    rdfs:comment "Intake step 3: ML-tagged legal entity"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:LegalEntity ;
+    rc:graphProperty "taggedLegalEntity" .
+
+rc:taggedRisk a owl:ObjectProperty ;
+    rdfs:label "tagged risk"@en ;
+    rdfs:comment "Intake: ML-tagged risk taxonomy (L1–L3)"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:RiskTaxonomyNode ;
+    rc:graphProperty "taggedRisk" .
+
+rc:term a owl:DatatypeProperty ;
+    rdfs:comment "Headword of a defined term."@en ;
+    rdfs:domain rc:DefinedTerm ;
+    rdfs:range xsd:string .
+
+rc:testOf a owl:ObjectProperty ;
+    rdfs:label "test of"@en ;
+    owl:inverseOf rc:hasTest .
+
+rc:themeOf a owl:ObjectProperty ;
+    rdfs:label "theme of"@en ;
+    owl:inverseOf rc:hasTheme .
+
+rc:usesSystem a owl:ObjectProperty ;
+    rdfs:label "uses system"@en ;
+    rdfs:domain rc:ProcedureStep ;
+    rdfs:range rc:System .
+
+rc:validFrom a owl:DatatypeProperty ;
+    rdfs:comment "Business-valid start (bitemporal)."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:date .
+
+rc:validTo a owl:DatatypeProperty ;
+    rdfs:comment "Business-valid end (bitemporal)."@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range xsd:date .
+
+rc:validatedBy a owl:ObjectProperty ;
+    rdfs:label "validated by"@en ;
+    rdfs:domain rc:LinkAssertion ;
+    rdfs:range rc:SMEValidation .
+
+rc:validationFailureRate a owl:DatatypeProperty ;
+    rdfs:comment "Share of outputs failing schema or SHACL validation."@en ;
+    rdfs:domain rc:ModelRun ;
+    rdfs:range xsd:decimal .
+
+rc:verbatimText a owl:DatatypeProperty ;
+    rdfs:comment "Exact quoted span from the source."@en ;
+    rdfs:domain rc:EvidenceOccurrence ;
+    rdfs:range xsd:string .
+
+rc:Condition a owl:Class ;
+    rdfs:label "Condition"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Criterion evaluated before an obligation applies (threshold, risk class, status). Gates applicability; not an event."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Requirement Semantics" ;
+    rc:sourceSystem "LLM extraction from ROB text" .
+
+rc:ControlIssue a owl:Class ;
+    rdfs:label "Control Issue"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Open deficiency on a control (audit, self-identified, regulatory)."@en ;
+    rc:dataStatus "MISSING" ;
+    rc:module "Control" ;
+    rc:sourceSystem "Issue management" .
+
+rc:ControlTest a owl:Class ;
+    rdfs:label "Control Test"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Design or operating-effectiveness test result for a control."@en ;
+    rc:dataStatus "MISSING" ;
+    rc:module "Control" ;
+    rc:sourceSystem "Control testing / CCA" .
+
+rc:Process a owl:Class ;
+    rdfs:label "Business Process"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "End-to-end business process (onboarding, payments, trade reporting)."@en ;
+    rc:dataStatus "MISSING" ;
+    rc:module "Business Context" ;
+    rc:sourceSystem "Process taxonomy" .
+
+rc:Product a owl:Class ;
+    rdfs:label "Product / Service"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Product or service offered."@en ;
+    rc:dataStatus "MISSING" ;
+    rc:module "Business Context" ;
+    rc:sourceSystem "Product master" .
+
+rc:RegulatoryTheme a owl:Class ;
+    rdfs:label "Regulatory Theme"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Subject-matter theme of an alert (Insurance, Consumer Protection, Licensing…), tagged at intake. Used to route and to narrow the impact search."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Regulatory Change" ;
+    rc:sourceSystem "Intake ML classifier" .
+
+rc:Team a owl:Class ;
+    rdfs:label "Team / Function"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Actor ;
+    skos:definition "Owning team (Compliance, Risk Stewardship, BU CCO)."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Accountability" ;
+    rc:sourceSystem "Org data" .
+
+rc:amends a owl:ObjectProperty ;
+    rdfs:label "amends"@en ;
+    rdfs:comment "Instrument lineage"@en ;
+    rdfs:domain rc:Regulation ;
+    rdfs:range rc:Regulation .
+
+rc:broaderJurisdiction a owl:ObjectProperty ;
+    rdfs:label "broader jurisdiction"@en ;
+    rdfs:comment "Hierarchy: Global > Region > Country"@en ;
+    rdfs:domain rc:Jurisdiction ;
+    rdfs:range rc:Jurisdiction .
+
+rc:broaderRisk a owl:ObjectProperty ;
+    rdfs:label "broader risk"@en ;
+    rdfs:comment "Hierarchy"@en ;
+    rdfs:domain rc:RiskTaxonomyNode ;
+    rdfs:range rc:RiskTaxonomyNode ;
+    rc:graphProperty "broaderRisk" .
+
+rc:derivedFromSummary a owl:ObjectProperty ;
+    rdfs:label "derived from summary"@en ;
+    rdfs:comment "ROB → RSM"@en ;
+    rdfs:domain rc:RegulatoryObligation ;
+    rdfs:range rc:RegulatorySummary ;
+    rc:graphProperty "derivedFromSummary" .
+
+rc:givesRiseTo a owl:ObjectProperty ;
+    rdfs:label "gives rise to"@en ;
+    rdfs:comment "Risk of non-compliance"@en ;
+    rdfs:domain rc:RegulatoryObligation ;
+    rdfs:range rc:LibraryRisk ;
+    rc:graphProperty "givesRiseTo" .
+
+rc:hasEvidence a owl:ObjectProperty ;
+    rdfs:label "has evidence"@en ;
+    rdfs:domain rc:Entity ;
+    rdfs:range rc:EvidenceOccurrence .
+
+rc:hasGap a owl:ObjectProperty ;
+    rdfs:label "has gap"@en ;
+    rdfs:comment "A gap finding on a requirement (derived from confirmed links)."@en ;
+    rdfs:domain rc:Requirement ;
+    rdfs:range rc:Gap ;
+    rc:graphProperty "hasGap" .
+
+rc:hasIssue a owl:ObjectProperty ;
+    rdfs:label "has issue"@en ;
+    rdfs:domain rc:Control ;
+    rdfs:range rc:ControlIssue .
+
+rc:hasProvision a owl:ObjectProperty ;
+    rdfs:label "has provision"@en ;
+    rdfs:domain rc:RegulatoryDocument ;
+    rdfs:range rc:Provision .
+
+rc:hasRequirement a owl:ObjectProperty ;
+    rdfs:label "has requirement"@en ;
+    rdfs:domain rc:Policy ;
+    rdfs:range rc:PolicyRequirement .
+
+rc:hasStep a owl:ObjectProperty ;
+    rdfs:label "has step"@en ;
+    rdfs:domain rc:Procedure ;
+    rdfs:range rc:ProcedureStep .
+
+rc:hasTest a owl:ObjectProperty ;
+    rdfs:label "has test"@en ;
+    rdfs:domain rc:Control ;
+    rdfs:range rc:ControlTest .
+
+rc:hasTheme a owl:ObjectProperty ;
+    rdfs:label "has theme"@en ;
+    rdfs:comment "Intake step 3: ML-tagged theme"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:RegulatoryTheme ;
+    rc:graphProperty "hasTheme" .
+
+rc:implementedByPolicy a owl:ObjectProperty ;
+    rdfs:label "implemented by policy"@en ;
+    owl:inverseOf rc:implementsObligation .
+
+rc:implementsObligation a owl:ObjectProperty ;
+    rdfs:label "implements obligation"@en ;
+    rdfs:comment "Obligation → policy linkage lane"@en ;
+    rdfs:domain rc:PolicyRequirement ;
+    rdfs:range rc:RegulatoryObligation .
+
+rc:initiatesAssessment a owl:ObjectProperty ;
+    rdfs:label "initiates assessment"@en ;
+    rdfs:domain rc:RegulatoryChange ;
+    rdfs:range rc:ImpactAssessment .
+
+rc:instanceOf a owl:ObjectProperty ;
+    rdfs:label "instance of"@en ;
+    rdfs:comment "1C → L1C (Helios)"@en ;
+    rdfs:domain rc:Control ;
+    rdfs:range rc:LibraryControl ;
+    rc:graphProperty "instanceOf" .
+
+rc:issues a owl:ObjectProperty ;
+    rdfs:label "issues"@en ;
+    rdfs:domain rc:Regulator ;
+    rdfs:range rc:Regulation .
+
+rc:mitigatedBy a owl:ObjectProperty ;
+    rdfs:label "mitigated by"@en ;
+    rdfs:comment "RTCL"@en ;
+    rdfs:domain rc:LibraryRisk ;
+    rdfs:range rc:LibraryControl ;
+    rc:graphProperty "mitigatedBy" .
+
+rc:overrides a owl:ObjectProperty ;
+    rdfs:label "overrides"@en ;
+    rdfs:comment "Carve-out"@en ;
+    rdfs:domain rc:Exception ;
+    rdfs:range rc:Requirement .
+
+rc:partOfRegulation a owl:ObjectProperty ;
+    rdfs:label "part of regulation"@en ;
+    rdfs:comment "RSM → RGL"@en ;
+    rdfs:domain rc:RegulatorySummary ;
+    rdfs:range rc:Regulation ;
+    rc:graphProperty "partOfRegulation" .
+
+rc:reportsChange a owl:ObjectProperty ;
+    rdfs:label "reports change"@en ;
+    rdfs:comment "Alert de-duplication"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:RegulatoryChange .
+
+rc:satisfiedBy a owl:ObjectProperty ;
+    rdfs:label "satisfied by"@en ;
+    owl:inverseOf rc:satisfies ;
+    rc:graphProperty "satisfiedByControl" .
+
+rc:satisfies a owl:ObjectProperty ;
+    rdfs:label "satisfies"@en ;
+    rdfs:comment "Baseline coverage ('how' satisfies 'what')"@en ;
+    rdfs:domain [ a owl:Class ;
+            owl:unionOf ( rc:Control rc:ProcedureStep ) ] ;
+    rdfs:range rc:Requirement .
+
+rc:supersedes a owl:ObjectProperty ;
+    rdfs:label "supersedes"@en ;
+    rdfs:domain rc:Regulation ;
+    rdfs:range rc:Regulation .
+
+rc:taggedSteward a owl:ObjectProperty ;
+    rdfs:label "tagged steward"@en ;
+    rdfs:comment "Intake step 3: ML-tagged risk steward"@en ;
+    rdfs:domain rc:RegulatoryAlert ;
+    rdfs:range rc:Role ;
+    rc:graphProperty "taggedSteward" .
+
+rc:Exception a owl:Class ;
+    rdfs:label "Exception / Exemption"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Documented carve-out that disapplies or overrides a requirement."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Requirement Semantics" ;
+    rc:sourceSystem "LLM extraction from ROB text" .
+
+rc:RegulatoryDocument a owl:Class ;
+    rdfs:label "Regulatory Document"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Published text (rulebook, consultation paper, guidance, Dear CEO letter)."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "Source PDF / URL" .
+
+rc:RemediationAction a owl:Class ;
+    rdfs:label "Remediation Action"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Change to a control, policy or procedure needed to close a gap; owned and dated."@en ;
+    rc:dataStatus "MISSING" ;
+    rc:module "Impact Assessment" ;
+    rc:sourceSystem "Action tracker" .
+
+rc:SMEValidation a owl:Class ;
+    rdfs:label "SME Validation"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Human decision on an assertion: CONFIRMED, REJECTED or MODIFIED, with comment."@en ;
+    rc:dataStatus "MISSING" ;
+    rc:module "Provenance & AI Governance" ;
+    rc:sourceSystem "Review queue" .
+
+rc:System a owl:Class ;
+    rdfs:label "System / Application"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Technology asset that automates a control or supports a process."@en ;
+    rc:dataStatus "MISSING" ;
+    rc:module "Business Context" ;
+    rc:sourceSystem "CMDB" .
+
+rc:TemporalConstraint a owl:Class ;
+    rdfs:label "Temporal Constraint"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Deadline, duration, recurrence, effective or transition period attached to a requirement or control."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Requirement Semantics" ;
+    rc:sourceSystem "LLM extraction / RegMap dates" .
+
+rc:Trigger a owl:Class ;
+    rdfs:label "Trigger"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Business or regulatory event that initiates an obligation or an assessment. A regulatory alert is a Trigger."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Requirement Semantics" ;
+    rc:sourceSystem "LLM extraction / Rapid2" .
+
+rc:DefinedTerm a owl:Class ;
+    rdfs:label "Defined Term"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "A term formally defined in regulation; used for entity resolution across texts."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "Glossary / Provision" .
+
+rc:ImpactFinding a owl:Class ;
+    rdfs:label "Impact Finding"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "One impacted artefact (obligation, control, policy requirement, procedure step) with rationale. Always derived from link assertions."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Impact Assessment" ;
+    rc:sourceSystem "Pipeline + SME" .
+
+rc:PolicyRequirement a owl:Class ;
+    rdfs:label "Policy Requirement"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Requirement ;
+    skos:definition "Mandatory statement within a policy; implements one or more regulatory obligations."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Policy & Procedure" ;
+    rc:sourceSystem "GPPS section" .
+
+rc:Provision a owl:Class ;
+    rdfs:label "Provision / Article"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Article, rule or paragraph of the source legal text an obligation cites."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "Regulatory text" .
+
+rc:RegulationAssessment a owl:Class ;
+    rdfs:label "Regulation Assessment"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "A business's assessment of a regulation: which obligations are in scope for that business."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Impact Assessment" ;
+    rc:sourceSystem "RegMap extract 7" .
+
+rc:Regulator a owl:Class ;
+    rdfs:label "Regulator"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Authority that issues or enforces regulation (FCA, PRA, HKMA, MAS, EU Commission…)."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "Rapid2 REGULATOR_CODE" .
+
+rc:RegulatorySummary a owl:Class ;
+    rdfs:label "Regulation Summary (RSM)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Business summary of a coherent part of a regulation; the correct granularity for alert linkage."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "RegMap SUM_ID" .
+
+rc:Role a owl:Class ;
+    rdfs:label "Role"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Actor ;
+    skos:definition "Function or title (Risk Steward, Control Owner, Policy Owner, SME Reviewer, SMF holder)."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Accountability" ;
+    rc:sourceSystem "Org data" .
+
+rc:CompetencyQuestion a owl:Class ;
+    rdfs:label "Competency Question"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "A question the graph must answer, with priority, owner and the SPARQL that answers it. Every class traces to at least one."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Provenance & AI Governance" ;
+    rc:sourceSystem "Ontology governance" .
+
+rc:LegalEntity a owl:Class ;
+    rdfs:label "Legal Entity"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Regulated legal entity (HSBC UK Bank plc, HBAP…)."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Business Context" ;
+    rc:sourceSystem "Entity master" .
+
+rc:LibraryControl a owl:Class ;
+    rdfs:label "Library Control (L1C)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Standard control template in the control library; groups control instances."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Control" ;
+    rc:sourceSystem "Helios l1_library_control_id" .
+
+rc:LibraryRisk a owl:Class ;
+    rdfs:label "Library Risk (LR)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Standard risk statement in the risk library, classified in the taxonomy and mitigated by library controls."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Risk" ;
+    rc:sourceSystem "US_Risk / RTCL" .
+
+rc:Procedure a owl:Class ;
+    rdfs:label "Procedure"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Operational process document implementing policy and controls."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Policy & Procedure" ;
+    rc:sourceSystem "Business DMS / GPPS" .
+
+rc:Person a owl:Class ;
+    rdfs:label "Person"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Actor ;
+    skos:definition "Named individual accountable for an artefact or decision."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Accountability" ;
+    rc:sourceSystem "HR / Helios / GPPS owner fields" .
+
+rc:RiskTaxonomyNode a owl:Class ;
+    rdfs:label "Risk Taxonomy (L1–L3)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Node in HSBC's non-financial risk taxonomy; hierarchical via broaderRisk."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Risk" ;
+    rc:sourceSystem "US_Risk LEVEL_1_RISK_TAXONOMY" .
+
+rc:Actor a owl:Class ;
+    rdfs:label "Actor"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Abstract responsible party: person, role or team."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Accountability" .
+
+rc:ApplicabilityScope a owl:Class ;
+    rdfs:label "Applicability Scope"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Machine-evaluable boundary of where a requirement applies: jurisdictions, legal entities, businesses, products, processes, customer segments."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Requirement Semantics" ;
+    rc:sourceSystem "Rule / LLM extraction" .
+
+rc:BlastRadius a owl:Class ;
+    rdfs:label "Blast Radius"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Roll-up of an assessment's footprint: counts of obligations, controls, policies, legal entities and businesses touched."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Impact Assessment" ;
+    rc:sourceSystem "Computed" .
+
+rc:BusinessUnit a owl:Class ;
+    rdfs:label "Global Business / Line of Business"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "WPB, CMB, GBM, functions and sub-lines; hierarchical."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Business Context" ;
+    rc:sourceSystem "Org master" .
+
+rc:Gap a owl:Class ;
+    rdfs:label "Gap"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Affected requirement with no or partial coverage by controls, policy requirements or procedure steps."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Impact Assessment" ;
+    rc:sourceSystem "Computed + SME" .
+
+rc:ImpactAssessment a owl:Class ;
+    rdfs:label "Impact Assessment"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Assessment case opened for a regulatory change; holds findings, gaps, blast radius and sign-off."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Impact Assessment" ;
+    rc:sourceSystem "IA workflow" .
+
+rc:Jurisdiction a owl:Class ;
+    rdfs:label "Jurisdiction"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Legal territory a regulation applies in; hierarchical via broaderJurisdiction (Global > Region > Country)."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "Rapid2 RECORD_JURISDICTION_NAME" .
+
+rc:RegulatoryChange a owl:Class ;
+    rdfs:label "Regulatory Change"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Normalised change event behind one or more alerts; carries change type and effective date."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Regulatory Change" ;
+    rc:sourceSystem "Derived (alert de-duplication)" .
+
+rc:EvidenceOccurrence a owl:Class ;
+    rdfs:label "Evidence Occurrence"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "One verbatim, source-grounded quote supporting an assertion or entity: text, document, section, offsets, reliability tier."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Provenance & AI Governance" ;
+    rc:sourceSystem "Pipeline" .
+
+rc:Policy a owl:Class ;
+    rdfs:label "Policy (GPPS)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Group policy document setting principles for a risk area."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Policy & Procedure" ;
+    rc:sourceSystem "GPPS" .
+
+rc:RegulatoryObligation a owl:Class ;
+    rdfs:label "Regulatory Obligation (ROB)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Requirement ;
+    skos:definition "Atomic, testable duty derived from a regulation summary. The hub that controls, policy requirements and procedure steps satisfy."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "RegMap ROB_ID" .
+
+rc:ModelRun a owl:Class ;
+    rdfs:label "Model Run"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "One pipeline execution: model, prompt version, schema, candidate route, quality-gate status and failure rate."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Provenance & AI Governance" ;
+    rc:sourceSystem "Run manifest" .
+
+rc:ProcedureStep a owl:Class ;
+    rdfs:label "Procedure Step"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "An operational action or ordered step in a procedure that satisfies a requirement (the 'how')."@en ;
+    rc:dataStatus "PARTIAL" ;
+    rc:module "Policy & Procedure" ;
+    rc:sourceSystem "LLM extraction from procedures" .
+
+rc:Regulation a owl:Class ;
+    rdfs:label "Regulation (RGL)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Canonical regulatory instrument tracked in RegMap; anchor of structural lineage."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Regulatory Source" ;
+    rc:sourceSystem "RegMap REG_ID" .
+
+rc:Control a owl:Class ;
+    rdfs:label "Control Instance (1C)"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Implemented control operated by a business or function; satisfies requirements."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Control" ;
+    rc:sourceSystem "Helios control" .
+
+rc:RegulatoryAlert a owl:Class ;
+    rdfs:label "Regulatory Alert"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Trigger ;
+    skos:definition "Incoming vendor or regulator notification of change. A Trigger that initiates impact assessment. At intake it is standardised: tested for applicability (Yes/No), given a category (RD, Consultation, News, Fine) and contextualised by ML classifiers (risk steward, theme, risk taxonomy L1–L3, line of business, legal entity)."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Regulatory Change" ;
+    rc:sourceSystem "Rapid2 RECORD_ID" .
+
+rc:Requirement a owl:Class ;
+    rdfs:label "Requirement"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Abstract superclass for any binding or advisory statement (regulatory obligation or internal policy requirement). Strength is carried by hasModality (MUST, MUST_NOT, MAY, SHOULD)."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Requirement Semantics" .
+
+rc:LinkAssertion a owl:Class ;
+    rdfs:label "Link Assertion"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    rdfs:subClassOf rc:Entity ;
+    skos:definition "Reified inferred link between any two entities (alert→summary, alert→control, obligation→policy requirement…) with decision, scores, granularity, method, evidence and SME status. Impact edges are materialised only from CONFIRMED assertions."@en ;
+    rc:dataStatus "AVAILABLE" ;
+    rc:module "Provenance & AI Governance" ;
+    rc:sourceSystem "Pipeline verdicts / golden / SME" .
+
+<https://ontology.hsbc.internal/regcomp/def> a owl:Ontology ;
+    dcterms:created "2026-10-30"^^xsd:date ;
+    dcterms:description "Regulatory alert -> regulation / summary / obligation -> policy / procedure -> risk / control standard / live control, with AI link assertions (provenance, judge verdict, SME status) and gap findings. Generated from the explorer model block; working store is a property graph."@en ;
+    dcterms:title "HSBC Regulatory Compliance Ontology"@en ;
+    owl:versionInfo "2.5" .
+
+rc:Entity a owl:Class ;
+    rdfs:label "Entity"@en ;
+    rdfs:isDefinedBy <https://ontology.hsbc.internal/regcomp/def> ;
+    skos:definition "Abstract root of every node. Carries identity, source system and bitemporal validity (validFrom/validTo, recordedAt)."@en ;
+    rc:dataStatus "DERIVED" ;
+    rc:module "Provenance & AI Governance" .
+

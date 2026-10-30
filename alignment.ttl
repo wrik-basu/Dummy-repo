@@ -1,0 +1,54 @@
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix eli: <http://data.europa.eu/eli/ontology#> .
+@prefix fibo-be-le-lp: <https://spec.edmcouncil.org/fibo/ontology/BE/LegalEntities/LegalPersons/> .
+@prefix fibo-fbc-fct-rga: <https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/RegulatoryAgencies/> .
+@prefix fibo-fnd-law-jur: <https://spec.edmcouncil.org/fibo/ontology/FND/Law/Jurisdiction/> .
+@prefix org: <http://www.w3.org/ns/org#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rc: <https://ontology.hsbc.internal/regcomp/def#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+
+<https://ontology.hsbc.internal/regcomp/alignment> a owl:Ontology ;
+    dcterms:description "Alignment of the HSBC Regulatory Compliance Ontology to FIBO, W3C PROV-O, W3C ORG, W3C SKOS and ELI. Mappings are conservative (subClassOf / subPropertyOf) unless the meaning is identical."@en ;
+    owl:imports <https://ontology.hsbc.internal/regcomp/def> .
+
+rc:BusinessUnit rdfs:subClassOf org:OrganizationalUnit .
+
+rc:EvidenceOccurrence rdfs:subClassOf prov:Entity .
+
+rc:Jurisdiction rdfs:subClassOf fibo-fnd-law-jur:Jurisdiction .
+
+rc:LegalEntity rdfs:subClassOf fibo-be-le-lp:LegalPerson .
+
+rc:LinkAssertion rdfs:subClassOf prov:Entity .
+
+rc:ModelRun rdfs:subClassOf prov:Activity .
+
+rc:Person rdfs:subClassOf prov:Person .
+
+rc:Provision rdfs:subClassOf eli:LegalResourceSubdivision .
+
+rc:Regulation rdfs:subClassOf eli:LegalResource .
+
+rc:Regulator rdfs:subClassOf fibo-fbc-fct-rga:RegulatoryAgency .
+
+rc:RiskTaxonomyNode rdfs:subClassOf skos:Concept .
+
+rc:Role rdfs:subClassOf org:Role .
+
+rc:SMEValidation rdfs:subClassOf prov:Activity .
+
+rc:broaderJurisdiction rdfs:subPropertyOf skos:broader .
+
+rc:broaderRisk rdfs:subPropertyOf skos:broader .
+
+rc:extractedFrom rdfs:subPropertyOf prov:wasDerivedFrom .
+
+rc:performedBy rdfs:subPropertyOf prov:wasAssociatedWith .
+
+rc:producedBy rdfs:subPropertyOf prov:wasGeneratedBy .
+
+rc:validatedBy rdfs:subPropertyOf prov:wasInfluencedBy .
+
