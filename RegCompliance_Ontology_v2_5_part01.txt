@@ -297,6 +297,8 @@ select(start);
 .lv-edge.gap{stroke:var(--bad);stroke-dasharray:6 4}
 .lv-edge.impact{stroke:var(--muted)}
 .lv-edge.context{stroke:var(--context)}
+.lv-edge.path{stroke:var(--muted);stroke-dasharray:1 5;stroke-width:1.6;opacity:.8}
+.lv-node.inchain rect.box{stroke-dasharray:5 3;fill-opacity:.55}
 .lv-edge.derived{stroke:#8a6d00;stroke-dasharray:2 4;stroke-width:2}
 .pn-cr{display:inline-block;background:var(--bad);color:#fff;font-weight:700;font-size:11px;padding:1px 7px;border-radius:9px}
 .pn-rr{display:inline-block;background:var(--warn);color:#000;font-weight:700;font-size:11px;padding:1px 7px;border-radius:9px}
@@ -556,7 +558,7 @@ select(start);
     tagged_steward: "steward", has_theme: "theme", tagged_risk: "risk tag", broader_risk: "sits under",
     tagged_business: "business", tagged_legal_entity: "entity",
     implemented_by_policy_via_control: "policy (via control)", policy_implemented_by_procedure: "procedure",
-    policy_maps_control: "maps control", satisfied_by_instance: "operated by" };
+    policy_maps_control: "maps control", leads_to: "leads to", satisfied_by_instance: "operated by" };
   function verb(r) {
     if (SHORT_LABEL[r]) return SHORT_LABEL[r];
     const o = ontoRel(r);
@@ -587,6 +589,7 @@ select(start);
   function layerOf(e) {
     if (e.kind === "DERIVED") return "gap";
     if (e.kind === "DERIVED_LINK") return "derived";
+    if (e.kind === "PATH") return "path";
     if (e.kind === "CONTEXT") return "context";
     if (nodeById[e.source].type === "Alert") return "impact";
     return e.kind === "AI_LINK" ? "structure-ai" : "structure";
@@ -596,6 +599,7 @@ select(start);
     structure:      ["Ontology structure", "From the system of record (RegMap / Helios)", "var(--lineage)"],
     "structure-ai": ["Ontology structure", "AI-built link, not alert-specific (obligation → GPPS)", "var(--lineage)"],
     gap:            ["Gap finding", "Rule: something the structure expects is missing", "var(--bad)"],
+    path:           ["Leads to", "Navigation: heads a chain that contains impacted records (not an impact itself)", "var(--muted)"],
     derived:        ["Derived link", "Rule, no AI: obligation → confirmed control → GPPS policy mapping", "#8a6d00"],
     context:        ["Intake context", "Tagged at alert intake by an ML classifier (contextualisation)", "var(--context)"],
   };
@@ -841,9 +845,10 @@ select(start);
     ["var(--lineage)", "Ontology structure", "dotted"],
     ["var(--bad)",     "Gap (rule)", "dashed"],
     ["#8a6d00",        "Derived link (rule, no AI)", "dotted"],
+    ["var(--muted)",   "Leads to (navigation)", "dotted"],
     ["var(--context)", "Intake context (ML tag)", ""],
   ].map(([c, t, s]) => `<span><i style="border-color:${c};${s ? "border-top-style:" + s : ""}"></i>${t}</span>`).join("")
-    + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span><span>Line labels use the ontology's own relationship names</span>`;
+    + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span><span>dashed box = in the chain, not impacted itself</span><span>Line labels use the ontology's own relationship names</span>`;
 
   const baseSelect = select;
   select = function (id) { baseSelect(id); if (id === "live") showLive(); };
@@ -941,6 +946,14 @@ select(start);
 
   function scopeSet() {
     if (cur === "ALL") return new Set(DATA.nodes.map((n) => n.id));
+    const st = DATA.meta && DATA.meta.stories && DATA.meta.stories[cur];
+    if (st) {                                   // the story's records + the alert's intake tags
+      const set = new Set([cur, ...st.filter((x) => nodeById[x])]), q = [cur];
+      while (q.length) outE[q.shift()].forEach((e) => {
+        if (e.kind === "CONTEXT" && !set.has(e.target)) { set.add(e.target); q.push(e.target); }
+      });
+      return set;
+    }
     const seen = new Set([cur]), queue = [cur];
     (nodeById[cur].story_extra || []).forEach((x) => { if (nodeById[x] && !seen.has(x)) { seen.add(x); queue.push(x); } });
     while (queue.length) {
@@ -955,7 +968,7 @@ select(start);
     const inScope = (e) => scope.has(e.source) && scope.has(e.target);
     if (layer === "impact") return DATA.edges.filter((e) => inScope(e) && e._layer === "impact");
     if (layer === "context") return DATA.edges.filter((e) => inScope(e) && e._layer === "context");
-    if (layer === "structure") return DATA.edges.filter((e) => inScope(e) && e._layer !== "impact" && e._layer !== "context");
+    if (layer === "structure") return DATA.edges.filter((e) => inScope(e) && e._layer !== "impact" && e._layer !== "context" && e._layer !== "path");
     // both: structure everywhere; an alert's impact line is drawn only to
     // records with no structural parent in view (the others carry the
     // impact as the coloured dot, and in the side panel).
@@ -1205,8 +1218,10 @@ select(start);
       if (!p) return;
       const dim = fs && !fs.has(id) ? "lv-dim" : "";
       const isSel = selL && selL.kind === "node" && selL.id === id ? "sel" : "";
-      const gap = n.type === "Gap" ? "gap" : "";
-      const imp = inE[id].find((e) => e._layer === "impact" && !blank(e.judge_verdict));
+      const gap = n.type === "Gap" ? "gap"
+        : (n.type !== "Alert" && !CTX_TYPES.has(n.type) &&
+           !inE[id].some((e) => e._layer === "impact" && (cur === "ALL" || e.source === cur))) ? "inchain" : "";
+      const imp = inE[id].find((e) => e._layer === "impact" && !blank(e.judge_verdict) && (cur === "ALL" || e.source === cur));
       const vc = imp ? vClass(imp.judge_verdict) : "";
       const vcol = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc];
       const label = n.title && n.title !== id ? n.title : id;
@@ -1344,19 +1359,4 @@ select(start);
       <small>${h(name)} · ${h(sub)}</small>
       ${sent ? `<div class="pn-onto"><span class="pn-ql" style="--qc:var(--muted)">Ontology</span>${sent}
         ${o ? ` <button class="lnk" data-cls="${h(o.f)}">see on Map</button>` : ""}</div>` : ""}
-      <span class="arrow">↓</span></div>`;
-  }
-
-  // Evidence for an AI link: verdict, score, the two quotes, reasoning.
-  function evidence(e) {
-    if (e.kind === "DERIVED_LINK") return `<div class="pn-evi"><div class="pn-vrow"><span class="pn-rr">DERIVED · no AI</span></div>
-      <div class="pn-vrow">Via confirmed control(s) <b style="color:var(--fg)">${h(e.via_controls || "")}</b></div>
-      ${!blank(e.sections) ? `<div class="pn-vrow">Policy sections <b style="color:var(--fg)">${h(e.sections)}</b></div>` : ""}
-      <div class="muted" style="font-size:12px">${h(e.reasoning || "The obligation is satisfied by a judge-confirmed control, and GPPS maps that control to this policy.")}</div></div>`;
-    if (e.kind !== "AI_LINK") return "";
-    const s = nodeById[e.source], t = nodeById[e.target];
-    const vc = vClass(e.judge_verdict);
-    const score = Number(e.score);
-    let x = `<div class="pn-evi"><div class="pn-vrow">
-      <span class="pn-verdict ${vc}">${vText(e.judge_verdict)}</span>
-      ${!blank(e.score) && !isNaN(score) ? `<span class="pn-meter">Score <i><b style="width:${Math.max(0, Math.min(10, score)) * 10
+      <span cl

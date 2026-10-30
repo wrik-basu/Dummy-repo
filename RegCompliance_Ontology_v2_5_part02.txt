@@ -1,4 +1,19 @@
-}%"></b></i><b style="color:var(--fg)">${h(e.score)}/10</b></span>` : ""}
+ass="arrow">↓</span></div>`;
+  }
+
+  // Evidence for an AI link: verdict, score, the two quotes, reasoning.
+  function evidence(e) {
+    if (e.kind === "DERIVED_LINK") return `<div class="pn-evi"><div class="pn-vrow"><span class="pn-rr">DERIVED · no AI</span></div>
+      <div class="pn-vrow">Via confirmed control(s) <b style="color:var(--fg)">${h(e.via_controls || "")}</b></div>
+      ${!blank(e.sections) ? `<div class="pn-vrow">Policy sections <b style="color:var(--fg)">${h(e.sections)}</b></div>` : ""}
+      <div class="muted" style="font-size:12px">${h(e.reasoning || "The obligation is satisfied by a judge-confirmed control, and GPPS maps that control to this policy.")}</div></div>`;
+    if (e.kind !== "AI_LINK") return "";
+    const s = nodeById[e.source], t = nodeById[e.target];
+    const vc = vClass(e.judge_verdict);
+    const score = Number(e.score);
+    let x = `<div class="pn-evi"><div class="pn-vrow">
+      <span class="pn-verdict ${vc}">${vText(e.judge_verdict)}</span>
+      ${!blank(e.score) && !isNaN(score) ? `<span class="pn-meter">Score <i><b style="width:${Math.max(0, Math.min(10, score)) * 10}%"></b></i><b style="color:var(--fg)">${h(e.score)}/10</b></span>` : ""}
       ${!blank(e.confidence) ? `<span>Confidence <b style="color:var(--fg)">${h(e.confidence)}</b></span>` : ""}
       ${!blank(e.grounding) ? `<span>Quotes <b style="color:var(--fg)">${h(e.grounding)}</b></span>` : ""}</div>`;
     if (!blank(e.impact_type) || !blank(e.coverage)) x += `<div class="pn-vrow">${
