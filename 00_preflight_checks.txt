@@ -1,0 +1,299 @@
+# ==============================================================================
+# 00_preflight_checks  -  RUN THIS FIRST. Finds what is missing / broken BEFORE any
+#                         notebook runs. No LLM call (unless you ask for the gateway
+#                         check), nothing written except the report.            [$0]
+# ------------------------------------------------------------------------------
+# reads  : pipeline_config.py + every file it points to (headers / a few rows only)
+# writes : {OUT_DIR}/preflight_report.xlsx
+#
+# Set START_STEP (CELL 1) to the notebook you are about to run:
+#   1  = full build from the source systems (checks every source file)
+#   3-6, 7-10, 11-12, 13 = resume: also checks that the files the earlier steps
+#        write are there, and that the graph holds the links that step needs.
+#
+# Result per check: PASS / WARN (runs, but read the note) / FAIL (fix first).
+# The last line STOPS (assert) if anything FAILs.
+# ==============================================================================
+
+
+# ====== CELL 1: SETTINGS ======================================================
+START_STEP = 1            # notebook you are about to run (1-13)
+CHECK_GATEWAY = False     # True = one tiny LLM call (paste the gateway cells first)
+MIN_FREE_GB = 5           # free disk needed under OUT_DIR
+
+
+
+# ====== CELL 2: CHECKS ========================================================
+import os
+import sys
+import json
+import shutil
+import importlib
+import pandas as pd
+
+R = []                                   # (area, check, status, detail, fix)
+
+
+def add(area, check, status, detail="", fix=""):
+    R.append(dict(area=area, check=check, status=status, detail=str(detail)[:300], fix=fix))
+
+
+# ---- 1. environment -----------------------------------------------------------
+add("environment", "python version", "PASS" if sys.version_info >= (3, 9) else "FAIL",
+    sys.version.split()[0], "use Python 3.9+")
+for pkg, need in [("pandas", "1.5"), ("numpy", "1.21"), ("pyarrow", "8"), ("openpyxl", "3"), ("tqdm", "4")]:
+    try:
+        m = importlib.import_module(pkg)
+        v = getattr(m, "__version__", "?")
+        ok = [int(x) for x in v.split(".")[:2] if x.isdigit()] >= [int(x) for x in need.split(".")]
+        add("environment", f"package {pkg}", "PASS" if ok else "WARN", v, f"pip install -U {pkg}>={need}")
+    except ImportError:
+        add("environment", f"package {pkg}", "FAIL", "not installed", f"pip install {pkg}")
+
+# ---- 2. config ------------------------------------------------------------------
+try:
+    import pipeline_config as C
+    importlib.reload(C)
+    add("config", "pipeline_config.py imports", "PASS", f"COUNTRY={C.COUNTRY} RUN_ID={C.RUN_ID} OUT_DIR={C.OUT_DIR}")
+except Exception as e:
+    add("config", "pipeline_config.py imports", "FAIL", repr(e), "put pipeline_config.py next to the notebooks and fix the syntax error")
+    C = None
+
+lib_ok = os.path.exists("ia_lib.py")
+add("config", "ia_lib.py present", "PASS" if lib_ok else "FAIL", os.path.abspath("ia_lib.py"),
+    "copy ia_lib.py into the notebook folder (needed by 03-06)")
+
+if C:
+    placeholders = {k: v for k, v in C.SOURCES.items() if "<" in str(v)}
+    add("config", "no <placeholders> left in SOURCES", "PASS" if not placeholders else "FAIL",
+        ", ".join(placeholders) or "all set", "replace every <...> path in pipeline_config.py SOURCES")
+    for name in ["TOKEN_PRICE", "MAX_TOKENS", "CONCURRENCY", "LINK_THRESHOLD", "P3B_MAX_COST_USD"]:
+        add("config", f"setting {name}", "PASS" if hasattr(C, name) else "FAIL",
+            getattr(C, name, "missing"), f"add {name} to pipeline_config.py")
+    if getattr(C, "LINK_THRESHOLD", 5) != 5:
+        add("config", "LINK_THRESHOLD = 5 (project standard)", "WARN", C.LINK_THRESHOLD,
+            "5 is the threshold every audited run used; changing it changes precision")
+
+# ---- 3. output folder -----------------------------------------------------------
+if C:
+    try:
+        os.makedirs(C.OUT_DIR, exist_ok=True)
+        probe = os.path.join(C.OUT_DIR, ".write_test")
+        open(probe, "w").write("ok"); os.remove(probe)
+        add("output", "OUT_DIR writable", "PASS", os.path.abspath(C.OUT_DIR))
+    except Exception as e:
+        add("output", "OUT_DIR writable", "FAIL", repr(e), "fix OUT_DIR or folder permissions")
+    try:
+        free = shutil.disk_usage(C.OUT_DIR).free / 1e9
+        add("output", f"free disk >= {MIN_FREE_GB} GB", "PASS" if free >= MIN_FREE_GB else "FAIL", f"{free:.1f} GB",
+            "free space: the graph + backups need a few GB")
+    except Exception as e:
+        add("output", "free disk", "WARN", repr(e))
+
+
+# ---- 4. source files: exist, readable, required columns -------------------------
+def header(path):
+    """Column names (+ row count when cheap) without loading the file."""
+    if path.endswith(".parquet"):
+        import pyarrow.parquet as pq
+        f = pq.ParquetFile(path)
+        return list(f.schema_arrow.names), f.metadata.num_rows
+    if path.endswith((".xlsx", ".xls")):
+        return list(pd.read_excel(path, nrows=3).columns), None
+    return list(pd.read_csv(path, nrows=3).columns), None
+
+
+def one_of(cols, *alts):
+    return next((a for a in alts if a in cols), None)
+
+
+REQUIRED = {   # every name must exist; a tuple = any one of them
+    "rapid2": ["RECORD_ID", "TITLE", "SUMM_CONTENT", "RECORD_JURISDICTION_NAME", "REGULATOR_CODE",
+               "LEVEL_1_RISK_TAXONOMY", "LEVEL_2_RISK_TAXONOMY", "LEVEL_3_RISK_TAXONOMY"],
+    "regmap_e1": [("Regulation ID", "Regulation-ID"), "Regulation Summary ID", "Regulator Code", "Regulation Title"],
+    "regmap_e2": [("Regulation ID", "Regulation-ID"), "Regulation Summary ID", "Regulation Summary Title",
+                  "Regulation Summary Detail Text"],
+    "regmap_e3": ["Regulation Summary ID", "Regulation Summary Library Risk ID Number",
+                  "Regulation Summary L1 Library Control ID Number"],
+    "regmap_e4": ["Regulation Summary ID", "Risk ID", "Risk Instance Applicable?"],
+    "regmap_e5": ["Regulation Summary ID", "L1 Control ID", "L1 Control Instance Applicable?"],
+    "regmap_e6": ["Obligation ID", "Regulation Summary ID", "Obligation Title", "Obligation Detailed Text",
+                  "Obligation Status"],
+    "regmap_e7": ["Regulation ID", "Obligation Evaluation Obligation ID"],
+    "gpps_pol_us": ["policy_core_id", "version_num", "json_data"],
+    "gpps_pol_glob": ["policy_core_id", "version_num", "json_data"],
+    "gpps_proc": ["procedure_core_id", "version_num", "json_data"],
+    "ia_rsm": ["RECORD_ID", "RSM_ID", "REG_ID"],
+    "ia_rgl_audit": ["RID", "RGL"],
+    "ia_rob": ["RECORD_ID", "ROB_ID"],
+    "ia_rob_audit": ["RID", "ROB"],
+    "ia_lr": ["RID", ("LR", "TARGET")],
+    "ia_l1c": ["RID", ("L1C", "LIC", "TARGET")],
+    "ia_1c": ["RID", ("1C", "IC", "TARGET")],
+    "ia_helios_audit": ["RID", "TARGET", "level"],
+    "ia_rob_policy": ["rob_id", "doc_id"],
+    "ia_rob_policy_sections": ["rob_id", "doc_id"],
+    "ia_rob_proc": ["rob_id", "doc_id"],
+}
+NEEDS_DECISION = ["ia_rsm", "ia_rob", "ia_lr", "ia_l1c", "ia_1c", "ia_rob_policy", "ia_rob_proc"]
+NEEDS_VERDICT = ["ia_rgl_audit", "ia_rob_audit", "ia_helios_audit"]
+HELIOS = {"helios_risk": ["risk_id", "risk_title", "risk_text", "risk_l1"],
+          "helios_ctrl": ["ctrl_instance_id", "ctrl_instance_text", "ctrl_library_id", "ctrl_library_text",
+                          "ctrl_status", "ctrl_library_status"],
+          "helios_rtcl": ["rtcl_risk", "rtcl_l1c"]}
+
+COLS_SEEN = {}
+if C and START_STEP <= 1:
+    for key, path in C.SOURCES.items():
+        if "<" in str(path):
+            continue
+        if not os.path.exists(path):
+            add("source", f"{key} exists", "FAIL", path, "fix the path in pipeline_config.py SOURCES")
+            continue
+        try:
+            cols, n = header(path)
+            COLS_SEEN[key] = cols
+            add("source", f"{key} readable", "PASS", f"{len(cols)} cols" + (f", {n:,} rows" if n is not None else ""))
+        except Exception as e:
+            add("source", f"{key} readable", "FAIL", repr(e), "re-export the file (parquet / xlsx / csv)")
+            continue
+        for need in REQUIRED.get(key, []):
+            alts = need if isinstance(need, tuple) else (need,)
+            hit = one_of(cols, *alts)
+            add("columns", f"{key}: {' | '.join(alts)}", "PASS" if hit else "FAIL", hit or "missing",
+                f"{key} must have column {' or '.join(alts)} (renamed in this extract?)")
+        if key in NEEDS_DECISION:
+            hit = one_of(cols, *C.COLS["decision"])
+            add("columns", f"{key}: decision column", "PASS" if hit else "FAIL", hit or "missing",
+                f"add the column name to COLS['decision'] in pipeline_config.py")
+        if key in NEEDS_VERDICT:
+            hit = one_of(cols, *C.COLS["verdict"])
+            add("columns", f"{key}: judge verdict column", "PASS" if hit else "FAIL", hit or "missing",
+                f"add the column name to COLS['verdict'] in pipeline_config.py")
+        for field in HELIOS.get(key, []):
+            hit = one_of(cols, *C.COLS[field])
+            add("columns", f"{key}: {field}", "PASS" if hit else "FAIL", hit or f"none of {C.COLS[field]}",
+                f"add this extract's column name to COLS['{field}'] in pipeline_config.py")
+
+    # ---- 5. content checks (a few rows only; skipped for files already failed) ---
+    have = lambda k: k in COLS_SEEN
+    if have("helios_ctrl"):
+      try:
+        p = C.SOURCES["helios_ctrl"]
+        col = one_of(COLS_SEEN.get("helios_ctrl", []), *C.COLS["ctrl_instance_id"])
+        if col:
+            s = pd.read_parquet(p, columns=[col])[col].astype(str).head(500)
+            share = s.str.match(r"^1C-\d+").mean()
+            add("content", "Helios control instance IDs look like 1C-<n>", "PASS" if share > 0.9 else "FAIL",
+                f"{share:.0%} of 500 rows in '{col}'", "the 1C ID column is wrong: set COLS['ctrl_instance_id']")
+      except Exception as e:
+        add("content", "Helios 1C ID pattern", "WARN", repr(e))
+    for key in [k for k in ["gpps_pol_us", "gpps_pol_glob", "gpps_proc"] if have(k)]:
+        try:
+            df = pd.read_parquet(C.SOURCES[key], columns=["json_data"]).head(20)
+            ok = sum(isinstance(v, dict) or (isinstance(v, str) and isinstance(json.loads(v), dict)) for v in df["json_data"])
+            add("content", f"{key}: json_data parses", "PASS" if ok == len(df) else "FAIL", f"{ok}/{len(df)} rows",
+                "json_data must be the GPPS JSON document (string or dict)")
+        except Exception as e:
+            add("content", f"{key}: json_data parses", "FAIL", repr(e))
+    if have("regmap_e6"):
+      try:
+        p = C.SOURCES["regmap_e6"]
+        s = (pd.read_excel(p, usecols=["Obligation ID"], nrows=200) if p.endswith(("xlsx", "xls"))
+             else pd.read_parquet(p, columns=["Obligation ID"]).head(200))["Obligation ID"].astype(str)
+        share = s.str.match(r"^ROB-\d+").mean()
+        add("content", "RegMap obligation IDs look like ROB-<n>", "PASS" if share > 0.9 else "WARN", f"{share:.0%}")
+      except Exception as e:
+        add("content", "RegMap obligation ID pattern", "WARN", repr(e))
+    if have("rapid2"):
+      try:
+        p = C.SOURCES["rapid2"]
+        s = pd.read_parquet(p, columns=["RECORD_ID", "RECORD_JURISDICTION_NAME"])
+        add("content", "Rapid2 RECORD_ID unique", "PASS" if s.RECORD_ID.is_unique else "WARN",
+            f"{s.RECORD_ID.nunique():,} unique of {len(s):,}", "duplicates are collapsed to one alert node")
+        j = s.RECORD_JURISDICTION_NAME.astype(str).str.strip().str.lower().eq(C.JURISDICTION.lower()).mean()
+        add("content", f"Rapid2 jurisdiction = '{C.JURISDICTION}'", "PASS" if j > 0.5 else "FAIL", f"{j:.0%} of rows",
+            "JURISDICTION in pipeline_config.py must match RECORD_JURISDICTION_NAME")
+      except Exception as e:
+        add("content", "Rapid2 checks", "WARN", repr(e))
+
+
+# ---- 6. resume: files from earlier steps + graph content ------------------------
+if C:
+    O, P3, P3B = C.OUT_DIR, C.P3_DIR, C.P3B_DIR
+    P3C = getattr(C, "P3C_DIR", f"{O}/phase3c")
+    NEEDS = {   # step: files that must exist before it runs
+        2: [f"{O}/nodes.parquet", f"{O}/edges.parquet"],
+        3: [f"{O}/nodes.parquet", f"{O}/edges.parquet"],
+        4: [f"{P3}/candidates_alert_policy.parquet", f"{P3}/candidates_alert_procedure.parquet"],
+        5: [f"{P3}/alert_impact_policy.parquet", f"{P3}/alert_impact_procedure.parquet"],
+        6: [f"{P3}/alert_impact_policy.parquet", f"{C.AUDIT_DIR}/audit_labelled.parquet"],
+        7: [f"{O}/nodes.parquet", f"{O}/edges.parquet"],
+        8: [f"{P3B}/l1c_candidates.parquet", f"{P3B}/instance_pool.parquet"],
+        9: [f"{P3B}/l1c_results.parquet", f"{P3B}/l1c_audit_labelled.parquet", f"{P3B}/instance_pool.parquet"],
+        10: [f"{P3B}/instance_pool.parquet"],
+        11: [f"{O}/edges.parquet"],
+        12: [f"{P3C}/via_control_candidates.parquet"],
+        13: [f"{P3B}/control_gap_findings.xlsx"],
+    }
+    GRAPH_NEEDS = {   # step: edge properties that must already be in the graph
+        3: ["assertsImpact:ROB", "implementedByPolicy", "governsActivity"],
+        7: ["derivedFromSummary", "mitigatedBy", "instanceOf", "policyMapsToControl"],
+        10: ["satisfiedByControl", "satisfiedByControlInstance"],
+        11: ["satisfiedByControl", "policyMapsToControl", "procedureMapsToControl"],
+        13: ["satisfiedByControl", "satisfiedByControlInstance", "assertsImpact:POLICY"],
+    }
+    if START_STEP > 1:
+        for f in NEEDS.get(START_STEP, []):
+            add("resume", f"step {START_STEP} input {os.path.basename(f)}", "PASS" if os.path.exists(f) else "FAIL",
+                f, "run the earlier notebook that writes this file (README lineage table)")
+        props_needed = GRAPH_NEEDS.get(START_STEP, [])
+        if props_needed and os.path.exists(f"{O}/edges.parquet"):
+            props = pd.read_parquet(f"{O}/edges.parquet", columns=["property"])["property"].value_counts()
+            for p_ in props_needed:
+                n = int(props.get(p_, 0))
+                add("resume", f"graph has {p_}", "PASS" if n else "FAIL", f"{n:,} edges",
+                    "run the step that loads it (README lineage table)")
+    # duplicate-load guards: these steps refuse to load twice; warn early
+    if os.path.exists(f"{O}/edges.parquet") and START_STEP in (6, 9, 12):
+        e = pd.read_parquet(f"{O}/edges.parquet", columns=["property", "run_id"])
+        already = {6: e.property.isin(["assertsImpact:POLICY", "assertsImpact:PROCEDURE"]).sum(),
+                   9: (e.property == "satisfiedByControl").sum(),
+                   12: e.run_id.astype(str).str.endswith("VIA-CONTROL").sum()}[START_STEP]
+        add("resume", f"step {START_STEP} not loaded yet", "PASS" if already == 0 else "WARN", f"{int(already):,} edges",
+            "already loaded: skip the load cell, or restore the edges_before_*.parquet backup first")
+
+# ---- 7. gateway ----------------------------------------------------------------
+LLM_STEPS = {4, 5, 8, 9, 12}
+if CHECK_GATEWAY:
+    try:
+        ans = await call_llm('Return ONLY {"ok": true}', {"ping": 1}, None, 50)
+        add("gateway", "one test call", "PASS" if ans else "FAIL", ans, "check the gateway cells / credentials")
+    except NameError:
+        add("gateway", "call_llm defined", "FAIL", "not defined", "paste the gateway cells above, then re-run")
+    except Exception as e:
+        add("gateway", "one test call", "FAIL", repr(e), "check the gateway / network / quota")
+elif START_STEP in LLM_STEPS:
+    add("gateway", "LLM step ahead", "WARN", f"step {START_STEP} calls the LLM",
+        "paste the gateway cells as CELL 0 of that notebook; set CHECK_GATEWAY=True here to test it")
+
+
+
+# ====== CELL 3: REPORT ========================================================
+rep = pd.DataFrame(R)
+order = {"FAIL": 0, "WARN": 1, "PASS": 2}
+rep = rep.sort_values(by="status", key=lambda s: s.map(order), kind="stable")
+cnt = rep.status.value_counts().to_dict()
+print(f"PREFLIGHT for step {START_STEP} | PASS {cnt.get('PASS', 0)} | WARN {cnt.get('WARN', 0)} | FAIL {cnt.get('FAIL', 0)}")
+show = rep[rep.status != "PASS"]
+if len(show):
+    print(show[["status", "area", "check", "detail", "fix"]].to_string(index=False, max_colwidth=60))
+if C:
+    path = f"{C.OUT_DIR}/preflight_report.xlsx"
+    try:
+        rep.to_excel(path, index=False)
+        print(f"-> full report {path}")
+    except Exception as e:
+        print("report not saved:", e)
+assert cnt.get("FAIL", 0) == 0, "PREFLIGHT FAILED: fix the FAIL rows above before running the pipeline"
+print("PREFLIGHT PASSED: safe to run step", START_STEP)
