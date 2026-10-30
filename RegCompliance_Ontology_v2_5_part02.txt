@@ -1,4 +1,15 @@
-="pn-dir">${dir === "up" ? "↑ from" : "↓ to"}</span>
+style="--qc:${tColor(s.type)}"><span class="pn-ql">${h(tShort(s.type))} says</span>“${h(e.evidence_from)}”</div>`;
+    if (!blank(e.evidence_to))
+      x += `<div class="pn-q" style="--qc:${tColor(t.type)}"><span class="pn-ql">${h(tShort(t.type))} says</span>“${h(e.evidence_to)}”</div>`;
+    if (!blank(e.reasoning)) x += `<details><summary>Why the model linked them</summary><p>${h(e.reasoning)}</p></details>`;
+    return x + `</div>`;
+  }
+
+  // One row in "Where it sits": direction, relation, the other record.
+  function linkRow(e, dir) {
+    const o = nodeById[dir === "up" ? e.source : e.target];
+    const [, , col] = LAYER_TXT[e._layer];
+    return `<div class="pn-link"><span class="pn-dir">${dir === "up" ? "↑ from" : "↓ to"}</span>
       <span class="pn-verb" style="--kc:${col}">${h(verb(e.relation))}</span>
       <span><button class="pn-go" style="--c:${tColor(o.type)}" data-go="${h(o.id)}">${h(tShort(o.type))} · ${h(short(o.title || o.id, 30))}</button>${
         (e.kind === "AI_LINK" || e.kind === "DERIVED_LINK") ? `<button class="pn-ev" data-proof="${e._i}">evidence</button>` : ""}</span></div>`;

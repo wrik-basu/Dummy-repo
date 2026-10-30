@@ -642,7 +642,7 @@ select(start);
       </span>
       <span class="muted" id="lv-status" style="font-size:13px">No sample loaded · the ontology is shown without data</span>
     </div>`);
-  $("ver").textContent = "v2.4";
+  $("ver").textContent = "v2.5";
 
   /* ---- Page width + size (saved per computer) ----------------------
      Width : Full = whole screen, Wide = 1600 px, Narrow = 1240 px.
@@ -840,6 +840,7 @@ select(start);
     ["var(--muted)",   "Impact · not judged", ""],
     ["var(--lineage)", "Ontology structure", "dotted"],
     ["var(--bad)",     "Gap (rule)", "dashed"],
+    ["#8a6d00",        "Derived link (rule, no AI)", "dotted"],
     ["var(--context)", "Intake context (ML tag)", ""],
   ].map(([c, t, s]) => `<span><i style="border-color:${c};${s ? "border-top-style:" + s : ""}"></i>${t}</span>`).join("")
     + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span><span>Line labels use the ontology's own relationship names</span>`;
@@ -1145,9 +1146,21 @@ select(start);
     shown.forEach((e) => {
       const a = P[e.source], b = P[e.target];
       if (!a || !b) return;
-      const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
-      const dx = Math.max(40, (x2 - x1) / 2);
-      const d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+      // Backward links (obligation -> control sits to the left, in the lane
+      // below) are drawn vertically: bottom of the source to top of the target.
+      const back = b.x < a.x + NODE_W;
+      let x1, y1, x2, y2, d;
+      if (back) {
+        x1 = a.x + NODE_W / 2; x2 = b.x + NODE_W / 2;
+        const down = b.y > a.y;
+        y1 = down ? a.y + NODE_H : a.y; y2 = down ? b.y : b.y + NODE_H;
+        const dy = Math.max(40, Math.abs(y2 - y1) / 2) * (down ? 1 : -1);
+        d = `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2}`;
+      } else {
+        x1 = a.x + NODE_W; y1 = a.y + NODE_H / 2; x2 = b.x; y2 = b.y + NODE_H / 2;
+        const dx = Math.max(40, (x2 - x1) / 2);
+        d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+      }
       const v = e._layer === "impact" ? vClass(e.judge_verdict) : "";
       const dim = fs && !(fs.has(e.source) && fs.has(e.target)) ? "lv-dim" : "";
       const hl = selL && selL.kind === "edge" && selL.id === e._i ? "hl" : "";
@@ -1160,8 +1173,8 @@ select(start);
         labelSeen.add(key);
         const t = verb(e.relation), w = t.length * 6.2 + 14;
         labels.push(`<g class="lv-elab ${e._layer}${an}" data-edge="${e._i}">
-          <rect x="${x2 - 8 - w}" y="${y2 - 9}" width="${w}" height="18" rx="9"/>
-          <text x="${x2 - 8 - w / 2}" y="${y2 + 3.5}" text-anchor="middle">${h(t)}</text>
+          <rect x="${back ? x2 - w / 2 : x2 - 8 - w}" y="${back ? y2 - 30 : y2 - 9}" width="${w}" height="18" rx="9"/>
+          <text x="${back ? x2 : x2 - 8 - w / 2}" y="${back ? y2 - 17.5 : y2 + 3.5}" text-anchor="middle">${h(t)}</text>
           <title>${h(t)} · ${h(prop(e.relation))}</title></g>`);
       }
     });
@@ -1337,15 +1350,4 @@ select(start);
     if (!blank(e.change_needed)) x += `<div class="pn-q" style="--qc:var(--bad)"><span class="pn-ql">Change needed</span>${h(e.change_needed)}</div>`;
     if (!blank(e.sections)) x += `<div class="pn-vrow">Linked sections <b style="color:var(--fg)">${h(e.sections)}</b></div>`;
     if (!blank(e.evidence_from))
-      x += `<div class="pn-q" style="--qc:${tColor(s.type)}"><span class="pn-ql">${h(tShort(s.type))} says</span>“${h(e.evidence_from)}”</div>`;
-    if (!blank(e.evidence_to))
-      x += `<div class="pn-q" style="--qc:${tColor(t.type)}"><span class="pn-ql">${h(tShort(t.type))} says</span>“${h(e.evidence_to)}”</div>`;
-    if (!blank(e.reasoning)) x += `<details><summary>Why the model linked them</summary><p>${h(e.reasoning)}</p></details>`;
-    return x + `</div>`;
-  }
-
-  // One row in "Where it sits": direction, relation, the other record.
-  function linkRow(e, dir) {
-    const o = nodeById[dir === "up" ? e.source : e.target];
-    const [, , col] = LAYER_TXT[e._layer];
-    return `<div class="pn-link"><span class
+      x += `<div class="pn-q" 
