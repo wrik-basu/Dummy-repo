@@ -1,0 +1,225 @@
+="pn-dir">${dir === "up" ? "↑ from" : "↓ to"}</span>
+      <span class="pn-verb" style="--kc:${col}">${h(verb(e.relation))}</span>
+      <span><button class="pn-go" style="--c:${tColor(o.type)}" data-go="${h(o.id)}">${h(tShort(o.type))} · ${h(short(o.title || o.id, 30))}</button>${
+        (e.kind === "AI_LINK" || e.kind === "DERIVED_LINK") ? `<button class="pn-ev" data-proof="${e._i}">evidence</button>` : ""}</span></div>`;
+  }
+
+  function showNode(id) {
+    const n = nodeById[id];
+    let x = secT(1, n.type === "Alert" ? "The alert" : "The record") + card(n, 8);
+
+    if (n.type === "Alert" && n.intake) {
+      const it = n.intake, tags = outE[id].filter((e) => e._layer === "context");
+      const chip = (t) => {
+        const e = tags.find((z) => nodeById[z.target].type === t);
+        return e ? `<button class="pn-go" style="--c:var(--context)" data-go="${h(e.target)}">${h(short(nodeById[e.target].title, 46))}</button>` : `<span class="muted">—</span>`;
+      };
+      x += secT(2, "Intake: standardisation") + `<div class="pn-card" style="--c:var(--context)"><div class="pn-kv">
+          <span>Reference</span><span class="tag">${h(it.ref || id)}</span>
+          <span>Applicable</span><span><span class="${String(it.applicable).toLowerCase() === "yes" ? "pn-yes" : "pn-no"}">${h(it.applicable)}</span></span>
+          <span>Category</span><span><span class="pn-cat">${h(it.category)}</span> <span class="muted">${h(CATEGORY_TXT[it.category] || "")}</span></span>
+          <span>Location</span><span>${chip("Jurisdiction")}</span></div></div>`;
+      x += secT(3, "Contextualisation (ML classifiers)") + `<div class="pn-card" style="--c:var(--context)"><div class="pn-kv">
+          <span>Risk steward</span><span>${chip("Steward")}</span>
+          <span>Theme</span><span>${chip("Theme")}</span>
+          <span>Risk L1</span><span>${h(it.l1 || "—")}</span>
+          <span>Risk L2</span><span>${h(it.l2 || "—")}</span>
+          <span>Risk L3</span><span>${chip("Taxonomy")}</span>
+          <span>Line of business</span><span>${chip("LOB")}</span>
+          <span>Legal entity</span><span>${chip("LE")}</span></div>
+          <div class="muted" style="font-size:12px">Ontology: RegulatoryAlert hasApplicability · hasCategory · taggedSteward · hasTheme · taggedRisk · taggedBusiness · taggedLegalEntity · inJurisdiction. These tags steer the impact search below.</div></div>`;
+    }
+
+    if (n.type === "Alert") {
+      // What it impacts, grouped by artefact type.
+      const groups = {};
+      outE[id].filter((e) => e._layer === "impact").forEach((e) => {
+        const t = nodeById[e.target].type; (groups[t] = groups[t] || []).push(e);
+      });
+      const order = ["RGL", "RSM", "ROB", "Policy", "Procedure", "LR", "L1C", "1C"];
+      const total = Object.values(groups).reduce((a, l) => a + l.length, 0);
+      x += secT(n.intake ? 4 : 2, "What this alert impacts", ` <span class="count">${total}</span>`) + `<div class="pn-grid">` +
+        order.filter((t) => groups[t]).map((t) => {
+          const l = groups[t], ok = l.filter((e) => vClass(e.judge_verdict) === "agree").length;
+          return `<div class="pn-group"><h5><span class="pn-chip" style="--c:${tColor(t)}">${h(tShort(t))}</span>
+              ${l.length}${ok ? ` <span class="muted" style="font-weight:400">· ${ok} judge-confirmed</span>` : ""}</h5>
+            <div class="pn-chips">${l.slice(0, 14).map((e) => {
+              const o = nodeById[e.target], vc = vClass(e.judge_verdict);
+              const dot = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc] || "var(--line)";
+              return `<button class="pn-go" style="--c:${dot}" data-go="${h(o.id)}">${h(short(o.title || o.id, 22))}</button>`;
+            }).join("")}${l.length > 14 ? `<span class="muted">+${l.length - 14} more</span>` : ""}</div></div>`;
+        }).join("") + `</div><div class="pn-note">Left border colour = judge verdict (green confirmed, red disputed, amber to SME). Click one to see the evidence.</div>`;
+    } else {
+      // 2 · How the alert impacts it (or, for an intake tag, which alerts carry it).
+      const imps = inE[id].filter((e) => e._layer === "impact");
+      const tagged = inE[id].filter((e) => e._layer === "context" && nodeById[e.source].type === "Alert");
+      if (CTX_TYPES.has(n.type)) {
+        x += secT(2, "Alerts tagged with it at intake", ` <span class="count">${tagged.length}</span>`) +
+          (tagged.length ? relBlock(tagged[0]) + `<div class="pn-links">` + tagged.map((e) => linkRow(e, "up")).join("") + `</div>`
+                         : `<div class="pn-note">Reached through the hierarchy (a broader level of a tag), not tagged directly.</div>`) +
+          `<div class="pn-note">Set by the intake ML classifier during contextualisation. Shared tags show which alerts belong to the same steward, theme, business or entity.</div>`;
+      } else if (imps.length) {
+        x += secT(2, "How the alert impacts it", imps.length > 1 ? ` <span class="count">${imps.length}</span>` : "");
+        imps.forEach((e) => { x += card(nodeById[e.source], 3) + relBlock(e) + evidence(e); });
+      } else {
+        const viaStructure = inE[id].filter((e) => e._layer !== "impact");
+        x += secT(2, "Impact") + `<div class="pn-note">${n.type === "Gap"
+          ? "A rule-based finding, not an AI judgement: the structure below expects a link that is missing."
+          : viaStructure.length
+            ? "Not linked directly by the alert. It is reached through the ontology structure: it sits under an impacted record (see below), so it is in the blast radius."
+            : "Not linked directly by the alert."}</div>`;
+      }
+      // 3 · Where it sits in the ontology.
+      const up = inE[id].filter((e) => e._layer !== "impact" && !(CTX_TYPES.has(n.type) && nodeById[e.source].type === "Alert")), down = outE[id];
+      if (up.length || down.length) {
+        x += secT(3, "Where it sits in the ontology") + `<div class="pn-links">` +
+          up.map((e) => linkRow(e, "up")).join("") + down.map((e) => linkRow(e, "down")).join("") + `</div>`;
+      }
+    }
+    const cls = T[n.type] ? T[n.type].cls : "";
+    if (cls && n.type !== "Alert") x += otherRels(cls, id);
+    if (cls) x += `<p class="muted" style="font-size:12.5px">Ontology class: <button class="lnk" data-cls="${h(cls)}">${h(byId[cls].l)}</button></p>`;
+    openEx(x);
+  }
+
+  // Everything else the ontology says about this class: the relationships
+  // that exist in the model but have no data in the sample yet.
+  function otherRels(cls, id) {
+    const classes = [cls, ...ancestors(cls)];
+    const used = new Set([...inE[id], ...outE[id]].map((e) => { const o = ontoRel(e.relation); return o ? o.f + o.r + o.t : ""; }));
+    const rels = D.rels.filter((r) => (classes.includes(r.f) || classes.includes(r.t)) &&
+      !r.t.startsWith("Vocab:") && r.f !== "Entity" && r.t !== "Entity" && !used.has(r.f + r.r + r.t));
+    if (!rels.length) return "";
+    const rows = rels.map((r) => {
+      const out = classes.includes(r.f), other = out ? r.t : r.f, col = KIND[r.k] ? KIND[r.k][1] : "var(--line)";
+      const has = countFor(other) > 0;
+      return `<div class="pn-link" style="${has ? "" : "opacity:.55"}"><span class="pn-dir">${out ? "↓ to" : "↑ from"}</span>
+        <span class="pn-verb" style="--kc:${col}">${h(phrase(r.r))}</span>
+        <span><button class="lnk" data-cls="${h(other)}">${h(byId[other] ? byId[other].l : other)}</button>
+        <span class="muted" style="font-size:12px"> · ${has ? "class has data, not linked here" : "no data yet"}</span></span></div>`;
+    }).join("");
+    return `<details class="pn-group"><summary class="pn-sec" style="cursor:pointer;margin:0"><span class="n">4</span>
+      More in the ontology <span class="count">${rels.length}</span></summary>
+      <div class="pn-links" style="margin-top:6px">${rows}</div></details>`;
+  }
+
+  function showEdge(i) {
+    const e = DATA.edges[i];
+    let x = secT(1, "The connection") + card(nodeById[e.source], 4) + relBlock(e) + card(nodeById[e.target], 4);
+    if (e.kind === "AI_LINK" || e.kind === "DERIVED_LINK") x += secT(2, "The evidence") + evidence(e);
+    else x += `<div class="pn-note">${e._layer === "gap"
+      ? "Created by a rule on the structure, not by the model."
+      : "A fact copied from the system of record. No AI involved, so no score or evidence."}</div>`;
+    openEx(x);
+  }
+
+  $("lv-ex").addEventListener("click", (ev) => {
+    const more = ev.target.closest(".pn-more");
+    if (more) {
+      const t = more.previousElementSibling;
+      const open = t.classList.toggle("clamp");
+      more.textContent = open ? "Show more" : "Show less";
+      return;
+    }
+    const go = ev.target.closest("[data-go]"), pr = ev.target.closest("[data-proof]"), cl = ev.target.closest("[data-cls]");
+    if (go) gotoNode(go.dataset.go);
+    else if (pr) { selL = { kind: "edge", id: Number(pr.dataset.proof) }; render(); showEdge(selL.id); }
+    else if (cl) { select("map"); focus(cl.dataset.cls); }
+  });
+
+  function gotoNode(id) {
+    if (!DATA || !nodeById[id]) return;
+    if (!scopeSet().has(id)) { cur = "ALL"; $("lv-alert").value = "ALL"; resetReveal(); }
+    selL = { kind: "node", id };
+    if (!computeView().nodes.has(id)) { layer = "both"; resetReveal(); computeView(); }
+    if (mode === "step" && !R.has(id)) revealPath(id);
+    render(); showNode(id);
+    requestAnimationFrame(() => centerOn(id));
+  }
+
+
+  /* -------------------------------------------------------------------
+     12. INTERACTION: click, pan, zoom, fit, search, alert filter
+     ------------------------------------------------------------------- */
+  const svgL = $("lv-svg");
+  let drag = null, moved = false;
+
+  svgL.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, tx: TF.x, ty: TF.y }; moved = false; });
+  window.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) { moved = true; svgL.classList.add("drag"); }
+    if (moved) { TF.x = drag.tx + dx; TF.y = drag.ty + dy; applyTF(); }
+  });
+  window.addEventListener("pointerup", () => { drag = null; svgL.classList.remove("drag"); });
+
+  svgL.addEventListener("click", (e) => {
+    if (moved) return;                                   // a pan, not a click
+    const mo = e.target.closest("[data-more]");
+    if (mo) {
+      const id = mo.dataset.more;
+      if (Number(mo.dataset.n) > 0) expand(id); else fold(id);
+      render(); return;
+    }
+    const n = e.target.closest("[data-node]"), ed = e.target.closest("[data-edge]");
+    if (n) {
+      selL = { kind: "node", id: n.dataset.node };
+      if (mode === "step") expand(selL.id);
+      render(); showNode(selL.id);
+    }
+    else if (ed) { selL = { kind: "edge", id: Number(ed.dataset.edge) }; render(); showEdge(selL.id); }
+    else if (selL) clearSel();
+  });
+
+  svgL.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = svgL.getBoundingClientRect();
+    zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
+  }, { passive: false });
+
+  function zoomAt(mx, my, f) {
+    const k = Math.min(3, Math.max(0.15, TF.k * f));
+    TF.x = mx - (mx - TF.x) * (k / TF.k); TF.y = my - (my - TF.y) * (k / TF.k); TF.k = k;
+    applyTF();
+  }
+  function applyTF() { $("lv-vp").setAttribute("transform", `translate(${TF.x},${TF.y}) scale(${TF.k})`); }
+
+  function fit() {
+    if ($("p-live").hidden || !DATA) return;
+    const bb = $("lv-vp").getBBox(), r = svgL.getBoundingClientRect();
+    if (!bb.width || !bb.height || !r.width) return;
+    const k = Math.min((r.width - 40) / bb.width, (r.height - 40) / bb.height, 1.3);
+    TF = { k, x: (r.width - bb.width * k) / 2 - bb.x * k, y: (r.height - bb.height * k) / 2 - bb.y * k };
+    applyTF();
+  }
+  function centerOn(id) {
+    const p = P[id]; if (!p) return;
+    const r = svgL.getBoundingClientRect(), k = Math.max(TF.k, 0.9);
+    TF = { k, x: r.width * 0.3 - (p.x + NODE_W / 2) * k, y: r.height / 2 - (p.y + NODE_H / 2) * k };
+    applyTF();
+  }
+
+  $("lv-in").onclick = () => { const r = svgL.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.25); };
+  $("lv-out").onclick = () => { const r = svgL.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 0.8); };
+  $("lv-fit").onclick = fit;
+  addEventListener("resize", () => { clearTimeout(window._lvrz); window._lvrz = setTimeout(fit, 200); });
+
+  $("lv-alert").onchange = (e) => { cur = e.target.value; relayout(); };
+
+  $("lv-search").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !DATA) return;
+    const q = e.target.value.trim().toLowerCase(); if (!q) return;
+    const hit = DATA.nodes.find((n) => n.id.toLowerCase().includes(q)) ||
+                DATA.nodes.find((n) => String(n.title || "").toLowerCase().includes(q));
+    if (hit) gotoNode(hit.id); else alert("No record matches: " + q);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("p-live").hidden && selL) clearSel();
+  });
+
+  applyPage();
+})();
+</script>
+
+</body></html>

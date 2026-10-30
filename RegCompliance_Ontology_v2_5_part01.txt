@@ -1,0 +1,1351 @@
+.r}`})});
+    Object.entries(tags).forEach(([id,list])=>{const p=pos[id]; if(!p) return;
+      let x=p.x+NW/2; const total=list.reduce((a,t)=>a+t.txt.length*6.5+18,0)+(list.length-1)*4; let cx=x-total/2;
+      list.forEach(t=>{const w=t.txt.length*6.5+18, h=18, y=p.y-h/2, kc=KIND[t.e.k][1];
+        g+=`<g class="lbl" data-key="${ekey(t.e)}"><rect x="${cx}" y="${y}" width="${w}" height="${h}" rx="9" fill="var(--surface)" stroke="${kc}" stroke-width="1.5"/>
+          <text x="${cx+w/2}" y="${y+12.5}" text-anchor="middle" font-size="11" font-weight="600" font-family="var(--mono)" fill="var(--fg)">${esc(t.txt)}</text><title>${esc(t.e.f+" "+t.e.r+" "+t.e.t)}</title></g>`;
+        cx+=w+4;});
+    });
+  }
+  s.innerHTML=g; bindNodes(s,!sel);
+  if(zoom&&sel&&pos[sel]){const w=document.getElementById('mapwrap');w.scrollTo({left:Math.max(0,pos[sel].x+NW/2-w.clientWidth/2),top:Math.max(0,pos[sel].y-w.clientHeight/2),behavior:reduce?'auto':'smooth'})}
+}
+
+/* ---------- focus view: incoming left, outgoing right, one lane per label ---------- */
+function drawFocus(){
+  const c=byId[sel], {out,inn}=edgesFor(sel, document.getElementById("inh").checked);
+  const RH=54, TOPF=80, n=Math.max(out.length,inn.length,1), W=1320;
+  const LBX=24, LBW=220, LPC=354, CW=260, CL=W/2-CW/2, CR=CL+CW, RPC=W-LPC, RBX=W-24-LBW, LANE=90;
+  const CH=Math.max(96,Math.min(n*RH-14,220)), CY=TOPF+20+(n-1)*RH/2-CH/2;
+  const rowY=(i,len)=>TOPF+(n-len)*RH/2+i*RH+20;
+  const H=Math.max(TOPF+20+(n-1)*RH+40, CY+CH+30);
+  const s=document.getElementById("svg"); sizeSvg(W,H);
+  const col=D.modules[c.m].c;
+  let g=`<defs>${Object.entries(KIND).map(([k,[,cl]])=>`<marker id="ah-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${cl}"/></marker>`).join("")}</defs>`;
+  g+=`<text x="${LBX}" y="30" font-size="12" font-weight="700" letter-spacing=".08em" fill="var(--muted)">POINTS TO ${esc(c.l.toUpperCase())}  ·  ${inn.length}</text>`;
+  g+=`<text x="${W-24}" y="30" text-anchor="end" font-size="12" font-weight="700" letter-spacing=".08em" fill="var(--muted)">${esc(c.l.toUpperCase())} POINTS TO  ·  ${out.length}</text>`;
+  const pillF=(cx,y,e)=>{const name=e.r, sub=e.via?`via ${byId[e.via].l}`:"", fs=name.length>22?11:12.5, w=Math.min(176,Math.max(name.length*fs*0.62,sub.length*6)+26);
+    return `<g class="lbl" data-key="${ekey(e)}"><rect x="${cx-w/2}" y="${y-(sub?17:12)}" width="${w}" height="${sub?34:24}" rx="12" fill="var(--surface)" stroke="${KIND[e.k][1]}" stroke-width="1.4" ${e.via?'stroke-dasharray="4 3"':""}/>
+      <text x="${cx}" y="${y+(sub?-1:4)}" text-anchor="middle" font-size="${fs}" font-weight="600" fill="var(--fg)" font-family="var(--mono)">${esc(name)}</text>
+      ${sub?`<text x="${cx}" y="${y+11}" text-anchor="middle" font-size="10.5" fill="var(--muted)">${esc(trunc(sub,28))}</text>`:""}<title>${esc(e.f+" "+e.r+" "+e.t+" ["+e.card+"]")}</title></g>`};
+  const box=(x,y,id,align)=>{const vocab=id.startsWith("Vocab:"),cl=vocab?null:byId[id],label=vocab?"vocab: "+id.slice(6):(id===sel?c.l+" (itself)":cl.l),mc=vocab?"var(--muted)":D.modules[cl.m].c;
+    const attrs=vocab||id===sel?"":`class="node" tabindex="0" role="button" aria-label="Focus on ${esc(cl.l)}" data-id="${id}"`;
+    return `<g ${attrs}><rect x="${x}" y="${y-18}" width="${LBW}" height="36" rx="7" fill="var(--surface)" stroke="${mc}" stroke-width="1.5" ${vocab||(cl&&cl.status==="MISSING")?'stroke-dasharray="4 3"':""}/>
+      <rect x="${align==="l"?x:x+LBW-5}" y="${y-18}" width="5" height="36" fill="${mc}" rx="2"/>
+      <text x="${x+LBW/2}" y="${y+4.5}" text-anchor="middle" font-size="12.5" fill="var(--fg)">${esc(trunc(label,29))}</text></g>`};
+  const attach=(i,len)=>CY+CH*(len===1?.5:(0.18+0.64*i/(len-1)));
+  inn.forEach((e,i)=>{const y=rowY(i,inn.length), ay=attach(i,inn.length);
+    g+=`<path class="sel-edge" data-key="${ekey(e)}" d="M${LBX+LBW},${y} H${LPC+LANE} C${(LPC+LANE+CL)/2},${y} ${(LPC+LANE+CL)/2},${ay} ${CL},${ay}" fill="none" stroke="${KIND[e.k][1]}" stroke-width="1.6" ${e.via?'stroke-dasharray="5 4"':""} marker-end="url(#ah-${e.k})"/>`;
+    g+=box(LBX,y,e.other,"l")+pillF(LPC,y,e)});
+  out.forEach((e,i)=>{const y=rowY(i,out.length), ay=attach(i,out.length);
+    g+=`<path class="sel-edge" data-key="${ekey(e)}" d="M${CR},${ay} C${(CR+RPC-LANE)/2},${ay} ${(CR+RPC-LANE)/2},${y} ${RPC-LANE},${y} H${RBX}" fill="none" stroke="${KIND[e.k][1]}" stroke-width="1.6" ${e.via?'stroke-dasharray="5 4"':""} marker-end="url(#ah-${e.k})"/>`;
+    g+=pillF(RPC,y,e)+box(RBX,y,e.other,"r")});
+  g+=`<g><rect x="${CL}" y="${CY}" width="${CW}" height="${CH}" rx="10" fill="${col}" fill-opacity=".12" stroke="${col}" stroke-width="2.5"/>
+     <text x="${CL+CW/2}" y="${CY+CH/2-8}" text-anchor="middle" font-size="15" font-weight="700" fill="var(--fg)">${esc(trunc(c.l,32))}</text>
+     <text x="${CL+CW/2}" y="${CY+CH/2+14}" text-anchor="middle" font-size="12" fill="var(--muted)">${esc(D.modules[c.m].n)} · ${esc(c.status.toLowerCase())}</text>
+     ${c.parent&&c.parent!=="Entity"?`<text x="${CL+CW/2}" y="${CY+CH/2+32}" text-anchor="middle" font-size="11.5" fill="var(--muted)">is a ${esc(byId[c.parent].l)}</text>`:""}</g>`;
+  if(!inn.length) g+=`<text x="${LBX}" y="${rowY(0,1)+4}" font-size="13" fill="var(--muted)">Nothing points here.</text>`;
+  if(!out.length) g+=`<text x="${W-24}" y="${rowY(0,1)+4}" text-anchor="end" font-size="13" fill="var(--muted)">No outgoing relationships.</text>`;
+  s.style.opacity=0; s.innerHTML=g; bindNodes(s,false);
+  requestAnimationFrame(()=>{s.style.transition=reduce?"none":"opacity .18s";s.style.opacity=1});
+}
+
+/* ---------- explain panel: the relationships in plain sentences ---------- */
+function sentence(e, outgoing){
+  const subj = outgoing ? byId[sel].l : nameOf(e.other), obj = outgoing ? nameOf(e.other) : byId[sel].l;
+  const verb = PHRASE[e.r] || e.r.replace(/([A-Z])/g," $1").toLowerCase();
+  const card = e.t.startsWith("Vocab:") ? "a value from" : (CARD[e.card] || e.card);
+  const otherBtn = e.other.startsWith("Vocab:") ? `<b>${esc(nameOf(e.other))}</b>` : `<button class="lnk" data-go="${e.other}">${esc(nameOf(e.other))}</button>`;
+  const subjH = outgoing ? `<b>${esc(subj)}</b>` : otherBtn, objH = outgoing ? otherBtn : `<b>${esc(obj)}</b>`;
+  const cardTxt = e.t.startsWith("Vocab:") ? "" : `${esc(card)} `;
+  return `<li data-key="${ekey(e)}" tabindex="0"><span class="kbar" style="background:${KIND[e.k][1]}"></span><span>Each ${subjH} <span class="verb" style="--kc:${KIND[e.k][1]}">${esc(verb)}</span> ${outgoing?cardTxt:""}${objH}.${e.via?` <span class="via">inherited from ${esc(byId[e.via].l)}</span>`:""}${e.n?` <span class="note">${esc(e.n)}</span>`:""}</span></li>`;
+}
+function explain(){
+  const box=document.getElementById("explain");
+  if(!sel){
+    box.innerHTML=`<h3>How to read the map</h3>
+     <p>Select a class to see its relationships drawn on the map and written out here as sentences. Hover a sentence to light up that relationship.</p>
+     <p><b>Network view</b> shows the whole model; <b>Focus view</b> lines up one class's relationships so every label has its own row.</p>
+     <div class="legend-v">${Object.values(KIND).map(([n,c])=>`<span><i style="border-color:${c}"></i>${n}</span>`).join("")}<span><i class="dash"></i>Data not yet available</span></div>
+     <p class="muted">Suggested walk-through: Regulatory Alert → Regulatory Change → Regulatory Obligation → Control Instance → Library Control.</p>`;
+    return;
+  }
+  const c=byId[sel], {out,inn}=edgesFor(sel, view==="focus"?document.getElementById("inh").checked:false);
+  box.innerHTML=`<div class="ex-head"><span class="dot" style="background:${D.modules[c.m].c}"></span><span class="muted">${esc(D.modules[c.m].n)}</span>${pill(c.status)}</div>
+   <h3>${esc(c.l)}</h3><p>${esc(c.d)}</p>
+   <p class="muted">Source: ${esc(c.src)}${c.parent&&c.parent!=="Entity"?` · a kind of ${esc(byId[c.parent].l)}`:""}${c.cqs.length?` · answers ${esc(c.cqs.join(", "))}`:""}</p>
+   <h4>What it connects to <span class="count">${out.length}</span></h4><ul class="sent">${out.map(e=>sentence(e,true)).join("")||"<li class=muted>None</li>"}</ul>
+   <h4>What connects to it <span class="count">${inn.length}</span></h4><ul class="sent">${inn.map(e=>sentence(e,false)).join("")||"<li class=muted>None</li>"}</ul>
+   ${view==="network"?`<p class="muted">Inherited relationships appear in Focus view.</p>`:""}`;
+  box.querySelectorAll(".lnk").forEach(b=>b.onclick=()=>focus(b.dataset.go));
+  box.querySelectorAll("li[data-key]").forEach(li=>{const k=li.dataset.key;
+    li.onmouseenter=li.onfocus=()=>hl(k); li.onmouseleave=li.onblur=()=>hl(null)});
+}
+function hl(key){
+  const s=document.getElementById("svg");
+  s.querySelectorAll(".sel-edge").forEach(p=>{const on=!key||p.dataset.key===key;p.setAttribute("opacity",on?1:.15);p.setAttribute("stroke-width",key&&on?4:(s.classList.contains("fit")?1.6:2.4))});
+  s.querySelectorAll(".lbl").forEach(l=>{const on=!key||l.dataset.key===key;l.setAttribute("opacity",on?1:.25);l.classList.toggle("lit",!!key&&on)});
+  document.querySelectorAll("#explain li[data-key]").forEach(li=>li.classList.toggle("lit",li.dataset.key===key));
+}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&sel&&!document.getElementById("p-map").hidden){trail.pop();sel=trail.at(-1)||null;drawMap()}});
+
+/* ---------- competency questions ---------- */
+document.getElementById("p-cq").innerHTML = `
+<p>${answered} of ${D.proof.cq.length} questions return the right answer on the EU AI Act sample graph. Each one is a SPARQL query stored in the ontology itself, so the questions are the acceptance tests.</p>
+${D.proof.cq.map(c=>`<div class="cq"><header><b>${c.id}</b>${pill(c.priority)}<span class="muted">${esc(c.persona)}</span></header>
+ <h3>${esc(c.q)}</h3>
+ <div class="tablewrap"><table><tr>${c.vars.map(v=>`<th>${esc(v)}</th>`).join("")}</tr>${c.rows.map(r=>`<tr>${r.map(x=>`<td>${esc(x)}</td>`).join("")}</tr>`).join("")}</table></div>
+ <details><summary>Show the SPARQL</summary><pre>${esc(c.sparql)}</pre></details></div>`).join("")}`;
+
+/* ---------- rules ---------- */
+const pr = D.proof;
+const resRow = r => `<div class="res">${pill(r.severity)}<span class="mono">${esc(r.focus)}</span><span>${esc(r.message)}</span></div>`;
+document.getElementById("p-rules").innerHTML = `
+<div class="verdict">
+ <div class="panel"><h3>Clean sample ${pill(pr.clean.conforms?"PASS":"FAIL",pr.clean.conforms?"PASS":"Violation")}</h3>
+  <p class="muted">${pr.clean.violations.length} violations, ${pr.clean.warnings.length} warning.</p>${pr.clean.warnings.map(resRow).join("")}
+  <p class="muted">The warning is a real finding: the human-oversight obligation (Art 14) is affected but nothing covers it, so it surfaces as a gap.</p></div>
+ <div class="panel"><h3>Sample with two planted errors ${pill("BLOCKED","Violation")}</h3>
+  <p class="muted">Adds a golden-style regulation-level link to an unrelated control, and an impact edge drawn from an unreviewed link.</p>${pr.planted.violations.map(resRow).join("")}</div>
+</div>
+<div class="tablewrap"><table><tr><th>Rule</th><th>Profile</th><th>Severity</th><th>Type</th><th>What it enforces</th></tr>
+${D.shapes.map(s=>`<tr><td class="mono">${esc(s.name)}</td><td>${pill(s.profile)}</td><td>${pill(s.severity)}</td><td class="muted">${esc(s.kind)}</td><td>${esc(s.comment)}</td></tr>`).join("")}</table></div>`;
+
+/* ---------- classes / relationships ---------- */
+function tableTab(id, cols, rows, ph){
+  const el=document.getElementById(id);
+  el.innerHTML=`<input type="search" id="${id}-q" placeholder="${ph}" aria-label="${ph}"><div class="tablewrap"><table id="${id}-t"></table></div>`;
+  const render=q=>{q=q.toLowerCase();document.getElementById(id+"-t").innerHTML=`<tr>${cols.map(c=>`<th>${c}</th>`).join("")}</tr>`+rows.filter(r=>r.text.toLowerCase().includes(q)).map(r=>r.html).join("")};
+  render(""); document.getElementById(id+"-q").oninput=e=>render(e.target.value);
+}
+tableTab("p-classes",["Class","Module","Source","Data","Definition"],
+  D.classes.map(c=>({text:JSON.stringify(c),html:`<tr><td><b>${esc(c.l)}</b><div class="mono muted">rc:${c.id}${c.parent?" ⊂ "+c.parent:""}</div></td><td><span class="dot" style="display:inline-block;background:${D.modules[c.m].c}"></span> ${esc(D.modules[c.m].n)}</td><td class="muted">${esc(c.src)}</td><td>${pill(c.status)}</td><td>${esc(c.d)}</td></tr>`})),"Search classes");
+tableTab("p-rels",["From","Relationship","To","Card.","Kind"],
+  D.rels.map(r=>({text:JSON.stringify(r),html:`<tr><td>${esc(r.f)}</td><td><b class="mono">${esc(r.r)}</b>${r.inv?`<div class="muted mono">inverse: ${esc(r.inv)}</div>`:""}</td><td>${esc(r.t.replace("Vocab:","vocab: "))}</td><td class="num">${r.card}</td><td><span class="dot" style="display:inline-block;background:${KIND[r.k][1]}"></span> ${KIND[r.k][0]}</td></tr>`})),"Search relationships");
+
+/* ---------- changes ---------- */
+document.getElementById("p-changes").innerHTML = `
+<div class="tablewrap"><table><tr><th>Change</th><th>Detail</th></tr>${D.changes.map(([k,t])=>`<tr><td>${pill(k,k==="Added"?"AVAILABLE":k==="Changed"?"PARTIAL":"DERIVED")}</td><td>${esc(t)}</td></tr>`).join("")}</table></div>
+<div class="panel"><h3>Controlled vocabularies</h3><div class="tablewrap"><table><tr><th>Scheme</th><th>Meaning</th><th>Terms</th></tr>${Object.entries(D.vocabs).map(([k,v])=>`<tr><td class="mono">rcv:${k}</td><td>${esc(v.d)}</td><td class="mono muted">${v.m.join(" · ")}</td></tr>`).join("")}</table></div></div>`;
+
+/* ---------- graph & AI: architecture, Neo4j mapping, ask-the-graph demo ---------- */
+const CQX = Object.fromEntries(D.proof.cq.map(c=>[c.id,c]));
+const listing = a => a.length<=1 ? (a[0]||"") : a.slice(0,-1).join(", ")+" and "+a.at(-1);
+const ANSWER = {
+ CQ01:r=>`This alert changes ${r.length} obligations: ${listing(r.map(x=>x[1]))}.`,
+ CQ02:r=>`The alert is linked to ${r.length} regulation summaries, each confirmed by an SME: ${listing(r.map(x=>`${x[0]} (relevance ${x[1]}, confidence ${x[2]})`))}.`,
+ CQ03:r=>`${r.length} control is impacted: ${listing(r.map(x=>`${x[0]}, an instance of library control ${x[1]}`))}. Two further candidate controls are waiting for SME review and are not counted.`,
+ CQ04:r=>`${listing(r.map(x=>`"${x[0]}" (${x[1]})`))} ${r.length>1?"are":"is"} the library risks affected.`,
+ CQ05:r=>r.length?`${r.length} affected obligation has no control and no policy requirement: ${listing(r.map(x=>`${x[0]}, "${x[1]}"`))}. That is a coverage gap.`:"Every affected obligation is covered.",
+ CQ06:r=>r.map(x=>`${x[0]} applies ${x[1]?`only "${x[1]}"`:""}${x[2]?`, with the exception "${x[2]}"`:""}.`).join(" "),
+ CQ07:r=>`In scope: ${listing([...new Set(r.map(x=>x[0]))])}, across ${listing([...new Set(r.map(x=>x[1]))])}.`,
+ CQ08:r=>`All ${r.length} affected obligations carry a ${r[0][1].toLowerCase()} of ${r[0][2]}. Confirm the date; it may change under EU proposals.`,
+ CQ09:r=>r.map(x=>`${x[0]} is implemented by ${x[2]} in the ${x[1]}.`).join(" ")+" The other affected obligations have no implementing policy requirement.",
+ CQ10:r=>r.map(x=>`${x[0]} has ${x[1].toLowerCase()} coverage; remediation: ${x[2]}.`).join(" "),
+ CQ11:r=>`Blast radius: ${r[0][0]} obligations, ${r[0][1]} control, ${r[0][2]} policy requirement, ${r[0][3]} legal entity and ${r[0][4]} businesses.`,
+ CQ12:r=>r.map(x=>`${x[0]} was issued by the ${x[1]} and applies in the ${x[2]}.`).join(" "),
+ CQ13:r=>r.map(x=>`Alert ${x[0]} reports change ${x[1]} and is tagged to ${x[2]}.`).join(" "),
+ CQ14:r=>r.length?`${listing(r.map(x=>`${x[0]} already has an open issue: "${x[1]}"`))}.`:"No impacted control has an open issue.",
+ CQ15:r=>`${listing(r.map(x=>`${x[0]} is owned by ${x[1]}`))}. Sign-off sits with ${r[0][2]}.`,
+ CQ16:r=>r.map(x=>`${x[0]} rests on ${x[1]}${x[2]?` (defines "${x[2]}")`:""}.`).join(" "),
+ CQ17:r=>r.map(x=>`${x[0]} is met by the step "${x[1]}", performed by the ${x[2]} in the ${x[3]}.`).join(" "),
+ CQ18:r=>`The link rests on two quotes. ${r.map(x=>`From the ${x[0]==="SUBJECT"?"change":"control"}: "${x[1]}".`).join(" ")} Produced by ${r[0][2]}, prompt ${r[0][3]}.`,
+ CQ19:r=>`${r.length} links are waiting for SME review: ${listing(r.map(x=>`${x[0]} (relevance ${x[1]})`))}.`,
+ CQ20:r=>r.map(x=>`Run ${x[0]}: ${x[1]} links reviewed, ${x[2]} agreed with by the SME.`).join(" "),
+};
+const KEYS = {
+ CQ01:"obligation obligations change changes affected affect alert rob which",CQ02:"summary summaries rsm linked confidence confirmed score",
+ CQ03:"control controls impacted impact library l1c 1c",CQ04:"risk risks library taxonomy area",CQ05:"gap gaps uncovered coverage missing no control policy",
+ CQ06:"condition conditions exception exceptions exemption apply when",CQ07:"entity entities business businesses scope legal lob in-scope where",
+ CQ08:"when deadline date comply compliance timeline by",CQ09:"policy policies requirement gpps implement implements",CQ10:"findings finding remediation remediate action fix",
+ CQ11:"blast radius footprint how big size scale count",CQ12:"regulator issued jurisdiction who issued",CQ13:"alerts arrived risk area my",
+ CQ14:"issue issues open failed test tests already",CQ15:"owner owners own owns owned who sign signoff sign-off accountable responsible impacted control controls",CQ16:"provision article articles defined term definition",
+ CQ17:"procedure step steps day to day how met system role operate",CQ18:"why evidence quote explain model run justify proof control scope linked",
+ CQ19:"review queue waiting pending sme unreviewed",CQ20:"accuracy perform performance agree agreement model ai human",
+};
+const STOP=new Set("the a an of to is are in on for and or does do this that what which how with by be it its my our".split(" "));
+function route(q){
+  const toks=q.toLowerCase().replace(/[^a-z0-9\s-]/g," ").split(/\s+/).filter(t=>t&&!STOP.has(t));
+  const sc=Object.entries(KEYS).map(([id,k])=>{const ks=k.split(" ");let s=0;toks.forEach(t=>{if(ks.includes(t))s+=2;else if(ks.some(x=>x.startsWith(t)||t.startsWith(x)))s+=1});return [id,s]}).sort((a,b)=>b[1]-a[1]);
+  return sc;
+}
+const PRIMARY={CQ01:"RegulatoryObligation",CQ02:"LinkAssertion",CQ03:"Control",CQ04:"LibraryRisk",CQ05:"Gap",CQ06:"Condition",CQ07:"ApplicabilityScope",CQ08:"TemporalConstraint",CQ09:"PolicyRequirement",CQ10:"Gap",CQ11:"BlastRadius",CQ12:"Regulation",CQ13:"RegulatoryAlert",CQ14:"ControlIssue",CQ15:"Actor",CQ16:"Provision",CQ17:"ProcedureStep",CQ18:"EvidenceOccurrence",CQ19:"LinkAssertion",CQ20:"ModelRun"};
+
+document.getElementById("p-graph").innerHTML = `
+<div class="panel"><span class="eyebrow">Where this goes next</span>
+ <h2>One ontology drives the graph, the questions and the answers</h2>
+ <p>The ontology is the schema of a Neo4j knowledge graph. Risk Stewards explore the graph visually, and ask questions in plain language; a GraphRAG service answers only from what the graph holds and shows the path it used.</p></div>
+<div class="flow" aria-label="Architecture from source systems to the steward">
+ <div class="fstep"><span class="eyebrow">1 · Sources</span><b>Systems of record</b><span>Rapid2, RegMap, Helios, US_Risk / RTCL, GPPS</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">2 · Build</span><b>Load and AI linkage</b><span>Curated lineage, LLM link assertions with evidence</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep hub"><span class="eyebrow">3 · Gate</span><b>Ontology + rules</b><span>18 validation rules run before anything is written</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">4 · Store</span><b>Neo4j knowledge graph</b><span>Labels and relationships from the ontology; vector and full-text indexes</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">5 · Reason</span><b>GraphRAG service</b><span>Question → Cypher → sub-graph → cited answer</span></div>
+ <div class="farrow" aria-hidden="true">→</div>
+ <div class="fstep"><span class="eyebrow">6 · Use</span><b>Steward workspace</b><span>Ask, explore in Neo4j Bloom, review queue</span></div>
+</div>
+<p class="muted">Feedback loop: every SME decision in the review queue is written back as a validation on its link assertion, so the graph and the benchmark improve with use.</p>
+
+<div class="panel ask">
+ <h2>Ask the graph</h2>
+ <p class="muted">Demo on the EU AI Act sample graph. Questions are routed to the matching graph query; in production an LLM on the GenAI gateway does the routing and writes the final sentence.</p>
+ <form id="askf" class="askrow"><label for="q" class="vh">Your question</label><input id="q" type="search" autocomplete="off" placeholder="e.g. Which obligations does this alert change?"><button type="submit">Ask</button></form>
+ <div class="chips" id="sugg"></div>
+ <ol class="steps" id="steps">
+  <li data-s="1"><b>Understand</b><span>match the question to a known pattern</span></li>
+  <li data-s="2"><b>Retrieve</b><span>run Cypher on the graph</span></li>
+  <li data-s="3"><b>Ground</b><span>collect nodes and evidence</span></li>
+  <li data-s="4"><b>Answer</b><span>write it, citing what was used</span></li></ol>
+ <div id="ans" class="ans" aria-live="polite"></div>
+</div>
+
+<div class="grid2">
+ <div class="panel"><h3>How the ontology becomes a Neo4j graph</h3>
+  <div class="tablewrap"><table>
+   <tr><th>Ontology</th><th>Neo4j</th></tr>
+   <tr><td>Class</td><td>Node label, plus its parent labels and <span class="mono">:Entity</span> (a Regulatory Obligation is also a <span class="mono">:Requirement</span>)</td></tr>
+   <tr><td>Relationship</td><td>Relationship type in UPPER_SNAKE: <span class="mono">derivedFromSummary</span> → <span class="mono">DERIVED_FROM_SUMMARY</span></td></tr>
+   <tr><td>Controlled vocabulary</td><td>Node property with allowed values: <span class="mono">smeStatus: 'CONFIRMED'</span></td></tr>
+   <tr><td>Link Assertion</td><td>A node; the impact shortcut is written only once it is confirmed</td></tr>
+   <tr><td>Dates and validity</td><td>Native <span class="mono">date</span> properties for bitemporal replay</td></tr>
+   <tr><td>Text</td><td>Embeddings in vector indexes for GraphRAG entity lookup</td></tr>
+  </table></div></div>
+ <div class="panel"><h3>Guardrails for answers</h3><ul>
+  <li>Answers come only from graph paths; no path means no answer, and the steward is told so.</li>
+  <li>Every answer cites the nodes it used and shows its Cypher.</li>
+  <li>Only SME-confirmed links count as impact unless the steward asks to include pending ones.</li>
+  <li>Question, query, nodes and answer are logged for model risk review.</li>
+  <li>The 20 steward questions are the GraphRAG test set and must keep passing.</li></ul></div>
+</div>
+<details class="panel"><summary>All relationship types in Neo4j (${Object.keys(D.relmap).length})</summary>
+ <div class="tablewrap"><table><tr><th>Ontology relationship</th><th>Neo4j</th></tr>${Object.entries(D.relmap).sort().map(([k,v])=>`<tr><td class="mono">${esc(k)}</td><td class="mono">${esc(v)}</td></tr>`).join("")}</table></div></details>`;
+
+const SUG=["Which obligations does this alert change?","Where are the gaps?","Which controls are impacted?","Who owns the impacted controls?","Why is this control in scope?","By when must we comply?","What is the weather tomorrow?"];
+document.getElementById("sugg").innerHTML=SUG.map(s=>`<button type="button" class="chip">${esc(s)}</button>`).join("");
+document.querySelectorAll("#sugg .chip").forEach(b=>b.onclick=()=>{document.getElementById("q").value=b.textContent;ask(b.textContent)});
+document.getElementById("askf").onsubmit=e=>{e.preventDefault();const q=document.getElementById("q").value.trim();if(q)ask(q)};
+let askTimer=[];
+function ask(q){
+  askTimer.forEach(clearTimeout); askTimer=[];
+  const steps=[...document.querySelectorAll("#steps li")]; steps.forEach(s=>s.className="");
+  const out=document.getElementById("ans"); out.innerHTML="";
+  const ranked=route(q), [best,score]=ranked[0];
+  const delay=reduce?0:260;
+  const go=(i,f)=>askTimer.push(setTimeout(f,delay*i));
+  go(0,()=>steps[0].className="on");
+  if(score<2){
+    go(1,()=>{steps[0].className="done";out.innerHTML=`<div class="nores"><b>No grounded answer.</b> The graph has no path that answers this, so nothing is made up. Closest questions it can answer:<ul>${ranked.slice(0,3).filter(r=>r[1]>0).map(r=>`<li><button class="lnk" data-q="${esc(CQX[r[0]].q)}">${esc(CQX[r[0]].q)}</button></li>`).join("")||"<li>Try one of the suggestions above.</li>"}</ul></div>`;
+      out.querySelectorAll("[data-q]").forEach(b=>b.onclick=()=>{document.getElementById("q").value=b.dataset.q;ask(b.dataset.q)})});
+    return;
+  }
+  const cq=CQX[best], rows=cq.rows;
+  go(1,()=>{steps[0].className="done";steps[1].className="on"});
+  go(2,()=>{steps[1].className="done";steps[2].className="on"});
+  go(3,()=>{steps[2].className="done";steps[3].className="on"});
+  go(4,()=>{steps[3].className="done";
+    const cited=[...new Set(rows.flat().filter(v=>/^(ROB|RSM|LA|CTRL|1C|L1C|LR|PR|GAP|R2|CHG|RUN|IA)[-0-9A-Z]*$/i.test(v)||/^(ROB|RSM)\d$/.test(v)))].slice(0,10);
+    const path=CQX[best] && D.cqClasses[best] ? D.cqClasses[best].map(id=>byId[id]?byId[id].l:id).join(" → ") : "";
+    out.innerHTML=`<div class="ares">
+      <p class="answer">${esc(ANSWER[best](rows))}</p>
+      <div class="meta"><span class="pill p-MUST">${best}</span><span class="muted">Matched: ${esc(cq.q)}</span></div>
+      ${cited.length?`<div class="cite"><span class="muted">Grounded in</span>${cited.map(c=>`<span class="tag">${esc(c)}</span>`).join("")}</div>`:""}
+      <p class="muted"><b>Path used:</b> ${esc(path)}</p>
+      <div class="arow"><button class="btn2" id="showmap">Show in map</button></div>
+      <details><summary>Cypher run on Neo4j</summary><pre>${esc(D.cypher[best])}</pre></details>
+      <details><summary>Rows returned (${rows.length})</summary><div class="tablewrap"><table><tr>${cq.vars.map(v=>`<th>${esc(v)}</th>`).join("")}</tr>${rows.map(r=>`<tr>${r.map(x=>`<td>${esc(x)}</td>`).join("")}</tr>`).join("")}</table></div></details></div>`;
+    document.getElementById("showmap").onclick=()=>{sel=null;trail=[];view="focus";select("map");focus(PRIMARY[best])};
+  });
+}
+
+let start="overview"; try{const s=localStorage.getItem("rc2tab"); if(s&&TABS.some(t=>t[0]===s)) start=s}catch(e){}
+const h=location.hash.slice(1); if(TABS.some(t=>t[0]===h)) start=h;
+select(start);
+</script>
+
+<style>
+/* =====================================================================
+   v2.3 LIVE DATA ADD-ON - styles (uses the page's own colour tokens,
+   so light and dark themes both work)
+   ===================================================================== */
+.lv-load{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.lv-badge text{font:600 10.5px var(--mono)}
+.lv-off{opacity:.2!important;pointer-events:none}
+
+/* ---- use the full width of wide screens ---- */
+.wrap{max-width:var(--pagew,100%)!important;width:100%!important;padding-inline:clamp(12px,1.5vw,32px)!important}
+.lv-size{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.lv-size .zoom button{min-width:34px}
+.mapgrid .mapwrap,#lv-wrap{height:calc(100vh - 140px)!important;min-height:640px}
+
+/* ---- live graph ---- */
+#lv-svg{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+#lv-svg.drag{cursor:grabbing}
+.lv-node{cursor:pointer}
+.lv-node rect.box{fill:var(--surface);stroke:var(--line);stroke-width:1.3}
+.lv-node:hover rect.box{stroke:var(--fg)}
+.lv-node.sel rect.box{stroke:var(--accent);stroke-width:2.6}
+.lv-node.gap rect.box{stroke:var(--bad);stroke-dasharray:4 3;fill:var(--bad-soft)}
+.lv-node text{font:12px var(--sans);fill:var(--fg);pointer-events:none}
+.lv-dim{opacity:.13}
+.lv-edge{fill:none;stroke-width:1.6}
+.lv-edge.structure{stroke:var(--lineage);stroke-dasharray:3 3;opacity:.85}
+.lv-edge.structure-ai{stroke:var(--lineage)}
+.lv-edge.gap{stroke:var(--bad);stroke-dasharray:6 4}
+.lv-edge.impact{stroke:var(--muted)}
+.lv-edge.context{stroke:var(--context)}
+.lv-edge.derived{stroke:#8a6d00;stroke-dasharray:2 4;stroke-width:2}
+.pn-cr{display:inline-block;background:var(--bad);color:#fff;font-weight:700;font-size:11px;padding:1px 7px;border-radius:9px}
+.pn-rr{display:inline-block;background:var(--warn);color:#000;font-weight:700;font-size:11px;padding:1px 7px;border-radius:9px}
+.lv-elab.context rect{stroke:var(--context)}
+/* intake journey strip */
+.jr{display:flex;align-items:stretch;gap:6px;flex-wrap:wrap}
+.jr .js{flex:1 1 150px;min-width:0;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--surface);display:flex;flex-direction:column;gap:2px;cursor:pointer;font-size:12.5px;color:var(--muted)}
+.jr .js b{color:var(--fg);font-size:13.5px}
+.jr .js .v{font:600 12.5px var(--mono);color:var(--fg)}
+.jr .js.on{border-color:var(--accent);background:var(--accent-soft)}
+.jr .js .k{font:700 10.5px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--kc,var(--muted))}
+.jr .ja{align-self:center;color:var(--muted)}
+.pn-kv{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;font-size:13px}
+.pn-kv>span:nth-child(odd){color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.pn-yes{font:700 12px var(--sans);padding:2px 10px;border-radius:999px;background:var(--ok-soft);color:var(--ok)}
+.pn-no{font:700 12px var(--sans);padding:2px 10px;border-radius:999px;background:var(--bad-soft);color:var(--bad)}
+.pn-cat{font:700 12px var(--mono);padding:2px 10px;border-radius:999px;background:var(--sunk);color:var(--fg);border:1px solid var(--line)}
+.lv-edge.impact.v-agree{stroke:var(--ok)}
+.lv-edge.impact.v-disagree{stroke:var(--bad)}
+.lv-edge.impact.v-uncertain{stroke:var(--warn)}
+.lv-edge.hl{stroke-width:3.4}
+.lv-hit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer}
+.lv-elab{cursor:pointer}
+.lv-elab rect{fill:var(--surface);stroke:var(--line)}
+.lv-elab text{font:600 10px var(--mono);fill:var(--fg);pointer-events:none}
+.lv-elab.impact rect{stroke:var(--accent)}
+.lv-elab.gap rect{stroke:var(--bad)}
+.lv-elab:hover rect{stroke:var(--fg)}
+.lv-lane{fill:var(--sunk);stroke:var(--line)}
+.lv-lane-t{font:700 12px var(--sans);letter-spacing:.06em;fill:var(--muted)}
+.lv-col-t{font:600 10.5px var(--sans);letter-spacing:.06em;fill:var(--muted)}
+.lv-select{font:14px var(--sans);padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--fg);max-width:440px}
+.lv-stats .stat b{font-size:22px}
+.lv-stats .stat.wide{grid-column:span 2}
+.lv-hint{font-size:13px;color:var(--muted)}
+.lv-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lv-tools button:disabled{opacity:.45;cursor:not-allowed}
+@keyframes lvIn{from{opacity:0}to{opacity:1}}
+.lv-new{animation:lvIn .5s ease both}
+.lv-more{cursor:pointer}
+.lv-more rect{fill:var(--accent)}
+.lv-more.done rect{fill:var(--sunk);stroke:var(--line)}
+.lv-more text{font:700 10.5px var(--mono);fill:#fff;pointer-events:none}
+.lv-more.done text{fill:var(--muted)}
+
+/* ---- side panel: structured cards ---- */
+#lv-ex>*{flex-shrink:0}
+.pn-sec{font:700 11.5px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:8px}
+.pn-sec .n{font:600 11px var(--mono);background:var(--fg);color:var(--bg);border-radius:999px;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center}
+.pn-card{border:1px solid var(--line);border-left:4px solid var(--c,var(--line));border-radius:8px;padding:10px 12px;background:var(--surface);display:flex;flex-direction:column;gap:6px}
+.pn-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pn-chip{font:600 11px var(--sans);color:#fff;border-radius:999px;padding:2px 8px;background:var(--c,var(--muted))}
+.pn-title{font-weight:600;font-size:14.5px}
+.pn-text{white-space:pre-wrap;font-size:13.5px;line-height:1.55;background:var(--sunk);padding:8px 10px;border-radius:6px}
+.pn-text.clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--lines,6);overflow:hidden;padding-bottom:0;border-bottom:8px solid var(--sunk)}
+.pn-more{align-self:flex-start;font:600 12px var(--sans);color:var(--accent);background:none;border:0;padding:0;cursor:pointer}
+.pn-rel{display:flex;flex-direction:column;align-items:center;gap:2px;padding:2px 0}
+.pn-rel .arrow{color:var(--muted);font-size:16px;line-height:1}
+.pn-rel .verb{font:700 13px var(--mono);border:1.5px solid var(--kc,var(--line));border-radius:999px;padding:3px 12px;background:var(--surface)}
+.pn-rel small{font-size:11.5px;color:var(--muted)}
+.pn-evi{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.pn-vrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.pn-verdict{font:700 12.5px var(--sans);border-radius:6px;padding:4px 10px;background:var(--sunk);color:var(--fg)}
+.pn-verdict.agree{background:var(--ok-soft);color:var(--ok)}
+.pn-verdict.disagree{background:var(--bad-soft);color:var(--bad)}
+.pn-verdict.uncertain{background:var(--warn-soft);color:var(--warn)}
+.pn-meter{display:inline-flex;align-items:center;gap:6px}
+.pn-meter i{display:inline-block;width:70px;height:6px;border-radius:3px;background:var(--sunk);overflow:hidden;position:relative}
+.pn-meter i b{position:absolute;left:0;top:0;bottom:0;background:var(--fg)}
+.pn-q{font-size:13.5px;line-height:1.5;padding:7px 10px;border-radius:6px;background:var(--sunk);border-left:3px solid var(--qc)}
+.pn-ql{display:block;font:700 11px var(--sans);letter-spacing:.05em;text-transform:uppercase;color:var(--qc);margin-bottom:2px}
+.pn-evi details summary{font-weight:600;color:var(--fg)}
+.pn-evi details p{font-size:13.5px;margin-top:6px}
+.pn-links{display:flex;flex-direction:column;gap:4px}
+.pn-link{display:grid;grid-template-columns:auto auto 1fr;gap:8px;align-items:center;font-size:13px;padding:5px 6px;border-radius:6px}
+.pn-link:hover{background:var(--sunk)}
+.pn-dir{color:var(--muted);font:600 11px var(--sans);text-transform:uppercase;width:38px}
+.pn-verb{font:600 11.5px var(--mono);border:1px solid var(--kc,var(--line));border-radius:999px;padding:1px 8px;white-space:nowrap}
+.pn-go{justify-self:start;font:500 13px var(--sans);background:var(--surface);color:var(--fg);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:6px;padding:3px 8px;cursor:pointer;text-align:left}
+.pn-go:hover{border-color:var(--fg)}
+.pn-ev{font:600 11.5px var(--sans);color:var(--accent);background:none;border:0;cursor:pointer;padding:0;margin-left:6px;text-decoration:underline}
+.pn-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.pn-group{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
+.pn-group h5{margin:0;font-size:13px;display:flex;align-items:center;gap:8px}
+.pn-chips{display:flex;flex-wrap:wrap;gap:4px}
+.pn-onto{font-size:13px;line-height:1.5;text-align:center;max-width:95%;border:1px dashed var(--line);border-radius:8px;padding:6px 10px;margin:4px 0}
+.pn-onto .pn-ql{display:block}
+.pn-note{font-size:13px;color:var(--muted);border:1px dashed var(--line);border-radius:8px;padding:8px 10px}
+</style>
+
+<script>
+/* =====================================================================
+   v2.3 LIVE DATA ADD-ON
+   ---------------------------------------------------------------------
+   Loads ontology_demo_data.json (or all of its split parts) from the
+   user's computer. Nothing leaves the browser.
+
+   Two layers are kept apart, exactly as in the ontology:
+     STRUCTURE : how artefacts relate, regardless of any alert
+                 RGL has summary RSM, RSM decomposes to ROB,
+                 ROB implemented by Policy / operationalised by Procedure,
+                 LR mitigated by L1C, L1C has instance 1C.
+     IMPACT    : what one alert touches (AI link assertions with
+                 evidence and a judge verdict):
+                 Alert impacts RGL / RSM / ROB / LR / L1C / 1C.
+     GAP       : rule-based findings on the structure.
+   The ontology model above is untouched.
+   ===================================================================== */
+(function () {
+
+  const $ = (id) => document.getElementById(id);
+  const h = (s) => esc(Array.isArray(s) ? s.join(" | ") : s);       // page's esc()
+  const blank = (v) => v === null || v === undefined || v === "" || String(v).toLowerCase() === "nan";
+  const short = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+
+
+  /* -------------------------------------------------------------------
+     1. SAMPLE TYPES -> ONTOLOGY CLASSES, RELATIONS -> ONTOLOGY VERBS
+     ------------------------------------------------------------------- */
+  const TYPE_ALIAS = { IC: "1C", LIC: "L1C" };
+  const T = {
+    Alert:     { cls: "RegulatoryAlert",      lane: "mid", col: 0 },
+    RGL:       { cls: "Regulation",           lane: "reg", col: 1 },
+    RSM:       { cls: "RegulatorySummary",    lane: "reg", col: 2 },
+    ROB:       { cls: "RegulatoryObligation", lane: "reg", col: 3 },
+    Policy:    { cls: "Policy",               lane: "reg", col: 4 },
+    Procedure: { cls: "Procedure",            lane: "reg", col: 4 },
+    LR:        { cls: "LibraryRisk",          lane: "ctl", col: 1 },
+    L1C:       { cls: "LibraryControl",       lane: "ctl", col: 2 },
+    "1C":      { cls: "Control",              lane: "ctl", col: 3 },
+    Gap:       { cls: "Gap",                  lane: "parent", col: 5 },
+    // v2.4 intake context (ML classifiers at alert intake)
+    Jurisdiction: { cls: "Jurisdiction",      lane: "ctx", col: 1 },
+    Steward:      { cls: "Role",              lane: "ctx", col: 1 },
+    Theme:        { cls: "RegulatoryTheme",   lane: "ctx", col: 1 },
+    Taxonomy:     { cls: "RiskTaxonomyNode",  lane: "ctx", col: 1 },
+    LOB:          { cls: "BusinessUnit",      lane: "ctx", col: 1 },
+    LE:           { cls: "LegalEntity",       lane: "ctx", col: 1 },
+  };
+  const CTX_TYPES = new Set(["Jurisdiction", "Steward", "Theme", "Taxonomy", "LOB", "LE"]);
+  const colOf = (n) => n.col ?? (T[n.type] || {}).col ?? 5;
+
+  /* -------------------------------------------------------------------
+     1b. INTAKE DATA for the demo alerts (applicability, category and the
+         ML contextualisation tags). An alert node can also carry its own
+         "intake" object in the JSON; that wins over this table.
+     ------------------------------------------------------------------- */
+  const INTAKE = {
+    "133999": { ref: "RD-00000133999", applicable: "Yes", category: "RD",
+      title: "Pennsylvania Amends Insurance Producer Continuing Education Requirements (SB 1241)",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Insurance",
+      l1: "Regulatory Compliance Risk", l2: "Breach of regulatory duty to clients and other counterparties",
+      l3: "Failure to ensure sales outcomes are appropriate",
+      lob: "Group Insurance", le: "HSBC North America Holdings Inc." },
+    "159982": { ref: "RD-00000159982", applicable: "Yes", category: "RD",
+      title: "Ohio Amends Request for Information Procedures",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Consumer Protection",
+      l1: "Regulatory Compliance Risk", l2: "Breach of regulatory duty to clients and other counterparties",
+      l3: "Failure to protect client assets",
+      lob: "Wealth and Distribution", le: "HSBC North America Holdings Inc." },
+    "119934": { ref: "RD-00000119934", applicable: "Yes", category: "RD",
+      title: "SEC Approves FINRA's Amendments to Maintain Qualification Program",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Licensing, Registration and Permissions",
+      l1: "Regulatory Compliance Risk", l2: "Regulatory Licensing, Permissions & Rules",
+      l3: "Regulatory Compliance Regulatory Reporting Risk",
+      lob: "Wealth and Distribution", le: "HSBC North America Holdings Inc." },
+    "125919": { ref: "RD-00000125919", applicable: "Yes", category: "RD",
+      title: "California Amends Law on Reservist Deferred Compensation",
+      location: "Global/United States", steward: "Regulatory Compliance", theme: "Consumer Protection",
+      l1: "Regulatory Compliance Risk", l2: "Breach of regulatory duty to clients and other counterparties",
+      l3: "Failure to protect client assets",
+      lob: "Wealth and Distribution", le: "HSBC North America Holdings Inc." },
+  };
+  const CATEGORY_TXT = { RD: "Regulatory development", CONSULTATION: "Consultation", NEWS: "News", FINE: "Fine / enforcement" };
+  const tLabel = (t) => (T[t] && byId[T[t].cls]) ? byId[T[t].cls].l : t;
+  const tShort = (t) => ({ Alert: "Alert", RGL: "Regulation", RSM: "Summary", ROB: "Obligation",
+                           Policy: "Policy", Procedure: "Procedure", LR: "Library risk",
+                           L1C: "Library control", "1C": "Control instance", Gap: "Gap",
+                           Jurisdiction: "Jurisdiction", Steward: "Risk steward", Theme: "Theme",
+                           Taxonomy: "Risk taxonomy", LOB: "Line of business", LE: "Legal entity" }[t] || t);
+  const tColor = (t) => (T[t] && byId[T[t].cls]) ? D.modules[byId[T[t].cls].m].c : "var(--muted)";
+
+  /* Every link in the data is mapped to the ontology relationship it
+     instantiates (D.rels, the same list the Map tab draws). Wording on the
+     lines and in the panel comes from the ontology itself.
+       [from class, property, to class, data direction vs ontology direction] */
+  const ONTO = {
+    has_summary:              ["RegulatorySummary",    "partOfRegulation",     "Regulation",           "reverse"],
+    has_obligation:           ["RegulatoryObligation", "derivedFromSummary",   "RegulatorySummary",    "reverse"],
+    implemented_by_policy:    ["PolicyRequirement",    "implementsObligation", "RegulatoryObligation", "reverse"],
+    implemented_by_procedure: ["Requirement",          "governsActivity",      "ProcedureStep",        "forward"],
+    mitigated_by:             ["LibraryRisk",          "mitigatedBy",          "LibraryControl",       "forward"],
+    instantiated_as:          ["Control",              "instanceOf",           "LibraryControl",       "reverse"],
+    has_gap:                  ["Gap",                  "onRequirement",        "Requirement",          "reverse"],
+    impacts_summary:          ["RegulatoryChange",     "affectsSummary",       "RegulatorySummary",    "forward"],
+    impacts_obligation:       ["RegulatoryChange",     "affectsObligation",    "RegulatoryObligation", "forward"],
+    impacts_control_instance: ["RegulatoryChange",     "impactsControl",       "Control",              "forward"],
+    // v2.5 phase 3 / 3b
+    impacts_policy:           ["RegulatoryChange",     "impactsPolicyRequirement", "PolicyRequirement", "forward"],
+    impacts_procedure:        ["RegulatoryChange",     "impactsPolicyRequirement", "PolicyRequirement", "forward"],
+    satisfied_by_control:     ["Control",              "satisfies",            "Requirement",          "reverse"],
+    satisfied_by_instance:    ["Control",              "satisfies",            "Requirement",          "reverse"],
+    implemented_by_policy_via_control: ["PolicyRequirement", "implementsObligation", "RegulatoryObligation", "reverse"],
+    policy_implemented_by_procedure:   ["Procedure",   "implementsPolicy",     "Policy",               "reverse"],
+    // v2.4 intake context
+    in_jurisdiction:          ["RegulatoryAlert",      "inJurisdiction",       "Jurisdiction",         "forward"],
+    broader_jurisdiction:     ["Jurisdiction",         "broaderJurisdiction",  "Jurisdiction",         "forward"],
+    tagged_steward:           ["RegulatoryAlert",      "taggedSteward",        "Role",                 "forward"],
+    has_theme:                ["RegulatoryAlert",      "hasTheme",             "RegulatoryTheme",      "forward"],
+    tagged_risk:              ["RegulatoryAlert",      "taggedRisk",           "RiskTaxonomyNode",     "forward"],
+    broader_risk:             ["RiskTaxonomyNode",     "broaderRisk",          "RiskTaxonomyNode",     "forward"],
+    tagged_business:          ["RegulatoryAlert",      "taggedBusiness",       "BusinessUnit",         "forward"],
+    tagged_legal_entity:      ["RegulatoryAlert",      "taggedLegalEntity",    "LegalEntity",          "forward"],
+  };
+  // Granularity of the LinkAssertion for each impact link (ontology vocab).
+  const GRAN = { impacts_regulation: "RGL", impacts_summary: "RSM", impacts_obligation: "ROB",
+                 impacts_risk: "LR", impacts_control: "L1C", impacts_control_instance: "CONTROL_1C",
+                 impacts_policy: "POLICY", impacts_procedure: "PROCEDURE" };
+
+  const words = (p) => p.replace(/([A-Z])/g, " $1").toLowerCase();
+  const phrase = (p) => (typeof PHRASE !== "undefined" && PHRASE[p]) || words(p);
+
+  // The ontology relationship behind a data relation (or null).
+  function ontoRel(r) {
+    const m = ONTO[r]; if (!m) return null;
+    const rel = D.rels.find((x) => x.f === m[0] && x.r === m[1] && x.t === m[2]);
+    return rel ? { ...rel, dir: m[3] } : null;
+  }
+
+  // relation -> [verb drawn on the line, ontology property]
+  const REL = {
+    impacts_regulation:       ["impacts", "LinkAssertion · RGL"],
+    impacts_summary:          ["impacts", "LinkAssertion · RSM"],
+    impacts_obligation:       ["impacts", "LinkAssertion · ROB"],
+    impacts_risk:             ["impacts", "LinkAssertion · LR"],
+    impacts_control:          ["impacts", "LinkAssertion · L1C"],
+    impacts_control_instance: ["impacts", "LinkAssertion · CONTROL_1C"],
+    has_summary:              ["has summary",        "hasSummary"],
+    has_obligation:           ["decomposes to",      "decomposesTo"],
+    implemented_by_policy:    ["implemented by",     "implementedByPolicy"],
+    implemented_by_procedure: ["operationalised by", "governsActivity"],
+    mitigated_by:             ["mitigated by",       "mitigatedBy"],
+    instantiated_as:          ["has instance",       "hasInstance"],
+    has_gap:                  ["has gap",            "identifiesGap"],
+    impacts_policy:           ["impacts", "LinkAssertion · POLICY"],
+    impacts_procedure:        ["impacts", "LinkAssertion · PROCEDURE"],
+    satisfied_by_control:     ["satisfied by",       "satisfiedBy"],
+    satisfied_by_instance:    ["operated by",        "satisfiedBy"],
+    implemented_by_policy_via_control: ["implemented by (via control)", "implementedByPolicy"],
+    policy_implemented_by_procedure:   ["implemented by", "implementedByProcedure"],
+    policy_maps_control:      ["maps control",       "GPPS objRel CNTRL"],
+  };
+  // Line label = the ontology's own wording, read in the direction of the line.
+  // Short line labels for the intake tags (the gap next to the alert is narrow);
+  // the panel still shows the full ontology property.
+  const SHORT_LABEL = { in_jurisdiction: "location", broader_jurisdiction: "within",
+    tagged_steward: "steward", has_theme: "theme", tagged_risk: "risk tag", broader_risk: "sits under",
+    tagged_business: "business", tagged_legal_entity: "entity",
+    implemented_by_policy_via_control: "policy (via control)", policy_implemented_by_procedure: "procedure",
+    policy_maps_control: "maps control", satisfied_by_instance: "operated by" };
+  function verb(r) {
+    if (SHORT_LABEL[r]) return SHORT_LABEL[r];
+    const o = ontoRel(r);
+    if (o && (o.dir === "forward" || o.inv)) return o.dir === "forward" ? phrase(o.r) : phrase(o.inv);
+    if (GRAN[r]) return "asserts impact";
+    return (REL[r] || [r.replace(/_/g, " ")])[0];
+  }
+  function prop(r) {
+    const o = ontoRel(r);
+    const base = o ? `${o.f} ${o.r} ${o.t}` : "";
+    if (GRAN[r]) return (base ? base + " · " : "") + "LinkAssertion · granularity " + GRAN[r];
+    return base || (REL[r] || ["", ""])[1];
+  }
+  // The ontology sentence, as on the Map tab: "Each X <verb> <card> Y."
+  function ontoSentence(r) {
+    const o = ontoRel(r);
+    if (!o) return GRAN[r]
+      ? `Recorded as a <b>Link Assertion</b> at granularity <span class="tag">${GRAN[r]}</span>. It becomes an impact edge only once CONFIRMED.`
+      : "";
+    const card = (typeof CARD !== "undefined" && CARD[o.card]) || o.card;
+    const col = KIND[o.k] ? KIND[o.k][1] : "var(--line)";
+    return `Each <b>${h(byId[o.f].l)}</b> <span class="pn-verb" style="--kc:${col}">${h(phrase(o.r))}</span> ${h(card)} <b>${h(byId[o.t].l)}</b>.` +
+      (o.n ? ` <span class="muted">${h(o.n.replace(/\.?$/, "."))}</span>` : "") +
+      (GRAN[r] ? ` <span class="muted">Until CONFIRMED it is a Link Assertion (granularity ${GRAN[r]}); the alert reports the change.</span>` : "");
+  }
+
+  // Which layer an edge belongs to.
+  function layerOf(e) {
+    if (e.kind === "DERIVED") return "gap";
+    if (e.kind === "DERIVED_LINK") return "derived";
+    if (e.kind === "CONTEXT") return "context";
+    if (nodeById[e.source].type === "Alert") return "impact";
+    return e.kind === "AI_LINK" ? "structure-ai" : "structure";
+  }
+  const LAYER_TXT = {
+    impact:         ["Impact link", "AI-assessed: this alert touches this record", "var(--accent)"],
+    structure:      ["Ontology structure", "From the system of record (RegMap / Helios)", "var(--lineage)"],
+    "structure-ai": ["Ontology structure", "AI-built link, not alert-specific (obligation → GPPS)", "var(--lineage)"],
+    gap:            ["Gap finding", "Rule: something the structure expects is missing", "var(--bad)"],
+    derived:        ["Derived link", "Rule, no AI: obligation → confirmed control → GPPS policy mapping", "#8a6d00"],
+    context:        ["Intake context", "Tagged at alert intake by an ML classifier (contextualisation)", "var(--context)"],
+  };
+
+  function vClass(v) {
+    const s = String(v || "").toUpperCase();
+    if (s === "AGREE" || s === "CONFIRMED") return "agree";
+    if (s === "DISAGREE" || s === "DISPUTED") return "disagree";
+    if (s === "UNCERTAIN" || s === "NEEDS_SME") return "uncertain";
+    return "";
+  }
+  const vText = (v) => ({ agree: "✓ Judge confirms", disagree: "✗ Judge disputes",
+                          uncertain: "? Judge unsure → SME" }[vClass(v)] || "Not judged");
+
+
+  /* -------------------------------------------------------------------
+     2. STATE
+     ------------------------------------------------------------------- */
+  let DATA = null, nodeById = {}, inE = {}, outE = {};
+  let mapOn = true;                 // live counts on the Map tab
+  let cur = "ALL";                  // alert filter
+  let layer = "both";               // "both" | "structure" | "impact"
+  let mode = "step";                // "step" = reveal on click, "all" = everything
+  let R = new Set();                // revealed records (step mode)
+  let fresh = new Set();            // just revealed -> animate once
+  let KIDS = {}, PARENTS = {};      // drawn children / parents in the current view
+  let selL = null;                  // { kind: "node"|"edge", id }
+  let P = {};                       // node positions
+  let TF = { x: 0, y: 0, k: 1 };    // pan / zoom
+  let lastText = "";                // joined, cleaned JSON text
+
+
+  /* -------------------------------------------------------------------
+     3. HEADER: load, save-as-one-file, status
+     ------------------------------------------------------------------- */
+  document.querySelector("header").insertAdjacentHTML("beforeend", `
+    <div class="lv-load">
+      <button class="ex-toggle" id="lv-loadbtn">Load live data</button>
+      <input type="file" id="lv-file" multiple hidden>
+      <button class="btn2" id="lv-save" hidden title="Save the joined parts as one ontology_demo_data.json">Save as one file</button>
+      <span class="lv-size" title="Page width and size. Remembered on this computer.">
+        Width <span class="zoom"><button id="pw-full" aria-pressed="true">Full</button><button id="pw-1600">Wide</button><button id="pw-1240">Narrow</button></span>
+        Size <span class="zoom"><button id="pz-out" aria-label="Smaller">A−</button><button id="pz-val">100%</button><button id="pz-in" aria-label="Bigger">A+</button></span>
+      </span>
+      <span class="muted" id="lv-status" style="font-size:13px">No sample loaded · the ontology is shown without data</span>
+    </div>`);
+  $("ver").textContent = "v2.4";
+
+  /* ---- Page width + size (saved per computer) ----------------------
+     Width : Full = whole screen, Wide = 1600 px, Narrow = 1240 px.
+     Size  : scales everything (text, boxes, graph) from 60% to 200%.  */
+  const PW = { full: "100%", "1600": "1600px", "1240": "1240px" };
+  let pageW = "full", pageZ = 1;
+  try { pageW = localStorage.getItem("lv-pagew") || "full"; pageZ = Number(localStorage.getItem("lv-pagez")) || 1; } catch (e) {}
+  function applyPage() {
+    document.documentElement.style.setProperty("--pagew", PW[pageW] || "100%");
+    document.body.style.zoom = pageZ;
+    ["full", "1600", "1240"].forEach((k) => $("pw-" + k).setAttribute("aria-pressed", k === pageW));
+    $("pz-val").textContent = Math.round(pageZ * 100) + "%";
+    try { localStorage.setItem("lv-pagew", pageW); localStorage.setItem("lv-pagez", pageZ); } catch (e) {}
+    setTimeout(() => {
+      if (!$("p-map").hidden) drawMap();
+      if (typeof fit === "function") fit();
+    }, 60);
+  }
+  ["full", "1600", "1240"].forEach((k) => { $("pw-" + k).onclick = () => { pageW = k; applyPage(); }; });
+  $("pz-in").onclick  = () => { pageZ = Math.min(2, +(pageZ + 0.1).toFixed(2)); applyPage(); };
+  $("pz-out").onclick = () => { pageZ = Math.max(0.6, +(pageZ - 0.1).toFixed(2)); applyPage(); };
+  $("pz-val").onclick = () => { pageZ = 1; applyPage(); };
+
+  $("lv-loadbtn").onclick = () => $("lv-file").click();
+  $("lv-file").onchange = (e) => readFiles(e.target.files);
+  document.addEventListener("dragover", (e) => e.preventDefault());
+  document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files.length) readFiles(e.dataTransfer.files);
+  });
+
+  // One JSON file, or ALL split parts selected together (joined in name order).
+  function readFiles(list) {
+    const files = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    if (!files.length) return;
+    Promise.all(files.map((f) => f.text())).then((texts) => {
+      // Python writes missing numbers as bare NaN / Infinity: make them null.
+      const clean = texts.join("").replace(/([:\[,]\s*)(NaN|-?Infinity)(?=\s*[,\]}])/g, "$1null");
+      try {
+        load(JSON.parse(clean));
+        lastText = clean;
+        $("lv-save").hidden = files.length < 2;
+      } catch (err) {
+        alert("Could not read the data.\n\nIf you loaded split parts, select ALL parts together.\n\n" + err.message);
+      }
+    });
+  }
+
+  $("lv-save").onclick = () => {
+    if (!lastText) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lastText], { type: "application/json" }));
+    a.download = "ontology_demo_data.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+
+  // Silent attempt when the page is served from the data folder.
+  fetch("ontology_demo_data.json").then((r) => (r.ok ? r.json() : null))
+    .then((d) => { if (d) load(d); }).catch(() => {});
+
+
+  /* -------------------------------------------------------------------
+     4. COUNTS PER ONTOLOGY CLASS
+     ------------------------------------------------------------------- */
+  function countFor(cls) {
+    if (!DATA) return 0;
+    if (cls === "LinkAssertion") return DATA.edges.filter((e) => e.kind === "AI_LINK").length;
+    if (cls === "EvidenceOccurrence")
+      return DATA.edges.reduce((a, e) => a + (blank(e.evidence_from) ? 0 : 1) + (blank(e.evidence_to) ? 0 : 1), 0);
+    return DATA.nodes.filter((n) => T[n.type] && T[n.type].cls === cls).length;
+  }
+  const instancesOf = (cls) => DATA ? DATA.nodes.filter((n) => T[n.type] && T[n.type].cls === cls) : [];
+
+
+  /* -------------------------------------------------------------------
+     5. MAP TAB: light up classes with data, grey out the rest
+     ------------------------------------------------------------------- */
+  document.querySelector("#p-map .maptools").insertAdjacentHTML("beforeend",
+    `<button class="ex-toggle" id="lv-maptoggle" hidden aria-pressed="true">Live data on map: ON</button>`);
+  $("lv-maptoggle").onclick = () => {
+    mapOn = !mapOn;
+    $("lv-maptoggle").textContent = "Live data on map: " + (mapOn ? "ON" : "OFF");
+    $("lv-maptoggle").setAttribute("aria-pressed", mapOn);
+    drawMap();
+  };
+
+  const baseDrawMap = drawMap;
+  drawMap = function () { baseDrawMap(); if (DATA && mapOn) decorateMap(); };
+
+  function decorateMap() {
+    $("svg").querySelectorAll(".node").forEach((g) => {
+      const id = g.dataset.id, n = countFor(id), r = g.querySelector("rect");
+      if (!r) return;
+      if (n > 0) {
+        const x = +r.getAttribute("x") + +r.getAttribute("width"), y = +r.getAttribute("y");
+        const w = String(n).length * 7 + 12;
+        g.insertAdjacentHTML("beforeend",
+          `<g class="lv-badge"><rect x="${x - w + 6}" y="${y - 8}" width="${w}" height="16" rx="8" fill="var(--ok)"/>
+           <text x="${x - w / 2 + 6}" y="${y + 4}" text-anchor="middle" fill="#fff">${n}</text>
+           <title>${n} in the live sample</title></g>`);
+      } else {
+        g.classList.add("lv-off");
+        g.removeAttribute("tabindex");
+      }
+    });
+
+    if (!sel) return;
+    const ex = $("explain"), n = countFor(sel);
+    if (n > 0) {
+      const inst = instancesOf(sel);
+      let html = `<h4>In the live sample <span class="count">${n}</span></h4>`;
+      html += inst.length
+        ? `<div class="chips">${inst.slice(0, 60).map((x) =>
+            `<button class="chip" data-lv="${h(x.id)}">${h(short(x.title || x.id, 34))}</button>`).join("")}</div>`
+        : `<p class="muted">${sel === "LinkAssertion"
+            ? "Every AI link in the sample, each with score, confidence, evidence quotes, reasoning and the independent judge's verdict."
+            : "Verbatim quotes from the alert and from the target text that support each AI link."}</p>`;
+      html += `<div><button class="ex-toggle" data-lv="">Open in Live data ▸</button></div>`;
+      ex.insertAdjacentHTML("beforeend", html);
+      ex.querySelectorAll("[data-lv]").forEach((b) => (b.onclick = () => {
+        select("live");
+        if (b.dataset.lv) gotoNode(b.dataset.lv);
+      }));
+    } else {
+      ex.insertAdjacentHTML("beforeend", `<p class="muted"><b>No data linked yet</b> for this class in the live sample.</p>`);
+    }
+  }
+
+
+  /* -------------------------------------------------------------------
+     6. LIVE DATA TAB (inserted after "Map")
+     ------------------------------------------------------------------- */
+  TABS.push(["live", "Live data"]);
+  const tabBtn = document.createElement("button");
+  tabBtn.role = "tab"; tabBtn.id = "t-live"; tabBtn.textContent = "Live data";
+  tabBtn.setAttribute("aria-controls", "p-live");
+  tabBtn.onclick = () => select("live");
+  $("tabs").insertBefore(tabBtn, $("t-cq"));
+
+  const sec = document.createElement("section");
+  sec.role = "tabpanel"; sec.id = "p-live"; sec.hidden = true;
+  sec.setAttribute("aria-labelledby", "t-live");
+  $("panels").appendChild(sec);
+  sec.innerHTML = `
+    <div class="panel" id="lv-empty">
+      <h2>Live data</h2>
+      <p>Load the sample (<span class="mono">ontology_demo_data.json</span>, or all of its parts together) to trace
+         real alerts through the ontology: regulation → obligation → policy and procedure, and
+         risk → library control → control instance, with the evidence behind every AI link.</p>
+      <div><button class="ex-toggle" id="lv-load2">Load live data</button></div>
+    </div>
+    <div id="lv-body" hidden style="display:flex;flex-direction:column;gap:12px">
+      <div class="maptools">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select class="lv-select" id="lv-alert" aria-label="Alert"></select>
+          <input type="search" id="lv-search" placeholder="Find an ID or title, then Enter">
+        </div>
+        <div class="zoom" role="group" aria-label="Zoom">
+          <button id="lv-out" aria-label="Zoom out">−</button><button id="lv-fit">Fit</button><button id="lv-in" aria-label="Zoom in">+</button>
+        </div>
+      </div>
+      <div class="maptools">
+        <div class="lv-tools">
+          <span class="muted" style="font-size:13px">Layer</span>
+          <div class="seg" role="group" aria-label="Layer">
+            <button id="lv-l-both">Everything</button><button id="lv-l-context">Alert context</button><button id="lv-l-structure">Ontology structure</button><button id="lv-l-impact">Alert impact</button>
+          </div>
+        </div>
+        <div class="lv-tools">
+          <div class="seg" role="group" aria-label="Reveal mode">
+            <button id="lv-m-step">Step by step</button><button id="lv-m-all">Show all</button>
+          </div>
+          <button class="ex-toggle" id="lv-next">Next step ▸</button>
+          <button class="btn2" id="lv-reset">Reset</button>
+        </div>
+      </div>
+      <div class="jr" id="lv-journey"></div>
+      <div class="lv-hint" id="lv-hint"></div>
+      <div class="stats lv-stats" id="lv-stats"></div>
+      <div class="legend" id="lv-legend"></div>
+      <div class="mapgrid" id="lv-grid">
+        <div class="mapwrap" id="lv-wrap" style="overflow:hidden">
+          <svg id="lv-svg" role="img" aria-label="Live data graph"><g id="lv-vp"></g></svg>
+        </div>
+        <aside class="explain" id="lv-ex" aria-live="polite"></aside>
+      </div>
+    </div>`;
+  $("lv-load2").onclick = () => $("lv-file").click();
+
+  $("lv-legend").innerHTML = [
+    ["var(--ok)",      "Impact · judge confirms", ""],
+    ["var(--bad)",     "Impact · judge disputes", ""],
+    ["var(--warn)",    "Impact · judge unsure → SME", ""],
+    ["var(--muted)",   "Impact · not judged", ""],
+    ["var(--lineage)", "Ontology structure", "dotted"],
+    ["var(--bad)",     "Gap (rule)", "dashed"],
+    ["var(--context)", "Intake context (ML tag)", ""],
+  ].map(([c, t, s]) => `<span><i style="border-color:${c};${s ? "border-top-style:" + s : ""}"></i>${t}</span>`).join("")
+    + `<span>● dot on a box = the judge's verdict on the alert's impact on it</span><span>Line labels use the ontology's own relationship names</span>`;
+
+  const baseSelect = select;
+  select = function (id) { baseSelect(id); if (id === "live") showLive(); };
+
+  function showLive() {
+    $("lv-empty").hidden = !!DATA;
+    $("lv-body").hidden = !DATA;
+    if (DATA) { render(); requestAnimationFrame(fit); }
+  }
+
+
+  /* -------------------------------------------------------------------
+     7. LOAD
+     ------------------------------------------------------------------- */
+  function load(d) {
+    if (!d || !Array.isArray(d.nodes) || !Array.isArray(d.edges)) {
+      alert("This is not ontology_demo_data.json (it needs 'nodes' and 'edges').");
+      return;
+    }
+    d.nodes.forEach((n) => { n.type = TYPE_ALIAS[n.type] || n.type; });
+    addIntake(d);
+    nodeById = {}; inE = {}; outE = {};
+    d.nodes.forEach((n) => { nodeById[n.id] = n; inE[n.id] = []; outE[n.id] = []; });
+    d.edges = d.edges.filter((e) => nodeById[e.source] && nodeById[e.target]);
+    d.edges.forEach((e, i) => { e._i = i; outE[e.source].push(e); inE[e.target].push(e); });
+    DATA = d; cur = "ALL"; selL = null;
+    d.edges.forEach((e) => { e._layer = layerOf(e); });
+
+    const alerts = d.nodes.filter((n) => n.type === "Alert");
+    $("lv-alert").innerHTML = `<option value="ALL">All sample alerts (${alerts.length})</option>` +
+      alerts.map((a) => `<option value="${h(a.id)}">${h(a.title)} · ${h(short(a.text, 60))}</option>`).join("");
+
+    const ai = d.edges.filter((e) => e.kind === "AI_LINK").length;
+    $("lv-status").textContent =
+      `Live sample: ${d.nodes.length} records · ${d.edges.length} links (${ai} AI links with evidence)` +
+      (d.meta && d.meta.generated ? ` · built ${d.meta.generated}` : "");
+    $("lv-loadbtn").textContent = "Reload data";
+    $("lv-maptoggle").hidden = false;
+    resetReveal();
+    select("live");
+  }
+
+
+  /* Turn each alert's intake record into ontology nodes and links.
+     Shared values (one steward, one legal entity...) become ONE node, so
+     the graph shows which alerts share context. */
+  function addIntake(d) {
+    const have = new Set(d.nodes.map((n) => n.id));
+    const node = (id, type, title, extra = {}) => {
+      if (!have.has(id)) { d.nodes.push({ id, type, title, text: "", ...extra }); have.add(id); }
+      return id;
+    };
+    const seenE = new Set(d.edges.map((e) => e.source + "|" + e.target + "|" + e.relation));
+    const edge = (s, t, r) => {
+      const k = s + "|" + t + "|" + r;
+      if (!seenE.has(k)) { d.edges.push({ source: s, target: t, relation: r, kind: "CONTEXT" }); seenE.add(k); }
+    };
+    const slug = (x) => String(x).trim().replace(/\s+/g, "_");
+    d.nodes.filter((n) => n.type === "Alert").forEach((a) => {
+      const key = a.id.replace(/^ALERT-/, "");
+      const x = a.intake || INTAKE[key];
+      if (!x) return;
+      a.intake = x;
+      if (x.ref || x.title) a.title = [x.ref, x.title].filter(Boolean).join(" · ");
+      // Location: "Global/United States" -> United States, broader Global
+      const parts = String(x.location || "").split("/").map((p) => p.trim()).filter(Boolean);
+      let child = null;
+      parts.reverse().forEach((p, i) => {
+        const id = node("JUR-" + slug(p), "Jurisdiction", p, { col: 1 + i });
+        if (child) edge(child, id, "broader_jurisdiction"); else edge(a.id, id, "in_jurisdiction");
+        child = id;
+      });
+      if (x.steward) edge(a.id, node("STEW-" + slug(x.steward), "Steward", x.steward), "tagged_steward");
+      if (x.theme)   edge(a.id, node("THEME-" + slug(x.theme), "Theme", x.theme), "has_theme");
+      // Risk taxonomy: alert is tagged at L3; L3 -> L2 -> L1 is the hierarchy
+      const lv = [[x.l3, "L3", 1], [x.l2, "L2", 2], [x.l1, "L1", 3]].filter((v) => v[0]);
+      let prev = null;
+      lv.forEach(([name, level, col]) => {
+        const id = node("TAX-" + level + "-" + slug(name), "Taxonomy", level + " · " + name, { col, level });
+        if (prev) edge(prev, id, "broader_risk"); else edge(a.id, id, "tagged_risk");
+        prev = id;
+      });
+      if (x.lob) edge(a.id, node("LOB-" + slug(x.lob), "LOB", x.lob), "tagged_business");
+      if (x.le)  edge(a.id, node("LE-" + slug(x.le), "LE", x.le), "tagged_legal_entity");
+    });
+  }
+
+  /* -------------------------------------------------------------------
+     8. WHAT IS IN VIEW
+        scope  = records reachable from the chosen alert(s)
+        layer  = which kinds of links are drawn
+        reveal = which records are shown so far (step mode)
+     ------------------------------------------------------------------- */
+  const COL_W = 330, ROW_H = 36, NODE_W = 220, NODE_H = 28, LANE_GAP = 100, TOP = 60;
+
+  function scopeSet() {
+    if (cur === "ALL") return new Set(DATA.nodes.map((n) => n.id));
+    const seen = new Set([cur]), queue = [cur];
+    (nodeById[cur].story_extra || []).forEach((x) => { if (nodeById[x] && !seen.has(x)) { seen.add(x); queue.push(x); } });
+    while (queue.length) {
+      const id = queue.shift();
+      outE[id].forEach((e) => { if (!seen.has(e.target)) { seen.add(e.target); queue.push(e.target); } });
+    }
+    return seen;
+  }
+
+  // Edges drawn for the active layer.
+  function layerEdges(scope) {
+    const inScope = (e) => scope.has(e.source) && scope.has(e.target);
+    if (layer === "impact") return DATA.edges.filter((e) => inScope(e) && e._layer === "impact");
+    if (layer === "context") return DATA.edges.filter((e) => inScope(e) && e._layer === "context");
+    if (layer === "structure") return DATA.edges.filter((e) => inScope(e) && e._layer !== "impact" && e._layer !== "context");
+    // both: structure everywhere; an alert's impact line is drawn only to
+    // records with no structural parent in view (the others carry the
+    // impact as the coloured dot, and in the side panel).
+    return DATA.edges.filter((e) => {
+      if (!inScope(e)) return false;
+      if (e._layer !== "impact") return true;          // structure, gaps and intake context
+      return !inE[e.target].some((p) => scope.has(p.source) && p._layer !== "impact");
+    });
+  }
+
+  // Records that take part in the active layer.
+  function layerNodes(scope, edges) {
+    const s = new Set();
+    edges.forEach((e) => { s.add(e.source); s.add(e.target); });
+    if (layer !== "structure") scope.forEach((id) => { if (nodeById[id].type === "Alert") s.add(id); });
+    if (layer === "structure") scope.forEach((id) => {          // impacted records with no structure link
+      const t = nodeById[id].type;
+      if (t !== "Alert" && !CTX_TYPES.has(t)) s.add(id);
+    });
+    return s;
+  }
+
+  function computeView() {
+    const scope = scopeSet();
+    const edges = layerEdges(scope);
+    const nodes = layerNodes(scope, edges);
+    KIDS = {}; PARENTS = {};
+    edges.forEach((e) => {
+      (KIDS[e.source] = KIDS[e.source] || []).push(e.target);
+      (PARENTS[e.target] = PARENTS[e.target] || []).push(e.source);
+    });
+    return { scope, edges, nodes };
+  }
+
+  function resetReveal() {
+    const { nodes } = computeView();
+    // Start from the roots: records nothing in view points to (the alerts,
+    // or in the structure layer the top of each chain).
+    R = new Set([...nodes].filter((id) => !(PARENTS[id] || []).length));
+    fresh = new Set(R);
+  }
+  function reveal(ids) { ids.forEach((k) => { if (!R.has(k)) { R.add(k); fresh.add(k); } }); }
+  // An alert opens in two steps, like the real process: first its intake
+  // context (applicability, category, ML tags), then what it impacts.
+  function expand(id) {
+    const kids = KIDS[id] || [];
+    if (nodeById[id].type === "Alert") {
+      const ctx = kids.filter((k) => CTX_TYPES.has(nodeById[k].type) && !R.has(k));
+      if (ctx.length) { reveal(ctx); return; }
+    }
+    reveal(kids);
+  }
+  function fold(id) {
+    (KIDS[id] || []).forEach((k) => {
+      if (!R.has(k)) return;
+      const other = (PARENTS[k] || []).some((p) => p !== id && R.has(p));
+      if (!other) { fold(k); R.delete(k); }
+    });
+  }
+  function nextStep() {
+    [...R].filter((id) => (KIDS[id] || []).some((k) => !R.has(k))).forEach(expand);
+    render();
+  }
+  function revealPath(id) {
+    let x = id, guard = 0;
+    while (x && !R.has(x) && guard++ < 50) { R.add(x); fresh.add(x); x = (PARENTS[x] || [])[0]; }
+  }
+
+
+  /* -------------------------------------------------------------------
+     9. LAYOUT: two lanes, fixed positions for the whole scope
+        Regulatory chain : Alert | RGL | RSM | ROB | Policy + Procedure | Gaps
+        Risk & control   : Alert | LR  | L1C | 1C  |                   | Gaps
+     ------------------------------------------------------------------- */
+  function laneOf(id) {
+    const n = nodeById[id];
+    if (n.type === "Gap") { const p = inE[id][0]; return p ? laneOf(p.source) : "reg"; }
+    return (T[n.type] || { lane: "reg" }).lane;
+  }
+
+  function layoutGraph(scope) {
+    P = {};
+    const cols = {}, alerts = [];
+    scope.forEach((id) => {
+      const n = nodeById[id];
+      if (n.type === "Alert") { alerts.push(id); return; }
+      const key = laneOf(id) + "|" + colOf(n);
+      (cols[key] = cols[key] || []).push(id);
+    });
+
+    // Order each column next to its structural parent (falls back to alert).
+    const order = {};
+    alerts.sort().forEach((id, i) => { order[id] = i / Math.max(1, alerts.length); });
+    const parentsOf = (id) => {
+      const s = inE[id].filter((e) => scope.has(e.source) && e._layer !== "impact").map((e) => e.source);
+      return s.length ? s : inE[id].filter((e) => scope.has(e.source)).map((e) => e.source);
+    };
+    const typeRank = { Policy: 0, Procedure: 1,
+      Jurisdiction: 0, Steward: 1, Theme: 2, Taxonomy: 3, LOB: 4, LE: 5 };
+    ["reg", "ctx", "ctl"].forEach((lane) => {
+      for (let c = 1; c <= 5; c++) {
+        const list = cols[lane + "|" + c];
+        if (!list) continue;
+        const bary = (id) => {
+          const ps = parentsOf(id).filter((p) => p in order);
+          return ps.length ? ps.reduce((s, p) => s + order[p], 0) / ps.length : 1;
+        };
+        list.sort((a, b) =>
+          (typeRank[nodeById[a].type] ?? 0) - (typeRank[nodeById[b].type] ?? 0) ||
+          bary(a) - bary(b) ||
+          String(nodeById[a].title).localeCompare(String(nodeById[b].title)));
+        list.forEach((id, i) => { order[id] = i / list.length; });
+      }
+    });
+
+    const count = (lane) => Math.max(0, ...[1, 2, 3, 4, 5].map((c) => (cols[lane + "|" + c] || []).length));
+    const laneH = (lane) => Math.max(1, count(lane)) * ROW_H;
+    // Regulatory chain on top, intake context in the middle (next to the
+    // alerts), risk & control at the bottom.
+    const lanes = {};
+    let top = TOP;
+    ["reg", "ctx", "ctl"].forEach((lane) => {
+      if (lane === "ctx" && !count("ctx")) return;
+      lanes[lane] = { top, h: laneH(lane) };
+      top += laneH(lane) + LANE_GAP;
+    });
+
+    Object.entries(cols).forEach(([key, list]) => {
+      const [lane, c] = key.split("|"), L = lanes[lane];
+      const off = (L.h - list.length * ROW_H) / 2;
+      list.forEach((id, i) => { P[id] = { x: 40 + Number(c) * COL_W, y: L.top + off + i * ROW_H }; });
+    });
+
+    const midY = lanes.ctx
+      ? lanes.ctx.top + lanes.ctx.h / 2 - NODE_H / 2
+      : lanes.reg.top + lanes.reg.h + LANE_GAP / 2 - NODE_H / 2;
+    alerts.forEach((id, i) => {
+      P[id] = { x: 40, y: midY - ((alerts.length - 1) / 2) * ROW_H * 1.3 + i * ROW_H * 1.3 };
+    });
+    return { cols, lanes };
+  }
+
+
+  /* -------------------------------------------------------------------
+     10. RENDER
+     ------------------------------------------------------------------- */
+  function render() {
+    const { scope, edges, nodes } = computeView();
+    const { cols, lanes } = layoutGraph(scope);
+    const vis = mode === "all" ? nodes : new Set([...R].filter((id) => nodes.has(id)));
+    const shown = edges.filter((e) => vis.has(e.source) && vis.has(e.target));
+
+    // Show-all mode: clicking a box highlights its own links.
+    let fs = null;
+    if (mode === "all" && selL && selL.kind === "node" && vis.has(selL.id)) {
+      fs = new Set([selL.id]);
+      shown.forEach((e) => { if (e.source === selL.id || e.target === selL.id) { fs.add(e.source); fs.add(e.target); } });
+    } else if (mode === "all" && selL && selL.kind === "edge") {
+      const e = DATA.edges[selL.id]; fs = new Set([e.source, e.target]);
+    }
+    const labelOn = (e) => mode === "step" || (fs && fs.has(e.source) && fs.has(e.target));
+
+    let order = 0;
+    const anim = (id) => fresh.has(id) ? ` lv-new" style="animation-delay:${Math.min(order++ * 35, 900)}ms` : "";
+
+    let g = "";
+    const width = 40 + 6 * COL_W;
+
+    // --- Lane bands and column titles ---------------------------------
+    const CTX_COL = { 1: "TAGGED AT INTAKE", 2: "BROADER", 3: "BROADER" };
+    [["reg", "REGULATORY CHAIN · RegMap + GPPS"], ["ctx", "ALERT CONTEXT · intake standardisation & ML contextualisation"],
+     ["ctl", "RISK & CONTROL CHAIN · Helios"]].forEach(([lane, title]) => {
+      const L = lanes[lane];
+      if (!L) return;
+      g += `<rect class="lv-lane" x="${COL_W - 40}" y="${L.top - 46}" width="${width - COL_W + 20}" height="${L.h + 62}" rx="10"/>`;
+      g += `<text class="lv-lane-t" x="${COL_W - 22}" y="${L.top - 27}">${title}</text>`;
+      for (let c = 1; c <= 5; c++) {
+        const list = cols[lane + "|" + c];
+        if (!list) continue;
+        const names = lane === "ctx" ? (CTX_COL[c] || "")
+          : [...new Set(list.map((id) => tLabel(nodeById[id].type)))].join(" / ");
+        g += `<text class="lv-col-t" x="${40 + c * COL_W}" y="${L.top - 9}">${h(names.toUpperCase())}</text>`;
+      }
+    });
+
+    // --- Lines ------------------------------------------------------------
+    const labels = [], labelSeen = new Set();
+    shown.forEach((e) => {
+      const a = P[e.source], b = P[e.target];
+      if (!a || !b) return;
+      const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
+      const dx = Math.max(40, (x2 - x1) / 2);
+      const d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+      const v = e._layer === "impact" ? vClass(e.judge_verdict) : "";
+      const dim = fs && !(fs.has(e.source) && fs.has(e.target)) ? "lv-dim" : "";
+      const hl = selL && selL.kind === "edge" && selL.id === e._i ? "hl" : "";
+      const an = anim(e.target);
+      g += `<path class="lv-edge ${e._layer} ${v ? "v-" + v : ""} ${dim} ${hl}${an}" d="${d}"/>`;
+      g += `<path class="lv-hit" data-edge="${e._i}" d="${d}"><title>${h(verb(e.relation))}</title></path>`;
+      // The relation is written on the line, just before the box it points to.
+      const key = e.target + "|" + e.relation;
+      if (labelOn(e) && !labelSeen.has(key)) {
+        labelSeen.add(key);
+        const t = verb(e.relation), w = t.length * 6.2 + 14;
+        labels.push(`<g class="lv-elab ${e._layer}${an}" data-edge="${e._i}">
+          <rect x="${x2 - 8 - w}" y="${y2 - 9}" width="${w}" height="18" rx="9"/>
+          <text x="${x2 - 8 - w / 2}" y="${y2 + 3.5}" text-anchor="middle">${h(t)}</text>
+          <title>${h(t)} · ${h(prop(e.relation))}</title></g>`);
+      }
+    });
+    g += labels.join("");
+
+    // --- Boxes ------------------------------------------------------------
+    vis.forEach((id) => {
+      const n = nodeById[id], p = P[id];
+      if (!p) return;
+      const dim = fs && !fs.has(id) ? "lv-dim" : "";
+      const isSel = selL && selL.kind === "node" && selL.id === id ? "sel" : "";
+      const gap = n.type === "Gap" ? "gap" : "";
+      const imp = inE[id].find((e) => e._layer === "impact" && !blank(e.judge_verdict));
+      const vc = imp ? vClass(imp.judge_verdict) : "";
+      const vcol = { agree: "var(--ok)", disagree: "var(--bad)", uncertain: "var(--warn)" }[vc];
+      const label = n.title && n.title !== id ? n.title : id;
+      let more = "";
+      if (mode === "step" && (KIDS[id] || []).length) {
+        const k = (KIDS[id] || []).filter((x) => !vis.has(x)).length;
+        const txt = k ? "+" + k : "−", w = txt.length * 7 + 12;
+        more = `<g class="lv-more ${k ? "" : "done"}" data-more="${h(id)}" data-n="${k}">
+          <rect x="${NODE_W - 22 - w}" y="${NODE_H / 2 - 9}" width="${w}" height="18" rx="9"/>
+          <text x="${NODE_W - 22 - w / 2}" y="${NODE_H / 2 + 4}" text-anchor="middle">${txt}</text>
+          <title>${k ? "Reveal " + k + " linked record(s)" : "Fold this branch"}</title></g>`;
+      }
+      g += `<g class="lv-node ${dim} ${isSel} ${gap}${anim(id)}" data-node="${h(id)}" transform="translate(${p.x},${p.y})">
+        <title>${h(tLabel(n.type))}: ${h(id)}${n.title && n.title !== id ? "\n" + h(n.title) : ""}</title>
+        <rect class="box" width="${NODE_W}" height="${NODE_H}" rx="6"/>
+        <rect width="5" height="${NODE_H}" rx="2" fill="${tColor(n.type)}"/>
+        <text x="12" y="${NODE_H / 2 + 4}" ${n.type === "Alert" ? 'font-weight="700"' : ""}>${h(short(label, more ? 23 : 30))}</text>
+        ${vcol ? `<circle cx="${NODE_W - 10}" cy="${NODE_H / 2}" r="5" fill="${vcol}"><title>Alert impact: ${vText(imp.judge_verdict)}</title></circle>` : ""}
+        ${more}
+      </g>`;
+    });
+
+    $("lv-vp").innerHTML = g;
+    fresh = new Set();
+    stats(scope);
+    toolsUi(vis);
+  }
+
+  function stats(scope) {
+    const c = {};
+    scope.forEach((id) => { const t = nodeById[id].type; c[t] = (c[t] || 0) + 1; });
+    const imp = DATA.edges.filter((e) => e._layer === "impact" && scope.has(e.source) && scope.has(e.target));
+    const v = { agree: 0, disagree: 0, uncertain: 0, "": 0 };
+    imp.forEach((e) => { v[vClass(e.judge_verdict)]++; });
+    const order = ["Alert", "RGL", "RSM", "ROB", "Policy", "Procedure", "LR", "L1C", "1C", "Gap"];
+    const ctxN = [...scope].filter((id) => CTX_TYPES.has(nodeById[id].type)).length;
+    $("lv-stats").innerHTML = (ctxN ? `<div class="stat"><b style="color:var(--context)">${ctxN}</b><span>Intake context tags</span></div>` : "") +
+      order.filter((t) => c[t]).map((t) =>
+        `<div class="stat"><b style="color:${tColor(t)}">${c[t]}</b><span>${h(tLabel(t))}</span></div>`).join("") +
+      `<div class="stat wide"><b>${imp.length}</b><span>alert impact links ·
+        <span style="color:var(--ok)">${v.agree} confirmed</span> ·
+        <span style="color:var(--bad)">${v.disagree} disputed</span> ·
+        <span style="color:var(--warn)">${v.uncertain} to SME</span> · ${v[""]} not judged</span></div>`;
+  }
+
+  function toolsUi(vis) {
+    const step = mode === "step";
+    ["both", "context", "structure", "impact"].forEach((l) => $("lv-l-" + l).setAttribute("aria-pressed", layer === l));
+    journey();
+    $("lv-m-step").setAttribute("aria-pressed", step);
+    $("lv-m-all").setAttribute("aria-pressed", !step);
+    $("lv-next").hidden = !step; $("lv-reset").hidden = !step;
+    $("lv-next").disabled = ![...vis].some((id) => (KIDS[id] || []).some((k) => !vis.has(k)));
+    const L = {
+      both: "<b>Everything:</b> the alert's intake context, plus the ontology chain of everything it touches. The coloured dot on a box is the judge's verdict on the alert's impact on it.",
+      context: "<b>Alert context:</b> what happens first, at intake: applicability, category and the ML tags (risk steward, theme, risk taxonomy L1–L3, line of business, legal entity, location).",
+      structure: "<b>Ontology structure:</b> how the impacted records relate to each other in RegMap, GPPS and Helios, with no alert links drawn.",
+      impact: "<b>Alert impact:</b> every record the alert touches directly, one line each, coloured by the judge's verdict.",
+    }[layer];
+    $("lv-hint").innerHTML = L + (step
+      ? " &nbsp;·&nbsp; <b>Step by step:</b> click a box to reveal what it links to (red <b>+N</b>), <b>Next step</b> reveals one more layer, <b>−</b> folds a branch."
+      : " &nbsp;·&nbsp; <b>Show all:</b> click a box to highlight its links.");
+  }
+
+  const relayout = () => { selL = null; $("lv-grid").classList.remove("open"); resetReveal(); render(); requestAnimationFrame(fit); };
+  ["both", "context", "structure", "impact"].forEach((l) => { $("lv-l-" + l).onclick = () => { layer = l; relayout(); }; });
+
+  /* The alert journey, left to right: what happens to an alert before and
+     during impact assessment. Values are filled for the selected alert. */
+  function journey() {
+    const a = cur !== "ALL" ? nodeById[cur] : null, x = a && a.intake;
+    const imp = a ? outE[a.id].filter((e) => e._layer === "impact") : DATA.edges.filter((e) => e._layer === "impact");
+    const ok = imp.filter((e) => vClass(e.judge_verdict) === "agree").length;
+    const ctx = a ? outE[a.id].filter((e) => e._layer === "context").length : 0;
+    const steps = [
+      ["1", "Alert received", a ? h((x && x.ref) || a.id) : `${DATA.nodes.filter((n) => n.type === "Alert").length} alerts`, "", "var(--impact)"],
+      ["2", "Applicable to HSBC?", x ? h(x.applicable) : "Yes / No", "context", "var(--context)"],
+      ["3", "Category", x ? h(x.category) + " · " + h(CATEGORY_TXT[x.category] || "") : "RD · Consultation · News · Fine", "context", "var(--context)"],
+      ["4", "Contextualise (ML)", x ? `${ctx} tags: steward, theme, risk L1–L3, LOB, LE` : "steward, theme, risk L1–L3, LOB, LE", "context", "var(--context)"],
+      ["5", "Impact assessment (AI)", `${imp.length} links · ${ok} judge-confirmed`, "impact", "var(--accent)"],
+      ["6", "Ontology chain", "regulation → obligation → policy · risk → control", "structure", "var(--lineage)"],
+      ["7", "SME review", "next: confirm or reject each link", "", "var(--muted)"],
+    ];
+    $("lv-journey").innerHTML = steps.map(([n, t, v, l, c], i) =>
+      `${i ? '<span class="ja">→</span>' : ""}<div class="js ${l && l === layer ? "on" : ""}" data-layer="${l}" style="--kc:${c}">
+        <span class="k">Step ${n}</span><b>${t}</b><span class="v">${v}</span></div>`).join("");
+    $("lv-journey").querySelectorAll(".js").forEach((el) => {
+      el.onclick = () => { if (el.dataset.layer) { layer = el.dataset.layer; relayout(); } };
+    });
+  }
+  $("lv-m-step").onclick = () => { mode = "step"; relayout(); };
+  $("lv-m-all").onclick  = () => { mode = "all"; render(); requestAnimationFrame(fit); };
+  $("lv-next").onclick   = nextStep;
+  $("lv-reset").onclick  = () => { selL = null; $("lv-grid").classList.remove("open"); resetReveal(); render(); };
+
+
+  /* -------------------------------------------------------------------
+     11. SIDE PANEL: structured cards
+         1 · the record   2 · how the alert impacts it   3 · where it sits
+     ------------------------------------------------------------------- */
+  function openEx(html) {
+    $("lv-ex").innerHTML = `<button class="ex-close" aria-label="Close">×</button>` + html;
+    $("lv-ex").querySelector(".ex-close").onclick = clearSel;
+    $("lv-grid").classList.add("open");
+    $("lv-ex").scrollTop = 0;
+    // Show "Show more" only where the text is actually cut.
+    $("lv-ex").querySelectorAll(".pn-text.clamp").forEach((t) => {
+      const b = t.nextElementSibling;
+      if (b && b.classList.contains("pn-more")) b.hidden = t.scrollHeight <= t.clientHeight + 2;
+    });
+  }
+  function clearSel() { selL = null; $("lv-grid").classList.remove("open"); render(); }
+
+  const secT = (n, t, extra = "") => `<div class="pn-sec"><span class="n">${n}</span>${t}${extra}</div>`;
+
+  // A record card: type chip, ID, title, its own text (clamped).
+  function card(n, lines = 6) {
+    const cls = T[n.type] ? T[n.type].cls : "";
+    const desc = cls && byId[cls] ? byId[cls].d : "";
+    const title = n.title && n.title !== n.id ? `<div class="pn-title">${h(n.title)}</div>` : "";
+    const text = !blank(n.text)
+      ? `<div class="pn-text clamp" style="--lines:${lines}">${h(n.text)}</div><button class="pn-more">Show more</button>`
+      : `<div class="muted" style="font-size:13px">${h(desc)}</div>`;
+    return `<div class="pn-card" style="--c:${tColor(n.type)}">
+      <div class="pn-head"><span class="pn-chip">${h(tShort(n.type))}</span><span class="tag">${h(n.id)}</span></div>
+      ${title}${text}</div>`;
+  }
+
+  // The relation between two cards.
+  function relBlock(e) {
+    const [name, sub, col] = LAYER_TXT[e._layer];
+    const sent = ontoSentence(e.relation), o = ontoRel(e.relation);
+    return `<div class="pn-rel" style="--kc:${col}"><span class="arrow">↓</span>
+      <span class="verb">${h(verb(e.relation))}</span>
+      <small>${h(name)} · ${h(sub)}</small>
+      ${sent ? `<div class="pn-onto"><span class="pn-ql" style="--qc:var(--muted)">Ontology</span>${sent}
+        ${o ? ` <button class="lnk" data-cls="${h(o.f)}">see on Map</button>` : ""}</div>` : ""}
+      <span class="arrow">↓</span></div>`;
+  }
+
+  // Evidence for an AI link: verdict, score, the two quotes, reasoning.
+  function evidence(e) {
+    if (e.kind === "DERIVED_LINK") return `<div class="pn-evi"><div class="pn-vrow"><span class="pn-rr">DERIVED · no AI</span></div>
+      <div class="pn-vrow">Via confirmed control(s) <b style="color:var(--fg)">${h(e.via_controls || "")}</b></div>
+      ${!blank(e.sections) ? `<div class="pn-vrow">Policy sections <b style="color:var(--fg)">${h(e.sections)}</b></div>` : ""}
+      <div class="muted" style="font-size:12px">${h(e.reasoning || "The obligation is satisfied by a judge-confirmed control, and GPPS maps that control to this policy.")}</div></div>`;
+    if (e.kind !== "AI_LINK") return "";
+    const s = nodeById[e.source], t = nodeById[e.target];
+    const vc = vClass(e.judge_verdict);
+    const score = Number(e.score);
+    let x = `<div class="pn-evi"><div class="pn-vrow">
+      <span class="pn-verdict ${vc}">${vText(e.judge_verdict)}</span>
+      ${!blank(e.score) && !isNaN(score) ? `<span class="pn-meter">Score <i><b style="width:${Math.max(0, Math.min(10, score)) * 10}%"></b></i><b style="color:var(--fg)">${h(e.score)}/10</b></span>` : ""}
+      ${!blank(e.confidence) ? `<span>Confidence <b style="color:var(--fg)">${h(e.confidence)}</b></span>` : ""}
+      ${!blank(e.grounding) ? `<span>Quotes <b style="color:var(--fg)">${h(e.grounding)}</b></span>` : ""}</div>`;
+    if (!blank(e.impact_type) || !blank(e.coverage)) x += `<div class="pn-vrow">${
+      String(e.impact_type).toUpperCase() === "CHANGE_REQUIRED" ? `<span class="pn-cr">CHANGE REQUIRED</span>`
+      : !blank(e.impact_type) ? `<span class="pn-rr">${h(String(e.impact_type).replace(/_/g, " "))}</span>` : ""}${
+      !blank(e.coverage) ? ` <span>Coverage <b style="color:var(--fg)">${h(e.coverage)}</b></span>` : ""}</div>`;
+    if (!blank(e.change_needed)) x += `<div class="pn-q" style="--qc:var(--bad)"><span class="pn-ql">Change needed</span>${h(e.change_needed)}</div>`;
+    if (!blank(e.sections)) x += `<div class="pn-vrow">Linked sections <b style="color:var(--fg)">${h(e.sections)}</b></div>`;
+    if (!blank(e.evidence_from))
+      x += `<div class="pn-q" style="--qc:${tColor(s.type)}"><span class="pn-ql">${h(tShort(s.type))} says</span>“${h(e.evidence_from)}”</div>`;
+    if (!blank(e.evidence_to))
+      x += `<div class="pn-q" style="--qc:${tColor(t.type)}"><span class="pn-ql">${h(tShort(t.type))} says</span>“${h(e.evidence_to)}”</div>`;
+    if (!blank(e.reasoning)) x += `<details><summary>Why the model linked them</summary><p>${h(e.reasoning)}</p></details>`;
+    return x + `</div>`;
+  }
+
+  // One row in "Where it sits": direction, relation, the other record.
+  function linkRow(e, dir) {
+    const o = nodeById[dir === "up" ? e.source : e.target];
+    const [, , col] = LAYER_TXT[e._layer];
+    return `<div class="pn-link"><span class
