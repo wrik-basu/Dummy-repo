@@ -1,0 +1,1316 @@
+# ==============================================================================
+# IMPACT ASSESSMENT - GAP ASSESSMENT  v3  (standalone; NOT part of the ontology work)
+# ------------------------------------------------------------------------------
+# Question: for every artefact an alert is linked to, does what the bank has today already
+#           meet what the alert now requires? If not, what exactly is missing?
+#
+# DESIGN PRINCIPLE: the LLM never outputs a number. It returns categorical answers, yes/no
+# checks and verbatim quotes (evidence BEFORE label in every schema). Code verifies every quote
+# and derives every status, tier, confidence and rank from rule tables in CELL 1 (auditable,
+# SME-tunable, identical input -> identical result).
+#
+# INPUTS (only these)
+#   linkage outputs : rsm_linkage_pairs + rob_linkage_pairs; Helios Run B links_risk / control / instance
+#                     (RGL = our own roll-up from RSM; no RGL file, no linkage audits)
+#   raw texts       : Rapid2 (alerts) | RegMap extracts 1, 2, 6 | Helios risk + control files
+#   policy / procedure: out of scope (later)
+#
+# WHAT THE LLM ANSWERS
+#   step 1, per alert : requirement points; per point: change_type, mandatory (+ modal quote), the elements it
+#                       specifies (who/scope, timing/frequency, threshold, evidence/records); effective date (+ quote)
+#   step 2, per link  : per point: remit (IN / OUT / CANNOT_DETERMINE); per element: MATCHES / DIFFERS / ABSENT /
+#                       CANNOT_DETERMINE with artefact quote; L1C / 1C: breakage checklist YES / NO / CANNOT_DETERMINE
+#                       with both quotes; 1C: entity in scope
+#   step 3, judge     : 4 checks + AGREE / DISAGREE / UNCERTAIN on the code-derived result (+ planted probes)
+#
+# WHAT CODE COMPUTES (rule tables in CELL 1, saved to schemas/rule_tables.json)
+#   coverage_status per point : COVERED / PARTIAL / NOT_COVERED / CONTRADICTED / OVER_CONTROLLED / OUT_OF_REMIT /
+#                               CANNOT_DETERMINE   (from element results; failed quote -> CANNOT_DETERMINE)
+#   gap_tier per point        : T1..T4 / REVIEW / INFO / NONE   (change_type x mandatory(proven) x coverage)
+#   artefact                  : status = worst point; tier = most severe point; breakage_types (controls)
+#   grounding                 : verified / claimed quotes; HALLUCINATION_SUSPECTED if any claimed quote fails
+#   confidence_score 0-100    : 7-component rubric (CONF_RUBRIC) + hard caps; band HIGH >= 80 / MEDIUM >= 50 / LOW
+#   blast_radius              : counts from linkage + raw files (no LLM)
+#   urgency                   : run date -> verified effective date: OVERDUE / <90D / <365D / LATER / UNKNOWN
+#   route                     : gap_tier x confidence_tier
+#   alert rank                : sort by worst tier, #T1, #T2, urgency, live instances in gap, #gapped artefacts
+#
+# OUTPUTS ({GAP_DIR}): schemas/*.schema.json + rule_tables.json | requirements.jsonl | gap_records.jsonl |
+#   rgl_rollup.jsonl | alert_summary.jsonl | gap_records.parquet | gap_points.parquet | gap_audit_labelled.parquet |
+#   run_manifest.json | GAP_SME_review_pack.xlsx | GAP_management_summary.xlsx | *_ckpt.parquet (re-run to resume)
+# GATES: CELL 2 preflight | CELL 6 cost gate | CELL 8 automatic test gate
+# ==============================================================================
+
+
+# ====== CELL 1: CONFIG + RULE TABLES ==========================================
+import os, re, json, math, glob, asyncio, datetime as dt
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+
+GAP_DIR = "../output/gap_assessment"
+RUN_ID = "GAP-US-2026-11-v3"
+SCHEMA_VERSION = "3.0"
+RUN_DATE = dt.date.today()
+
+SRC = {
+    "rapid2":       "../data/Rapid2_REGDEV_US_2020_2025.parquet",
+    "regmap_e1":    "../data/Tactical_Regmap_Data/<extract 1>",
+    "regmap_e2":    "../data/Tactical_Regmap_Data/<extract 2>",
+    "regmap_e6":    "../data/Tactical_Regmap_Data/<extract 6>",
+    "helios_risk":  "../data/Helios/<US_Risk risk.parquet>",
+    "helios_ctrl":  "../data/Helios/<control file: 1C rows + L1C fields>",
+    # linkage predictions: RSM and ROB only (RGL is our own roll-up from RSM, no RGL file needed)
+    "ia_rsm":       "<EXECUTION_OUTPUT_DIR>/rsm_linkage_pairs_*.parquet",     # glob: newest match used
+    "ia_rob":       "<EXECUTION_OUTPUT_DIR>/rob_linkage_pairs_*.parquet",
+    "ia_lr":        "../output/helios_linkage_llm_RT_method2/links_risk.parquet",
+    "ia_l1c":       "../output/helios_linkage_llm_RT_method2/links_control.parquet",
+    "ia_1c":        "../output/helios_linkage_llm_RT_method2/links_instance.parquet",
+}   # linkage AUDIT files are deliberately not used - only the linkage outputs
+
+COLS = {   # candidate column names: first one present is used (printed in CELL 2)
+    "alert_id": ["RECORD_ID", "RID"],
+    "decision": ["final_decision", "model_decision_label", "decision", "model_decision"],
+    "score":    ["final_score", "link_score", "score", "model_score", "confidence_score"],
+    "reason":   ["reasoning", "rationale", "model_reasoning"],
+    "ev_alert": ["evidence_from_alert", "alert_evidence", "evidence_alert", "evidence"],
+    "ev_target":["evidence_from_target", "evidence_from_regulation", "evidence from target", "evidence_from_rsm", "evidence_from_rob",
+                 "evidence_from_summary", "evidence_from_regmap", "rsm_evidence", "rob_evidence", "evidence_rsm", "evidence_rob", "evidence_from_obligation", "evidence_from_control",
+                 "evidence_from_risk", "target_evidence", "evidence_target"],
+    "rgl": ["RGL", "REG_ID", "Regulation ID", "regulation_id"],
+    "rsm": ["RSM_ID", "RSM", "Regulation Summary ID"],
+    "rob": ["ROB_ID", "ROB", "Obligation ID"],
+    "lr":  ["LR", "TARGET", "risk_id", "library_risk_id"],
+    "l1c": ["L1C", "LIC", "TARGET", "control_id", "l1_library_control_id"],
+    "1c":  ["1C", "IC", "TARGET", "instance_id", "name"],
+    "e1_rgl": ["Regulation ID", "Regulation-ID"], "e1_title": ["Regulation Title"],
+    "e2_rsm": ["Regulation Summary ID"], "e2_title": ["Regulation Summary Title"], "e2_text": ["Regulation Summary Detail Text"],
+    "e6_rob": ["Obligation ID"], "e6_rsm": ["Regulation Summary ID"], "e6_title": ["Obligation Title"],
+    "e6_text": ["Obligation Detailed Text"], "e6_status": ["Obligation Status"],
+    "risk_id": ["library_risk_id", "library_id"], "risk_title": ["title"],
+    "risk_text": ["library_risk_description", "library risk description"],
+    "risk_l1": ["risk_taxonomy_l1", "risk_taxonomy_11"], "risk_l2": ["risk_taxonomy_l2", "risk_taxonomy_12"],
+    "risk_l3": ["risk_taxonomy_l3", "risk_taxonomy_13"],
+    "c_inst": ["name"], "c_inst_title": ["l1_control_title_alias"],
+    "c_inst_text": ["description", "control_description", "l1_control_description"],
+    "c_lib": ["l1_library_control_id"], "c_lib_title": ["l1_library_control_title"],
+    "c_lib_text": ["l1_library_control_description"], "c_status": ["l1_control_status"],
+    "c_business": ["business", "business_short_name"], "c_le": ["legal_entity_short_name", "legal_entity"],
+    "c_owner": ["control_owner"],
+}
+
+LEVELS = ["RSM", "ROB", "LR", "L1C", "1C"]          # RGL = roll-up of its RSMs
+CONTROL_LEVELS = ["L1C", "1C"]
+LINKED_VALUES = {"LINKED"}                         # all model-LINKED links (agreed scope)
+LIVE_INSTANCE_STATUS = ["Assessed", "Pending Assessment"]
+TOKEN_PRICE = {"in": 0.20 / 1e6, "out": 1.20 / 1e6}
+CONCURRENCY, MAX_TOKENS, SAVE_EVERY = 15, 20000, 50
+MAX_COST_USD = 60
+MAX_RETRIES_SCHEMA = 1
+AUDIT = {"no_gap_sample_per_level": 100, "probes_per_level": 20, "seed": 7}
+
+# ---- CONFIDENCE SCORE RUBRIC (0-100; every component is an observed, logged event - no LLM number) ----
+# Replaces log-probs. Each component: max points + how it is earned. Tune with SME labels (CELL 12 reliability).
+CONF_RUBRIC = {
+    "C1_gap_quotes":      25,  # share of the gap step's MATCHES / DIFFERS / YES quotes found verbatim in the texts
+    "C2_linkage_quotes":  10,  # linkage output's own evidence quotes found: VERIFIED 10 | PARTIAL 5 | UNVERIFIED 0
+    "C3_requirements":    10,  # share of the alert's extracted requirement points whose alert quote was verified
+    "C4_decisiveness":    15,  # share of decisions (remit + required elements) that are NOT 'CANNOT_DETERMINE'
+    "C5_consistency":     15,  # re-run with requirement points re-ordered: share of element results unchanged
+                               # (not re-run -> 7.5 neutral)
+    "C6_judge_verdict":   15,  # gap judge: confirmed 15 | not audited 7.5 | uncertain 4 | disputed / missed 0
+    "C7_judge_checks":    10,  # gap judge's 4 checks answered YES (x 2.5 each) | not audited 5
+}
+CONF_CAPS = {   # hard ceilings applied after the sum (a single red flag outweighs good scores elsewhere)
+    "hallucination_suspected": 40,   # any claimed quote not found
+    "judge_disputed": 30,            # GAP_DISPUTED or POSSIBLE_MISSED_GAP
+    "inconsistent": 50,              # consistency re-run changed the artefact status
+}
+CONF_BANDS = [(80, "HIGH"), (50, "MEDIUM"), (0, "LOW")]   # score >= threshold -> band
+CONSISTENCY = {"tiers": ["T1", "T2"], "max_records": 1500, "seed": 11}   # re-run only where it matters
+
+# ---- enums ---------------------------------------------------------------------
+CHANGE_TYPES = ["NEW_MANDATE", "PARAMETER_CHANGE", "SCOPE_EXPANSION", "CLARIFICATION", "RELAXATION_OR_REMOVAL",
+                "CANNOT_DETERMINE"]
+ELEMENTS = ["action", "who_scope", "timing_frequency", "threshold", "evidence_records"]
+ELEMENT_RESULT = ["MATCHES", "DIFFERS", "ABSENT", "CANNOT_DETERMINE"]
+REMIT = ["IN_REMIT", "OUT_OF_REMIT", "CANNOT_DETERMINE"]
+YNC = ["YES", "NO", "CANNOT_DETERMINE"]
+BREAKAGE_CHECKS = {   # control levels only; YES counts only with a verified quote on BOTH sides
+    "threshold_or_deadline_broken": "the alert changes a numeric limit, percentage, deadline or time window the control uses",
+    "new_evidence_or_reporting":    "the alert requires records, data fields, filings or reports the control does not produce",
+    "frequency_must_increase":      "the alert requires the control to run more often (e.g. monthly -> daily / real-time)",
+    "actor_or_independence_change": "the alert changes who performs / approves, or requires independent (2nd line) review",
+    "population_widened":           "the alert widens the products, customers, accounts or activities the control must cover",
+}
+
+# ---- rule tables (tune with SME labels; never in prompts) ----------------------
+COVERAGE_ORDER = ["CONTRADICTED", "NOT_COVERED", "PARTIAL", "CANNOT_DETERMINE", "OVER_CONTROLLED", "COVERED",
+                  "OUT_OF_REMIT"]                   # worst -> best (artefact status = worst point)
+BASE_TIER = {"NEW_MANDATE": 1, "PARAMETER_CHANGE": 1, "SCOPE_EXPANSION": 2, "CLARIFICATION": 3, "CANNOT_DETERMINE": 2}
+COVERAGE_TIER_SHIFT = {"CONTRADICTED": 0, "NOT_COVERED": 0, "PARTIAL": 1}
+NOT_MANDATORY_SHIFT = 1
+NO_GAP_COVERAGE = {"COVERED": "NONE", "OUT_OF_REMIT": "NONE", "OVER_CONTROLLED": "INFO", "CANNOT_DETERMINE": "REVIEW"}
+TIER_ORDER = {"T1": 1, "T2": 2, "T3": 3, "T4": 4, "REVIEW": 5, "INFO": 6, "NONE": 7}
+URGENCY_BANDS = [(-10**6, 0, "OVERDUE"), (0, 90, "<90D"), (90, 365, "<365D"), (365, 10**6, "LATER")]
+URGENCY_ORDER = {"OVERDUE": 0, "<90D": 1, "<365D": 2, "LATER": 3, "UNKNOWN": 4}
+ROUTE = {   # (tier group, confidence tier) -> route
+    ("T1-2", "HIGH"): "FAST_TRACK_OWNER", ("T1-2", "MEDIUM"): "SME_REVIEW", ("T1-2", "LOW"): "SENIOR_SME",
+    ("T3-4", "HIGH"): "OWNER_BACKLOG",    ("T3-4", "MEDIUM"): "SME_REVIEW", ("T3-4", "LOW"): "SME_REVIEW",
+    ("REVIEW", "HIGH"): "SME_REVIEW",     ("REVIEW", "MEDIUM"): "SME_REVIEW", ("REVIEW", "LOW"): "SENIOR_SME",
+    ("NONE", "HIGH"): "LOG_NO_ACTION",    ("NONE", "MEDIUM"): "LOG_NO_ACTION", ("NONE", "LOW"): "SME_SPOT_CHECK",
+    ("INFO", "HIGH"): "OWNER_INFO",       ("INFO", "MEDIUM"): "OWNER_INFO", ("INFO", "LOW"): "SME_SPOT_CHECK",
+}
+os.makedirs(f"{GAP_DIR}/schemas", exist_ok=True)
+print(f"config ready | run date {RUN_DATE}")
+
+
+
+# ====== CELL 0: GATEWAY =======================================================
+# Paste here, unchanged, your GATEWAY SPINE + LLM CALLER cells
+# (call_llm(system, payload, schema, max_tokens), cost_report, CURRENT_STAGE).
+
+
+
+# ====== CELL 2: PREFLIGHT + LOAD ($0; stops on missing file / column / ID mismatch) =
+def resolve(p):
+    if any(ch in p for ch in "*?"):
+        hits = sorted(glob.glob(p), key=os.path.getmtime)
+        return hits[-1] if hits else None
+    return p if os.path.exists(p) else None
+
+def read_any(p):
+    return (pd.read_excel(p) if p.lower().endswith((".xlsx", ".xls")) else
+            pd.read_csv(p) if p.lower().endswith(".csv") else pd.read_parquet(p))
+
+def col(df, key, required=True, exclude=()):
+    for c in COLS[key]:
+        if c in df.columns and c not in exclude:
+            return c
+    if required:
+        raise KeyError(f"no column for '{key}' (tried {COLS[key]}); columns: {list(df.columns)[:40]}")
+    return None
+
+def blank(v):
+    s = "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v).strip()
+    return "" if s in ("-", "nan", "None", "NaT") else s
+
+def cid(v):
+    s = blank(v)
+    return s[:-2] if re.fullmatch(r"\d+\.0", s) else s
+
+D, USED, problems = {}, {}, []
+for k, p in SRC.items():
+    rp = resolve(p)
+    if rp is None:
+        problems.append(f"{k}: not found -> {p}")
+        continue
+    D[k] = read_any(rp)
+    print(f"  {k:16s} {len(D[k]):>9,} rows  <- {rp}")
+assert not problems, "PREFLIGHT FAILED:\n  " + "\n  ".join(problems)
+
+# ---- raw texts -------------------------------------------------------------------
+ALERT = {}
+for _, r in D["rapid2"].iterrows():
+    ALERT[cid(r["RECORD_ID"])] = dict(
+        title=blank(r.get("TITLE")),
+        text="\n".join(x for x in [blank(r.get("SUMM_CONTENT")), blank(r.get("SUMM_UPDATE")), blank(r.get("INTRO_TEXT"))] if x),
+        meta=" | ".join(f"{k}: {blank(r.get(c))}" for k, c in [("jurisdiction", "RECORD_JURISDICTION_NAME"),
+               ("regulator", "REGULATOR_CODE"), ("status", "RECORD_STATUS"), ("start", "RECORD_START_DATE"),
+               ("taxonomy L1", "LEVEL_1_RISK_TAXONOMY"), ("L2", "LEVEL_2_RISK_TAXONOMY"), ("L3", "LEVEL_3_RISK_TAXONOMY")]
+               if blank(r.get(c))))
+
+ART = {lv: {} for lv in ["RGL"] + LEVELS}
+e1 = D["regmap_e1"]
+for _, r in e1.drop_duplicates(col(e1, "e1_rgl")).iterrows():
+    ART["RGL"][cid(r[col(e1, "e1_rgl")])] = dict(title=blank(r[col(e1, "e1_title")]), text="", ctx="")
+e2 = D["regmap_e2"]
+for _, r in e2.drop_duplicates(col(e2, "e2_rsm")).iterrows():
+    ART["RSM"][cid(r[col(e2, "e2_rsm")])] = dict(title=blank(r[col(e2, "e2_title")]), text=blank(r[col(e2, "e2_text")]), ctx="")
+e6 = D["regmap_e6"]
+for _, r in e6.drop_duplicates(col(e6, "e6_rob")).iterrows():
+    ART["ROB"][cid(r[col(e6, "e6_rob")])] = dict(title=blank(r[col(e6, "e6_title")]), text=blank(r[col(e6, "e6_text")]),
+        ctx=f"status: {blank(r[col(e6, 'e6_status')])} | regulation summary: {cid(r[col(e6, 'e6_rsm')])}")
+ROB_RSM = dict(zip(e6[col(e6, "e6_rob")].map(cid), e6[col(e6, "e6_rsm")].map(cid)))
+ROBS_PER_RSM = e6.groupby(e6[col(e6, "e6_rsm")].map(cid))[col(e6, "e6_rob")].nunique().to_dict()
+hr = D["helios_risk"]
+for rid, g in hr.groupby(col(hr, "risk_id")):
+    texts = list(dict.fromkeys(blank(t) for t in g[col(hr, "risk_text")] if blank(t)))
+    tax = " > ".join(x for x in [blank(g[col(hr, k)].iloc[0]) for k in ("risk_l1", "risk_l2", "risk_l3")
+                                 if col(hr, k, False)] if x)
+    ART["LR"][cid(rid)] = dict(title=blank(g[col(hr, "risk_title")].iloc[0]), text="\n".join(texts), ctx=f"taxonomy: {tax}")
+hc = D["helios_ctrl"]
+for lid, g in hc.groupby(col(hc, "c_lib")):
+    ART["L1C"][cid(lid)] = dict(title=blank(g[col(hc, "c_lib_title")].iloc[0]), text=blank(g[col(hc, "c_lib_text")].iloc[0]), ctx="")
+biz_col = col(hc, "c_business", False)
+for _, r in hc.drop_duplicates(col(hc, "c_inst")).iterrows():
+    ctx = " | ".join(f"{k}: {blank(r[c])}" for k, c in [("business", biz_col), ("legal entity", col(hc, "c_le", False)),
+            ("status", col(hc, "c_status", False)), ("owner", col(hc, "c_owner", False))] if c and blank(r[c]))
+    ART["1C"][cid(r[col(hc, "c_inst")])] = dict(title=blank(r[col(hc, "c_inst_title")]), text=blank(r[col(hc, "c_inst_text")]),
+        ctx=ctx, parent=cid(r[col(hc, "c_lib")]), business=blank(r[biz_col]) if biz_col else "")
+st_col = col(hc, "c_status", False)
+live = hc[hc[st_col].astype(str).isin(LIVE_INSTANCE_STATUS)] if st_col else hc
+LIVE_1C = live.groupby(live[col(hc, "c_lib")].map(cid))[col(hc, "c_inst")].nunique().to_dict()
+LIVE_BIZ = live.groupby(live[col(hc, "c_lib")].map(cid))[biz_col].nunique().to_dict() if biz_col else {}
+
+# ---- linkage outputs (model-LINKED only) -------------------------------------------
+def links(df, level, tgt_key, src):
+    a = col(df, "alert_id"); t = col(df, tgt_key, exclude=(a,)); d = col(df, "decision")
+    s, rs = col(df, "score", False), col(df, "reason", False)
+    ea = col(df, "ev_alert", False); et = col(df, "ev_target", False, exclude=(ea,))
+    x = df[df[d].astype(str).str.upper().str.strip().isin(LINKED_VALUES)]
+    USED[src] = dict(alert=a, target=t, decision=d, score=s, reason=rs, ev_alert=ea, ev_target=et)
+    return pd.DataFrame({"alert": x[a].map(cid), "artefact": x[t].map(cid), "level": level,
+                         "link_score": pd.to_numeric(x[s], errors="coerce") if s else np.nan,
+                         "link_reason": x[rs].map(blank) if rs else "",
+                         "link_ev_alert": x[ea].map(blank) if ea else "",
+                         "link_ev_artefact": x[et].map(blank) if et else ""})
+
+rsm_df = D["ia_rsm"]
+L = pd.concat([links(rsm_df, "RSM", "rsm", "ia_rsm"), links(D["ia_rob"], "ROB", "rob", "ia_rob"),
+               links(D["ia_lr"], "LR", "lr", "ia_lr"), links(D["ia_l1c"], "L1C", "l1c", "ia_l1c"),
+               links(D["ia_1c"], "1C", "1c", "ia_1c")], ignore_index=True)
+L = L[(L.alert != "") & (L.artefact != "")].drop_duplicates(["alert", "level", "artefact"]).reset_index(drop=True)
+RSM_RGL = dict(zip(rsm_df[col(rsm_df, "rsm")].map(cid), rsm_df[col(rsm_df, "rgl", exclude=(col(rsm_df, "rsm"),))].map(cid)))
+
+def _w(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+def _segments(q):
+    """Linkage quotes are often several excerpts joined ('...', ';', '|', newlines, bullets) or wrapped in
+    quotes / JSON lists. Split into excerpts and keep those long enough to be meaningful."""
+    q = str(q or "")
+    if q.strip().startswith("["):
+        try:
+            q = " | ".join(map(str, json.loads(q)))
+        except Exception:
+            pass
+    parts = re.split(r"\.\.\.|\u2026|\||;|\n|\u2022|\" \"", q)
+    # drop field labels the linkage model prefixed, e.g. "Obligation Title: ...", "Summary Detail: ..."
+    parts = [re.sub(r"^\s*[\"']?(obligation|regulation|summary|control|risk|instance)?\s*"
+                    r"(title|detail(ed)?( text)?|text|description|name)\s*:\s*", "", x, flags=re.I) for x in parts]
+    return [p for p in (_w(x) for x in parts) if len(p.split()) >= 3]
+
+def _found(q, text):
+    """VERIFIED if any excerpt of the quote is in the text: full excerpt, or its first / last 8 words."""
+    t = _w(text)
+    for p in _segments(q):
+        w = p.split()
+        if p in t or (len(w) >= 8 and (" ".join(w[:8]) in t or " ".join(w[-8:]) in t)):
+            return True
+    return False
+
+def _art_full(level, aid):
+    """artefact text incl. context + (for 1C) parent control standard - same text the linkage step saw"""
+    x = ART[level].get(aid, {})
+    s = f"{x.get('title', '')}\n{x.get('text', '')}\n{x.get('ctx', '')}"
+    if level == "1C" and x.get("parent"):
+        p = ART["L1C"].get(x["parent"], {})
+        s += f"\n{p.get('title', '')}\n{p.get('text', '')}"
+    if level == "ROB" and ROB_RSM.get(aid):              # ROB linkage quoted 'evidence_from_regulation':
+        p = ART["RSM"].get(ROB_RSM[aid], {})            # may come from the obligation or its parent summary
+        s += f"\n{p.get('title', '')}\n{p.get('text', '')}"
+    if level == "RSM" and RSM_RGL.get(aid):
+        s += f"\n{ART['RGL'].get(RSM_RGL[aid], {}).get('title', '')}"
+    return s
+
+def link_evidence(r):
+    """Impact-link support from the LINKAGE OUTPUT ONLY (no audit files): are the linkage's own evidence
+    quotes found in the raw texts? VERIFIED = both | PARTIAL = one | UNVERIFIED = none / no quotes.
+    If the linkage file has no artefact-side quote column, the best possible is PARTIAL."""
+    a = ALERT.get(r.alert, {})
+    n = int(_found(r.link_ev_alert, f"{a.get('title', '')}\n{a.get('text', '')}")) + \
+        int(_found(r.link_ev_artefact, _art_full(r.level, r.artefact)))
+    return "VERIFIED" if n == 2 else "PARTIAL" if n == 1 else "UNVERIFIED"
+
+# --- diagnostics: which evidence-like columns exist (RSM / ROB had no artefact-side quote column) ---
+for k in ("ia_rsm", "ia_rob", "ia_lr", "ia_l1c", "ia_1c"):
+    ev_cols = [c for c in D[k].columns if re.search(r"evid|quote|excerpt|snippet|support", str(c), re.I)]
+    print(f"  evidence-like columns in {k}: {ev_cols}")
+
+L["link_evidence"] = [link_evidence(r) for r in L.itertuples()]
+L["_ev_alert_ok"] = [_found(r.link_ev_alert, f"{ALERT[r.alert]['title']}\n{ALERT[r.alert]['text']}") if r.alert in ALERT else False
+                     for r in L.itertuples()]
+L["_ev_art_ok"] = [_found(r.link_ev_artefact, _art_full(r.level, r.artefact)) for r in L.itertuples()]
+print("\nLINKAGE QUOTE CHECK (share found)")
+print(L.groupby("level").agg(alert_quote_present=("link_ev_alert", lambda s: round((s != "").mean(), 2)),
+                             alert_quote_found=("_ev_alert_ok", "mean"),
+                             artefact_quote_present=("link_ev_artefact", lambda s: round((s != "").mean(), 2)),
+                             artefact_quote_found=("_ev_art_ok", "mean")).round(2).reindex(LEVELS).to_string())
+smp = L[(L.link_ev_artefact != "") & ~L._ev_art_ok].groupby("level").head(1)
+for r in smp.itertuples():   # one unmatched artefact quote per level, to eyeball against the artefact text
+    print(f"\n[{r.level} {r.artefact}] quote: {r.link_ev_artefact[:200]!r}\n   text : {_art_full(r.level, r.artefact)[:200]!r}")
+L = L.drop(columns=["_ev_alert_ok", "_ev_art_ok"])
+L["has_text"] = [bool(ART[r.level].get(r.artefact, {}).get("text") or ART[r.level].get(r.artefact, {}).get("title"))
+                 for r in L.itertuples()]
+L["alert_found"] = L["alert"].isin(ALERT)
+
+print("\nCOLUMNS USED"); [print(f"  {k:10s} {v}") for k, v in USED.items()]
+print(f"\nraw texts | alerts {len(ALERT):,} | " + " | ".join(f"{k} {len(v):,}" for k, v in ART.items()))
+print("\nLINKED LINKS IN SCOPE")
+print(L.groupby("level").agg(links=("artefact", "size"), alerts=("alert", "nunique"), artefacts=("artefact", "nunique"),
+      no_text=("has_text", lambda s: int((~s).sum())), alert_missing=("alert_found", lambda s: int((~s).sum())),
+      link_ev_verified=("link_evidence", lambda s: int((s == "VERIFIED").sum())),
+      link_ev_partial=("link_evidence", lambda s: int((s == "PARTIAL").sum())),
+      link_ev_unverified=("link_evidence", lambda s: int((s == "UNVERIFIED").sum()))).reindex(LEVELS).to_string())
+bad = L[~L.has_text | ~L.alert_found]
+assert len(bad) <= 0.05 * len(L), f"{len(bad)} links have no artefact / alert text - check ID formats (table above)"
+L = L[L.has_text & L.alert_found].reset_index(drop=True)
+print(f"\npreflight passed: {len(L):,} links, {L.alert.nunique():,} alerts")
+
+
+
+# ====== CELL 3: JSON SCHEMAS (field order = generation order: evidence -> analysis -> label) =
+SN = {"type": ["string", "null"]}
+Q = lambda d: {"type": ["string", "null"], "description": d}
+
+LLM_REQ_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "llm_requirements",
+    "type": "object", "additionalProperties": False,
+    "required": ["requirements", "effective_date_quote", "effective_date", "actionable"],
+    "properties": {
+        "requirements": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["req_id", "evidence_from_alert", "requirement", "action", "who_scope", "timing_frequency",
+                         "threshold", "evidence_records", "modal_quote", "mandatory", "change_type"],
+            "properties": {
+                "req_id": {"type": "string", "pattern": "^R[0-9]+$"},
+                "evidence_from_alert": {"type": "string", "description": "verbatim substring of alert_text"},
+                "requirement": {"type": "string", "minLength": 10},
+                "action": {"type": "string", "description": "what must be done / is prohibited"},
+                "who_scope": Q("who it applies to / which products, customers, activities; null if not stated"),
+                "timing_frequency": Q("deadline, response time or frequency; null if not stated"),
+                "threshold": Q("numeric limit, amount, percentage; null if not stated"),
+                "evidence_records": Q("records, reports, filings, disclosures required; null if not stated"),
+                "modal_quote": Q("verbatim words carrying the obligation (must / shall / required / prohibited) or null"),
+                "mandatory": {"type": "boolean"},
+                "change_type": {"enum": CHANGE_TYPES}}}},
+        "effective_date_quote": Q("verbatim words giving the effective / compliance date, or null"),
+        "effective_date": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "actionable": {"type": "boolean"}}}
+
+ELEM_ITEM = {"type": "object", "additionalProperties": False,
+             "required": ["element", "artefact_quote", "comparison", "result"],
+             "properties": {"element": {"enum": ELEMENTS},
+                            "artefact_quote": Q("verbatim substring of artefact_text, or null"),
+                            "comparison": {"type": "string", "description": "one short sentence comparing alert vs artefact"},
+                            "result": {"enum": ELEMENT_RESULT}}}
+CHECK_ITEM = {"type": "object", "additionalProperties": False, "required": ["alert_quote", "artefact_quote", "answer"],
+              "properties": {"alert_quote": SN, "artefact_quote": SN, "answer": {"enum": YNC}}}
+
+def llm_gap_schema(level):
+    props = {"points": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "required": ["req_id", "remit_reason", "remit", "elements", "missing", "recommended_change"],
+        "properties": {"req_id": {"type": "string"}, "remit_reason": {"type": "string"}, "remit": {"enum": REMIT},
+                       "elements": {"type": "array", "items": ELEM_ITEM}, "missing": SN, "recommended_change": SN}}}}
+    req = ["points"]
+    if level in CONTROL_LEVELS:
+        props["breakage_checklist"] = {"type": "object", "additionalProperties": False, "required": list(BREAKAGE_CHECKS),
+                                       "properties": {k: CHECK_ITEM for k in BREAKAGE_CHECKS}}
+        req.append("breakage_checklist")
+    if level == "1C":
+        props["entity_in_scope"] = {"type": "object", "additionalProperties": False, "required": ["reason", "answer"],
+                                    "properties": {"reason": {"type": "string"}, "answer": {"enum": YNC}}}
+        req.append("entity_in_scope")
+    props["gap_summary"] = {"type": "string"}
+    req.append("gap_summary")
+    return {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": f"llm_gap_{level}",
+            "type": "object", "additionalProperties": False, "required": req, "properties": props}
+LLM_GAP_SCHEMA = {lv: llm_gap_schema(lv) for lv in LEVELS}
+
+JUDGE_CHECKS = ["remit_correct", "quotes_support_results", "no_generic_matches", "no_missed_cover"]
+LLM_JUDGE_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "llm_gap_judge",
+    "type": "object", "additionalProperties": False,
+    "required": ["artefact_quote", "checks", "error_type", "correct_artefact_status", "verdict"],
+    "properties": {
+        "artefact_quote": Q("verbatim substring of artefact_text supporting your verdict, or null"),
+        "checks": {"type": "object", "additionalProperties": False, "required": JUDGE_CHECKS,
+                   "properties": {k: {"enum": YNC} for k in JUDGE_CHECKS}},
+        "error_type": {"enum": ["NONE", "FALSE_GAP_OUT_OF_REMIT", "FALSE_GAP_COVERED", "MISSED_GAP",
+                                "WRONG_ELEMENT_RESULT", "UNSUPPORTED"]},
+        "correct_artefact_status": {"enum": COVERAGE_ORDER},
+        "verdict": {"enum": ["AGREE", "DISAGREE", "UNCERTAIN"]}}}
+
+ART_STATUS = COVERAGE_ORDER + ["ENTITY_OUT_OF_SCOPE", "NOT_ASSESSABLE", "ERROR"]
+GAP_RECORD_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "gap_record",
+    "type": "object", "required": ["schema_version", "run_id", "record_id", "alert", "artefact", "impact_link",
+                                   "result", "grounding", "context", "points", "audit", "triage"],
+    "properties": {
+        "schema_version": {"const": SCHEMA_VERSION}, "run_id": {"type": "string"}, "record_id": {"type": "string"},
+        "alert": {"type": "object", "required": ["id", "title"]},
+        "artefact": {"type": "object", "required": ["level", "id", "title"], "properties": {"level": {"enum": LEVELS}}},
+        "impact_link": {"type": "object", "required": ["link_evidence"],
+                        "properties": {"link_evidence": {"enum": ["VERIFIED", "PARTIAL", "UNVERIFIED"]},
+                                       "link_score": {"type": ["number", "null"]}}},
+        "result": {"type": "object", "required": ["artefact_status", "gap_tier", "n_points"],
+                   "properties": {"artefact_status": {"enum": ART_STATUS}, "gap_tier": {"enum": list(TIER_ORDER)},
+                                  "breakage_types": {"type": "array", "items": {"enum": list(BREAKAGE_CHECKS)}},
+                                  "entity_in_scope": {"enum": YNC + [None]}, "n_points": {"type": "integer"}}},
+        "grounding": {"type": "object", "required": ["claimed_quotes", "verified_quotes", "grounding_ratio",
+                                                     "hallucination_suspected"],
+                      "properties": {"grounding_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                                     "hallucination_suspected": {"type": "boolean"}}},
+        "context": {"type": "object", "required": ["blast_radius", "urgency"],
+                    "properties": {"urgency": {"enum": list(URGENCY_ORDER)},
+                                   "days_to_effective": {"type": ["integer", "null"]}, "blast_radius": {"type": "object"}}},
+        "points": {"type": "array", "items": {"type": "object",
+                   "required": ["req_id", "change_type", "mandatory", "remit", "elements", "coverage_status", "gap_tier"],
+                   "properties": {"coverage_status": {"enum": COVERAGE_ORDER}, "gap_tier": {"enum": list(TIER_ORDER)},
+                                  "change_type": {"enum": CHANGE_TYPES}, "mandatory": {"type": "boolean"}}}},
+        "audit": {"type": "object"},
+        "consistency": {"type": "object"},
+        "triage": {"type": "object", "required": ["confidence_score", "confidence_components", "confidence_caps",
+                                                  "confidence_tier", "route"],
+                   "properties": {"confidence_score": {"type": "number", "minimum": 0, "maximum": 100},
+                                  "confidence_components": {"type": "object"},
+                                  "confidence_caps": {"type": "array", "items": {"enum": list(CONF_CAPS)}},
+                                  "confidence_tier": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+                                  "route": {"enum": sorted(set(ROUTE.values()) | {"NO_ROUTE"})}}}}}
+
+REQUIREMENT_RECORD_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "requirement_record",
+    "type": "object", "required": ["schema_version", "run_id", "alert_id", "status", "actionable", "requirements",
+                                   "effective_date", "effective_date_verified"],
+    "properties": {"schema_version": {"const": SCHEMA_VERSION}, "status": {"enum": ["OK", "ERROR"]},
+                   "requirements": {"type": "array", "items": {"type": "object",
+                                    "required": ["req_id", "change_type", "mandatory", "quote_verified",
+                                                 "mandatory_verified", "elements_specified"]}}}}
+
+RGL_RECORD_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "rgl_rollup_record",
+    "type": "object", "required": ["schema_version", "alert_id", "regulation_id", "regulation_status", "gap_tier",
+                                   "summaries", "counts"],
+    "properties": {"schema_version": {"const": SCHEMA_VERSION}, "regulation_status": {"enum": ART_STATUS},
+                   "gap_tier": {"enum": list(TIER_ORDER)}}}
+
+ALERT_SUMMARY_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "alert_gap_summary",
+    "type": "object", "required": ["schema_version", "alert_id", "rank", "worst_tier", "tier_counts", "by_level",
+                                   "urgency", "routes"],
+    "properties": {"schema_version": {"const": SCHEMA_VERSION}, "rank": {"type": "integer", "minimum": 1},
+                   "worst_tier": {"enum": list(TIER_ORDER)}, "urgency": {"enum": list(URGENCY_ORDER)}}}
+
+SCHEMAS = {"llm_requirements": LLM_REQ_SCHEMA, **{f"llm_gap_{lv}": s for lv, s in LLM_GAP_SCHEMA.items()},
+           "llm_gap_judge": LLM_JUDGE_SCHEMA, "gap_record": GAP_RECORD_SCHEMA,
+           "requirement_record": REQUIREMENT_RECORD_SCHEMA, "rgl_rollup_record": RGL_RECORD_SCHEMA,
+           "alert_gap_summary": ALERT_SUMMARY_SCHEMA}
+for n, s in SCHEMAS.items():
+    with open(f"{GAP_DIR}/schemas/{n}.schema.json", "w") as f:
+        json.dump(s, f, indent=2)
+with open(f"{GAP_DIR}/schemas/rule_tables.json", "w") as f:
+    json.dump({"BASE_TIER": BASE_TIER, "COVERAGE_TIER_SHIFT": COVERAGE_TIER_SHIFT, "NOT_MANDATORY_SHIFT": NOT_MANDATORY_SHIFT,
+               "NO_GAP_COVERAGE": NO_GAP_COVERAGE, "COVERAGE_ORDER": COVERAGE_ORDER, "URGENCY_BANDS": URGENCY_BANDS,
+               "ROUTE": {f"{a}|{b}": v for (a, b), v in ROUTE.items()}, "BREAKAGE_CHECKS": BREAKAGE_CHECKS,
+               "CONF_RUBRIC": CONF_RUBRIC, "CONF_CAPS": CONF_CAPS, "CONF_BANDS": CONF_BANDS}, f, indent=2)
+
+try:
+    import jsonschema
+    def schema_errors(obj, schema):
+        return [f"{'/'.join(map(str, e.path))}: {e.message}" for e in jsonschema.Draft202012Validator(schema).iter_errors(obj)][:5]
+except ImportError:
+    print("jsonschema not installed - minimal checks only (pip install jsonschema)")
+    def schema_errors(obj, schema):
+        if not isinstance(obj, dict):
+            return ["not an object"]
+        errs = [f"missing {k}" for k in schema.get("required", []) if k not in obj]
+        for k, p in schema.get("properties", {}).items():
+            if k in obj and "enum" in p and obj[k] not in p["enum"]:
+                errs.append(f"{k}={obj[k]!r} not in enum")
+        return errs
+print(f"{len(SCHEMAS)} schemas + rule_tables.json saved to {GAP_DIR}/schemas/")
+
+
+
+# ====== CELL 4: TEXT HELPERS + PROMPTS ========================================
+try:
+    from rapidfuzz import fuzz
+except ImportError:
+    fuzz = None
+
+def words(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+def quote_found(q, text, min_len=12):
+    """Verbatim match (case / punctuation-insensitive); 8-word ends for long quotes; rapidfuzz partial >= 92 if installed."""
+    q = words(q)
+    if len(q) < min_len:
+        return False
+    t = words(text)
+    if q in t:
+        return True
+    w = q.split()
+    if len(w) >= 6 and (" ".join(w[:8]) in t or " ".join(w[-8:]) in t):
+        return True
+    return bool(fuzz and len(q) >= 25 and fuzz.partial_ratio(q, t) >= 92)
+
+def alert_text(a):
+    return f"{ALERT[a]['title']}\n{ALERT[a]['text']}".strip()
+
+def artefact_text(level, aid):
+    x = ART[level].get(aid, {})
+    s = f"{x.get('title', '')}\n{x.get('text', '')}".strip()
+    if x.get("ctx"):
+        s += f"\n[context] {x['ctx']}"
+    if level == "1C" and x.get("parent"):
+        p = ART["L1C"].get(x["parent"], {})
+        s += f"\n[parent control standard {x['parent']}] {p.get('title', '')}: {p.get('text', '')}"
+    return s
+
+FOCUS = {
+    "RSM": ("REGULATION SUMMARY in RegMap (the bank's inventory of regulations)",
+            "Does this summary, as currently written, already reflect each requirement element?"),
+    "ROB": ("REGULATORY OBLIGATION in RegMap (the bank's statement of what it must do)",
+            "Does this obligation, as currently written, state each requirement element (same scope, timing, thresholds)?"),
+    "LR":  ("LIBRARY RISK in Helios (a risk the bank manages)",
+            "Does this risk statement describe the exposure each requirement creates or changes? A risk is not expected to "
+            "contain control steps: judge 'action' as 'the risk of failing to do this is described'."),
+    "L1C": ("LIBRARY CONTROL STANDARD in Helios (the designed control)",
+            "Is this control standard designed to deliver each requirement element (what it checks, scope, frequency, "
+            "thresholds, evidence)?"),
+    "1C":  ("LIVE CONTROL INSTANCE in Helios (the control as operated in one business / legal entity)",
+            "Does this live control, as operated in its business and entity, perform each requirement element? Use its "
+            "parent standard and its own local steps."),
+}
+
+REQ_PROMPT = """ROLE:
+You are a senior Regulatory Change analyst at a Tier-1 Global Bank - HSBC (United States). Break ONE regulatory
+development (alert_text) into the specific REQUIREMENT POINTS a bank must act on. You classify and quote; you never score.
+
+WHAT THE INPUT CONTAINS:
+* alert_text: the development (title, summary, update, intro).
+* alert_metadata: jurisdiction, regulator, status, dates, taxonomy tag.
+
+INSTRUCTIONS (fill every field in the order of the schema - quote first, label last):
+* One point per distinct requirement the development creates, changes, removes or clarifies for a firm; split compound
+  sentences; never invent content. Background / commentary with no requirement is not a point.
+* evidence_from_alert: exact words copied from alert_text.
+* action / who_scope / timing_frequency / threshold / evidence_records: what the alert specifies for that element; null
+  when the alert does not specify it. Never fill an element from general knowledge.
+* modal_quote: the exact words that make it binding (must, shall, required, prohibited, may not). mandatory = true only if
+  modal_quote is not null; guidance, expectations and "should consider" are mandatory = false.
+* change_type - choose by these definitions:
+  NEW_MANDATE           a requirement that did not exist before
+  PARAMETER_CHANGE      an existing requirement with a changed number, deadline, frequency or threshold
+  SCOPE_EXPANSION       an existing requirement now applying to more firms, products, customers or activities
+  CLARIFICATION         guidance on how an existing requirement is interpreted or evidenced
+  RELAXATION_OR_REMOVAL a requirement eased, delayed, narrowed or withdrawn
+  CANNOT_DETERMINE      the text does not say whether it is new or changed - choosing this is better than guessing
+* effective_date_quote: exact words giving the effective / compliance date (null if none); effective_date as YYYY-MM-DD
+  only when that quote states a full date, else null.
+* actionable = false and an empty list if the alert creates no requirement for a firm.
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object matching this schema exactly, fields in this order. Do not use markdown formatting.
+{schema}"""
+
+CHECKLIST_TEXT = "\n".join(f"   {k}: YES only if {v}" for k, v in BREAKAGE_CHECKS.items())
+
+GAP_PROMPT = """ROLE:
+You are a lead Regulatory Compliance & Controls Assurance AI Architect at a Tier-1 Global Bank - HSBC (United States).
+A regulatory development (alert) has been linked to ONE {label} (artefact_text). Compare them requirement by requirement.
+You answer fixed questions with categories and exact quotes; you never give scores, tiers or an overall verdict.
+
+WHAT THE INPUT CONTAINS:
+* alert_text + alert_metadata: the development.
+* requirement_points: R1, R2, ... with the elements the alert specifies (non-null fields) and the change_type.
+* artefact_text: the FULL text of the {label}, with context lines.
+* impact_link: why an earlier step linked them (context only; that link may be wrong).
+
+THE QUESTION FOR THIS LEVEL:
+{focus}
+
+FOR EVERY REQUIREMENT POINT (fill in schema order - reason first, label last):
+1. remit_reason, then remit: IN_REMIT if the point is about what this artefact is meant to cover; OUT_OF_REMIT if it is
+   about a different activity; CANNOT_DETERMINE if the texts do not allow a decision.
+2. If IN_REMIT: one entry in elements for "action" and for EACH OTHER element the point specifies (non-null):
+   artefact_quote (exact words from artefact_text, or null), comparison (one sentence), then result:
+     MATCHES           the artefact states the same thing (quote required)
+     DIFFERS           the artefact states something different, e.g. 30 days vs 10 days (quote required)
+     ABSENT            the artefact does not address this element
+     CANNOT_DETERMINE  the artefact text is too thin or ambiguous - choosing this is better than guessing
+   If OUT_OF_REMIT or CANNOT_DETERMINE: elements = [].
+3. missing and recommended_change (one sentence each) when any element is DIFFERS or ABSENT; else null.
+{extra}
+GUARDS:
+* NO MATCH ON GENERIC TEXT: "comply with applicable laws", "monitor regulatory change", "as required" never MATCH.
+* NO GAP WITHOUT REMIT: a point about a different activity is OUT_OF_REMIT, never ABSENT.
+* QUOTES ARE CHECKED BY CODE: a MATCHES / DIFFERS / YES whose quote is not found verbatim is discarded.
+* gap_summary last: one or two plain sentences for an SME.
+
+EXAMPLE:
+R1 action "respond to consumer information requests", timing_frequency "within 10 business days"; artefact: "... requests
+are logged and answered within 30 calendar days of receipt ..." ->
+remit IN_REMIT; elements: action MATCHES (quote "requests are logged and answered"), timing_frequency DIFFERS (quote
+"answered within 30 calendar days of receipt"); missing "the 10-business-day deadline"; change "Shorten the response
+deadline to 10 business days."
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object matching this schema exactly, fields in this order. Do not use markdown formatting.
+{schema}"""
+
+_CHK = ("4. breakage_checklist (whole artefact vs the alert): for each check give alert_quote, artefact_quote, then\n"
+        "   answer YES / NO / CANNOT_DETERMINE. YES needs both quotes.\n" + CHECKLIST_TEXT + "\n")
+EXTRA = {"L1C": _CHK,
+         "1C": _CHK + "5. entity_in_scope: reason, then YES if this instance's business / legal entity is within the alert's\n"
+                      "   scope, NO if clearly outside it, CANNOT_DETERMINE if the alert or context does not say.\n"}
+
+JUDGE_PROMPT = """ROLE:
+You are a senior Regulatory Compliance & Controls ASSURANCE reviewer at a Tier-1 Global Bank - HSBC (United States).
+ANOTHER AI model compared one alert with one {label}; code derived a status per requirement point and for the artefact
+from the model's element answers. Decide whether the ARTEFACT STATUS is correct. Look for errors first.
+
+INPUT: alert_text, requirement_points, artefact_text (full), model_output (per point: remit, element results with quotes,
+derived coverage_status; artefact_status).
+
+THE QUESTION FOR THIS LEVEL:
+{focus}
+
+CHECKS (answer each YES / NO / CANNOT_DETERMINE first):
+* remit_correct: points marked IN_REMIT really concern this artefact, and OUT_OF_REMIT ones do not.
+* quotes_support_results: each MATCHES / DIFFERS quote really says what the result claims.
+* no_generic_matches: no MATCHES rests on generic wording.
+* no_missed_cover: no ABSENT element is actually covered elsewhere in artefact_text.
+Then artefact_quote (exact words supporting your view, or null), error_type (NONE unless you disagree),
+correct_artefact_status, and verdict LAST: AGREE | DISAGREE | UNCERTAIN (texts insufficient; SME needed).
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object matching this schema exactly, fields in this order. Do not use markdown formatting.
+{schema}"""
+
+sj = lambda s: json.dumps(s, separators=(",", ":"))
+REQ_SYS = REQ_PROMPT.format(schema=sj(LLM_REQ_SCHEMA))
+GAP_SYS = {lv: GAP_PROMPT.format(label=FOCUS[lv][0], focus=FOCUS[lv][1], extra=EXTRA.get(lv, ""),
+                                 schema=sj(LLM_GAP_SCHEMA[lv])) for lv in LEVELS}
+JUDGE_SYS = {lv: JUDGE_PROMPT.format(label=FOCUS[lv][0], focus=FOCUS[lv][1], schema=sj(LLM_JUDGE_SCHEMA)) for lv in LEVELS}
+print("prompts ready")
+
+
+
+# ====== CELL 5: RUNNERS + DETERMINISTIC DERIVATION (library) ==================
+def js(v):
+    return json.loads(v) if isinstance(v, str) and v[:1] in "[{" else v
+
+def save_ckpt(rows, path):
+    if not path:
+        return
+    df = pd.DataFrame(rows)
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].map(lambda v: json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, (dict, list)) else v)
+    df.to_parquet(path + ".tmp", index=False)
+    os.replace(path + ".tmp", path)
+
+def load_ckpt(path, keys):
+    if path and os.path.exists(path):
+        df = pd.read_parquet(path)
+        df = df[df["call_status"] == "OK"]
+        return df.to_dict("records"), set(map(tuple, df[keys].astype(str).values))
+    return [], set()
+
+async def call_valid(system, payload, schema):
+    errs, obj = [], None
+    for attempt in range(MAX_RETRIES_SCHEMA + 1):
+        p = payload if attempt == 0 else {**payload, "previous_answer_errors":
+              f"Your previous JSON broke the schema: {errs}. Return a corrected JSON object only."}
+        obj = await call_llm(system, p, schema, MAX_TOKENS)
+        errs = schema_errors(obj, schema) if obj is not None else ["no / unparseable response"]
+        if not errs:
+            return obj, "OK", []
+    return obj, "SCHEMA_ERROR", errs
+
+async def run_pool(items, worker, ckpt, keys, stage):
+    global CURRENT_STAGE
+    CURRENT_STAGE = stage
+    rows, done = load_ckpt(ckpt, keys)
+    todo = [it for it in items if tuple(str(it[k]) for k in keys) not in done]
+    print(f"[{stage}] {len(todo):,} calls to make ({len(rows):,} already done)")
+    sem = asyncio.Semaphore(CONCURRENCY)
+    async def guarded(it):
+        async with sem:
+            return await worker(it)
+    tasks = [asyncio.create_task(guarded(it)) for it in todo]
+    for i, f in enumerate(tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=stage), 1):
+        rows.append(await f)
+        if i % SAVE_EVERY == 0:
+            save_ckpt(rows, ckpt)
+    save_ckpt(rows, ckpt)
+    return pd.DataFrame(rows)
+
+# ---- step 1 ----------------------------------------------------------------------------
+async def req_worker(it):
+    a = it["alert"]; txt = alert_text(a)
+    obj, st, errs = await call_valid(REQ_SYS, {"alert_text": txt, "alert_metadata": ALERT[a]["meta"]}, LLM_REQ_SCHEMA)
+    obj = obj if st == "OK" else {}
+    reqs = obj.get("requirements", [])
+    for q in reqs:
+        q["quote_verified"] = quote_found(q.get("evidence_from_alert"), txt)
+        mq = words(q.get("modal_quote"))
+        q["mandatory_verified"] = bool(q.get("mandatory")) and bool(mq) and f" {mq} " in f" {words(txt)} "  # proven only
+        q["elements_specified"] = ["action"] + [e for e in ELEMENTS[1:] if blank(q.get(e))]
+    dq = obj.get("effective_date_quote")
+    d_ok = bool(dq) and len(words(dq)) >= 6 and words(dq) in words(txt)
+    return {"alert": a, "call_status": st, "schema_errors": errs, "actionable": bool(obj.get("actionable", False)),
+            "requirements": reqs, "effective_date": obj.get("effective_date") if d_ok else None,
+            "effective_date_quote": dq, "effective_date_verified": d_ok}
+
+def verified_reqs(a):
+    return [q for q in (js(REQ.get(a)) or []) if q.get("quote_verified")]
+
+# ---- step 2 ----------------------------------------------------------------------------
+async def gap_worker(it):
+    pts = verified_reqs(it["alert"])
+    base = {k: it[k] for k in ("alert", "artefact", "level")}
+    if not pts:
+        return {**base, "call_status": "OK", "schema_errors": [], "llm": None}
+    payload = {"alert_text": alert_text(it["alert"]), "alert_metadata": ALERT[it["alert"]]["meta"],
+               "requirement_points": [{k: q.get(k) for k in ["req_id", "requirement", "change_type"] + ELEMENTS} for q in pts],
+               "artefact_id": it["artefact"], "artefact_text": artefact_text(it["level"], it["artefact"]),
+               "impact_link": {"reasoning": it["link_reason"], "evidence_from_alert": it["link_ev_alert"],
+                               "evidence_from_artefact": it["link_ev_artefact"]}}
+    obj, st, errs = await call_valid(GAP_SYS[it["level"]], payload, LLM_GAP_SCHEMA[it["level"]])
+    return {**base, "call_status": st, "schema_errors": errs, "llm": obj if st == "OK" else None}
+
+# ---- deterministic derivation ------------------------------------------------------------
+def coverage_from_elements(remit, elems, required, change_type):
+    if remit == "OUT_OF_REMIT":
+        return "OUT_OF_REMIT"
+    if remit != "IN_REMIT":
+        return "CANNOT_DETERMINE"
+    res = {e["element"]: e["result_checked"] for e in elems}
+    vals = [res.get(e, "CANNOT_DETERMINE") for e in required]      # element skipped by the model -> cannot determine
+    if "DIFFERS" in vals:
+        return "OVER_CONTROLLED" if change_type == "RELAXATION_OR_REMOVAL" else "CONTRADICTED"
+    if res.get("action") == "ABSENT":
+        return "NOT_COVERED"
+    if all(v == "MATCHES" for v in vals):
+        return "COVERED"
+    if "ABSENT" in vals:
+        return "PARTIAL"
+    return "CANNOT_DETERMINE"
+
+def tier_for(cov, change_type, mandatory):
+    if cov in NO_GAP_COVERAGE:
+        return NO_GAP_COVERAGE[cov]
+    t = BASE_TIER.get(change_type, 2) + COVERAGE_TIER_SHIFT.get(cov, 0) + (0 if mandatory else NOT_MANDATORY_SHIFT)
+    return f"T{min(max(t, 1), 4)}"
+
+def urgency_of(a):
+    d = EFF.get(a)
+    if not d:
+        return "UNKNOWN", None
+    try:
+        days = (dt.date.fromisoformat(str(d)) - RUN_DATE).days
+    except ValueError:
+        return "UNKNOWN", None
+    return next(lbl for lo, hi, lbl in URGENCY_BANDS if lo <= days < hi), days
+
+def blast_of(level, aid, alert):
+    if level == "RSM":
+        return {"obligations_under_summary": int(ROBS_PER_RSM.get(aid, 0))}
+    if level == "L1C":
+        return {"live_instances": int(LIVE_1C.get(aid, 0)), "businesses": int(LIVE_BIZ.get(aid, 0))}
+    if level == "1C":
+        p = ART["1C"].get(aid, {}).get("parent", "")
+        return {"sibling_live_instances": int(LIVE_1C.get(p, 0)), "businesses_under_standard": int(LIVE_BIZ.get(p, 0))}
+    if level == "LR":
+        return {"controls_linked_to_alert": int(L1C_PER_ALERT.get(alert, 0))}
+    return {"obligations": 1}
+
+def derive_record(link, llm, call_status):
+    reqs = {q["req_id"]: q for q in verified_reqs(link.alert)}
+    atxt, alt = artefact_text(link.level, link.artefact), alert_text(link.alert)
+    claimed = verified = 0
+    points = []
+    for p in (llm or {}).get("points", []):
+        q = reqs.get(p["req_id"])
+        if not q:
+            continue
+        elems = []
+        for e in p.get("elements", []):
+            r = e["result"]
+            ok = quote_found(e.get("artefact_quote"), atxt) if r in ("MATCHES", "DIFFERS") else None
+            if ok is not None:
+                claimed += 1; verified += int(ok)
+            elems.append({**e, "quote_verified": ok, "result_checked": r if ok in (None, True) else "CANNOT_DETERMINE"})
+        cov = coverage_from_elements(p["remit"], elems, q["elements_specified"], q["change_type"])
+        points.append(dict(req_id=p["req_id"], requirement=q.get("requirement"), change_type=q["change_type"],
+                           mandatory=q["mandatory_verified"], remit=p["remit"], remit_reason=p.get("remit_reason"),
+                           elements=elems, coverage_status=cov, gap_tier=tier_for(cov, q["change_type"], q["mandatory_verified"]),
+                           missing=p.get("missing"), recommended_change=p.get("recommended_change")))
+    breakage = []
+    for k, c in ((llm or {}).get("breakage_checklist") or {}).items():
+        if c["answer"] == "YES":
+            claimed += 2
+            ok = int(quote_found(c.get("alert_quote"), alt)) + int(quote_found(c.get("artefact_quote"), atxt))
+            verified += ok
+            if ok == 2:
+                breakage.append(k)
+    ent = ((llm or {}).get("entity_in_scope") or {}).get("answer") if link.level == "1C" else None
+    if call_status != "OK":
+        status, tier = "ERROR", "REVIEW"
+    elif llm is None or not points:
+        status, tier = "NOT_ASSESSABLE", "REVIEW"
+    elif ent == "NO":
+        status, tier = "ENTITY_OUT_OF_SCOPE", "NONE"
+    else:
+        status = min((p["coverage_status"] for p in points), key=COVERAGE_ORDER.index)
+        tier = min((p["gap_tier"] for p in points), key=TIER_ORDER.get)
+    urg, days = urgency_of(link.alert)
+    x = ART[link.level].get(link.artefact, {})
+    return {
+        "schema_version": SCHEMA_VERSION, "run_id": RUN_ID, "record_id": f"{link.alert}|{link.level}|{link.artefact}",
+        "alert": {"id": link.alert, "title": ALERT[link.alert]["title"]},
+        "artefact": {"level": link.level, "id": link.artefact, "title": x.get("title", ""),
+                     "regulation_id": RSM_RGL.get(link.artefact) if link.level == "RSM" else None,
+                     "parent_control_id": x.get("parent") if link.level == "1C" else None,
+                     "business": x.get("business") if link.level == "1C" else None, "context": x.get("ctx") or None},
+        "impact_link": {"link_evidence": link.link_evidence,
+                        "link_score": None if pd.isna(link.link_score) else float(link.link_score)},
+        "result": {"artefact_status": status, "gap_tier": tier,
+                   "status_counts": {k: int(v) for k, v in pd.Series([p["coverage_status"] for p in points],
+                                                                     dtype=object).value_counts().items()},
+                   "breakage_types": breakage, "entity_in_scope": ent,
+                   "gap_summary": (llm or {}).get("gap_summary"), "n_points": len(points)},
+        "grounding": {"claimed_quotes": claimed, "verified_quotes": verified,
+                      "grounding_ratio": round(verified / claimed, 3) if claimed else 1.0,
+                      "hallucination_suspected": verified < claimed},
+        "context": {"blast_radius": blast_of(link.level, link.artefact, link.alert), "urgency": urg, "days_to_effective": days},
+        "points": points,
+        "audit": {"bucket": None, "verdict": None, "label": None, "error_type": None, "checks": None},
+        "consistency": {"rerun": False, "element_agreement": None, "status_changed": None},
+        "decisiveness": decisiveness(points),
+        "requirement_quality": REQ_QUALITY.get(link.alert, 0.0),
+        "triage": {"confidence_score": 0.0, "confidence_components": {}, "confidence_caps": [],
+                   "confidence_tier": "LOW", "route": "NO_ROUTE"}}
+
+def decisiveness(points):
+    """share of decisions (remit per point + each required element) that are not CANNOT_DETERMINE"""
+    n = d = 0
+    for p in points:
+        n += 1; d += p["remit"] != "CANNOT_DETERMINE"
+        for e in p["elements"]:
+            n += 1; d += e["result_checked"] != "CANNOT_DETERMINE"
+    return round(d / n, 3) if n else 0.0
+
+JUDGE_POINTS = {"GAP_CONFIRMED": 1.0, "NO_GAP_CONFIRMED": 1.0, None: 0.5, "NEEDS_SME": 0.27,
+                "GAP_DISPUTED": 0.0, "POSSIBLE_MISSED_GAP": 0.0, "ERROR": 0.5}
+
+def confidence_score(rec):
+    """Deterministic 0-100 confidence from CONF_RUBRIC + CONF_CAPS. Returns (score, components, caps)."""
+    W, g, a, c = CONF_RUBRIC, rec["grounding"], rec["audit"], rec["consistency"]
+    comp = {
+        "C1_gap_quotes":     W["C1_gap_quotes"] * g["grounding_ratio"],
+        "C2_linkage_quotes": W["C2_linkage_quotes"] * {"VERIFIED": 1, "PARTIAL": 0.5}.get(rec["impact_link"]["link_evidence"], 0),
+        "C3_requirements":   W["C3_requirements"] * rec["requirement_quality"],
+        "C4_decisiveness":   W["C4_decisiveness"] * rec["decisiveness"],
+        "C5_consistency":    W["C5_consistency"] * (c["element_agreement"] if c["rerun"] else 0.5),
+        "C6_judge_verdict":  W["C6_judge_verdict"] * JUDGE_POINTS.get(a["label"], 0.5),
+        "C7_judge_checks":   W["C7_judge_checks"] * (sum(v == "YES" for v in a["checks"].values()) / 4
+                                                     if isinstance(a.get("checks"), dict) and a["checks"] else 0.5),
+    }
+    comp = {k: round(v, 1) for k, v in comp.items()}
+    score, caps = sum(comp.values()), []
+    if g["hallucination_suspected"]:
+        caps.append("hallucination_suspected")
+    if a["label"] in ("GAP_DISPUTED", "POSSIBLE_MISSED_GAP"):
+        caps.append("judge_disputed")
+    if c["rerun"] and c["status_changed"]:
+        caps.append("inconsistent")
+    for k in caps:
+        score = min(score, CONF_CAPS[k])
+    if rec["result"]["artefact_status"] in ("ERROR", "NOT_ASSESSABLE"):
+        score = 0.0
+    return round(score, 1), comp, caps
+
+def tier_group(t):
+    return "T1-2" if t in ("T1", "T2") else "T3-4" if t in ("T3", "T4") else t
+
+def triage(rec):
+    sc, comp, caps = confidence_score(rec)
+    band = next(b for th, b in CONF_BANDS if sc >= th)
+    rec["triage"] = {"confidence_score": sc, "confidence_components": comp, "confidence_caps": caps,
+                     "confidence_tier": band,
+                     "route": ROUTE.get((tier_group(rec["result"]["gap_tier"]), band), "NO_ROUTE")}
+
+def build_records(raw):
+    lk = L.set_index(["alert", "level", "artefact"])
+    out = []
+    for r in raw.itertuples():
+        link = pd.Series({**lk.loc[(r.alert, r.level, r.artefact)].to_dict(),
+                          "alert": r.alert, "level": r.level, "artefact": r.artefact})
+        rec = derive_record(link, js(r.llm), r.call_status)
+        triage(rec)
+        out.append(rec)
+    return out
+
+def flat(recs):
+    return pd.DataFrame([{
+        "record_id": g["record_id"], "alert": g["alert"]["id"], "alert_title": g["alert"]["title"],
+        "level": g["artefact"]["level"], "artefact": g["artefact"]["id"], "artefact_title": g["artefact"]["title"],
+        "regulation_id": g["artefact"]["regulation_id"], "business": g["artefact"]["business"],
+        "link_evidence": g["impact_link"]["link_evidence"], "link_score": g["impact_link"]["link_score"],
+        "artefact_status": g["result"]["artefact_status"], "gap_tier": g["result"]["gap_tier"],
+        "breakage_types": ", ".join(g["result"]["breakage_types"]), "entity_in_scope": g["result"]["entity_in_scope"],
+        "n_points": g["result"]["n_points"], "gap_summary": g["result"]["gap_summary"],
+        "grounding_ratio": g["grounding"]["grounding_ratio"], "hallucination_suspected": g["grounding"]["hallucination_suspected"],
+        "urgency": g["context"]["urgency"], "days_to_effective": g["context"]["days_to_effective"],
+        "blast_radius": json.dumps(g["context"]["blast_radius"]),
+        "audit_label": g["audit"]["label"], "audit_error_type": g["audit"]["error_type"],
+        "consistency_agreement": g["consistency"]["element_agreement"],
+        "confidence_score": g["triage"]["confidence_score"], "confidence_caps": ", ".join(g["triage"]["confidence_caps"]),
+        **{f"conf_{k}": v for k, v in g["triage"]["confidence_components"].items()},
+        "confidence_tier": g["triage"]["confidence_tier"], "route": g["triage"]["route"]} for g in recs])
+
+def write_jsonl(recs, path, schema):
+    bad = 0
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        for r in recs:
+            bad += bool(schema_errors(r, schema))
+            f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+    os.replace(path + ".tmp", path)
+    print(f"  {os.path.basename(path)}: {len(recs):,} records | schema-invalid {bad}")
+    return bad
+
+L1C_PER_ALERT = L[L.level == "L1C"].groupby("alert").size().to_dict()
+print("runners ready")
+
+
+
+# ====== CELL 6: COST GATE =====================================================
+alerts = sorted(L.alert.unique())
+tok = lambda s: len(s) / 4
+in_req = sum(tok(alert_text(a)) + tok(REQ_SYS) for a in alerts)
+in_gap = sum(tok(alert_text(r.alert)) + tok(artefact_text(r.level, r.artefact)) + tok(GAP_SYS[r.level]) + 1000
+             for r in L.itertuples())
+out_tok = len(alerts) * 1800 + len(L) * 2200
+llm = (in_req + in_gap) * TOKEN_PRICE["in"] + out_tok * TOKEN_PRICE["out"]
+judge_n = int(len(L) * 0.5) + len(LEVELS) * (AUDIT["no_gap_sample_per_level"] + AUDIT["probes_per_level"])
+judge = judge_n * ((in_gap / max(len(L), 1)) * TOKEN_PRICE["in"] + 1000 * TOKEN_PRICE["out"])
+cons = min(CONSISTENCY["max_records"], int(len(L) * 0.3)) * (in_gap / max(len(L), 1) * TOKEN_PRICE["in"] + 2200 * TOKEN_PRICE["out"])
+total = (llm + judge + cons) * 1.1
+print(f"           consistency re-runs (T1-T2 only, max {CONSISTENCY['max_records']:,}) ~${cons:.1f}")
+print(f"COST GATE | requirement calls {len(alerts):,} | gap calls {len(L):,} | judge ~{judge_n:,}")
+print(f"           LLM ~${llm:.1f} + judge ~${judge:.1f} (+10% schema retries) = ~${total:.1f}  (cap ${MAX_COST_USD})")
+print(f"           largest single input ~{int(max(tok(alert_text(r.alert)) + tok(artefact_text(r.level, r.artefact)) for r in L.itertuples())):,} tokens (no truncation)")
+assert total <= MAX_COST_USD, f"~${total:.1f} > MAX_COST_USD: raise it in CELL 1 if acceptable"
+print("cost gate passed")
+
+
+
+# ====== CELL 7: STEP 1 - REQUIREMENT POINTS PER ALERT (checkpointed) ==========
+RQ = await run_pool([{"alert": a} for a in alerts], req_worker, f"{GAP_DIR}/requirements_ckpt.parquet", ["alert"], "gap_req")
+for c in ("requirements", "schema_errors"):
+    RQ[c] = RQ[c].map(js)
+REQ = dict(zip(RQ.alert, RQ.requirements))
+EFF = {a: d for a, d in zip(RQ.alert, RQ.effective_date) if isinstance(d, str) and d}
+REQ_QUALITY = {a: (round(sum(q.get("quote_verified", False) for q in (rs or [])) / len(rs), 3) if rs else 0.0)
+               for a, rs in zip(RQ.alert, RQ.requirements)}
+req_recs = [{"schema_version": SCHEMA_VERSION, "run_id": RUN_ID, "alert_id": r.alert,
+             "status": "OK" if r.call_status == "OK" else "ERROR", "actionable": bool(r.actionable),
+             "effective_date": r.effective_date if isinstance(r.effective_date, str) else None,
+             "effective_date_quote": r.effective_date_quote, "effective_date_verified": bool(r.effective_date_verified),
+             "requirements": r.requirements or []} for r in RQ.itertuples()]
+write_jsonl(req_recs, f"{GAP_DIR}/requirements.jsonl", REQUIREMENT_RECORD_SCHEMA)
+cost_report("gap_req")
+allq = pd.DataFrame([q for x in req_recs for q in x["requirements"]])
+print(f"REQUIREMENTS | alerts {len(req_recs):,} | call errors {int((RQ.call_status != 'OK').sum())} | points {len(allq):,}")
+if len(allq):
+    print(f"  quote-verified {int(allq.quote_verified.sum()):,} | mandatory (proven) {int(allq.mandatory_verified.sum()):,} | "
+          f"mandatory claimed but modal quote not found (downgraded) {int((allq.mandatory & ~allq.mandatory_verified).sum()):,}")
+    print("  change types:", allq.change_type.value_counts().to_dict())
+print(f"  alerts with a verified effective date: {len(EFF):,}")
+
+
+
+# ====== CELL 8: AUTOMATIC TEST GATE - 3 links per level =======================
+test = L.groupby("level").head(3)
+traw = await run_pool(test.to_dict("records"), gap_worker, None, ["alert", "level", "artefact"], "gap_test")
+trec = build_records(traw)
+tf = flat(trec)
+cost_report("gap_test")
+print(tf[["alert", "level", "artefact", "artefact_status", "gap_tier", "breakage_types", "grounding_ratio",
+          "hallucination_suspected", "confidence_tier", "route", "gap_summary"]].to_string(index=False, max_colwidth=45))
+assert (traw.call_status != "OK").sum() <= 1, "too many schema / call errors in the test - stopped"
+assert sum(bool(schema_errors(r, GAP_RECORD_SCHEMA)) for r in trec) == 0, "records break GAP_RECORD_SCHEMA"
+assert (tf.n_points > 0).mean() >= 0.5, "most test links had no assessed point - check requirement step / prompt"
+assert tf.grounding_ratio.mean() >= 0.6, "most quotes not found in the texts - check prompt / texts before the full run"
+tf.to_excel(f"{GAP_DIR}/gap_test.xlsx", index=False)
+print("test gate passed")
+
+
+
+# ====== CELL 9: STEP 2 - FULL GAP RUN (checkpointed) ==========================
+RAW = await run_pool(L.to_dict("records"), gap_worker, f"{GAP_DIR}/gap_ckpt.parquet", ["alert", "level", "artefact"], "gap_assess")
+RECS = build_records(RAW)
+cost_report("gap_assess")
+F = flat(RECS)
+print("ARTEFACT STATUS BY LEVEL (before audit)")
+print(pd.crosstab(F.level, F.artefact_status, margins=True).reindex(LEVELS + ["All"]).fillna(0).astype(int).to_string())
+print("\nGAP TIER BY LEVEL")
+print(pd.crosstab(F.level, F.gap_tier, margins=True).reindex(LEVELS + ["All"]).fillna(0).astype(int).to_string())
+print(f"\nhallucination suspected: {int(F.hallucination_suspected.sum()):,} of {len(F):,} | "
+      f"mean grounding {F.grounding_ratio.mean():.2f}")
+
+
+
+# ====== CELL 10: STEP 3 - INDEPENDENT JUDGE (checkpointed) ====================
+BY_ID = {r["record_id"]: r for r in RECS}
+GAP_TIERS = {"T1", "T2", "T3", "T4"}
+aud_items = []
+for lv in LEVELS:
+    sub = F[F.level == lv]
+    flagged = sub[sub.gap_tier.isin(GAP_TIERS)]
+    nogap = sub[sub.gap_tier.isin(["NONE", "INFO"]) & (sub.artefact_status != "ENTITY_OUT_OF_SCOPE")]
+    smp = nogap.sample(min(AUDIT["no_gap_sample_per_level"], len(nogap)), random_state=AUDIT["seed"])
+    rest = nogap[nogap.n_points > 0].drop(smp.index, errors="ignore")
+    pr = rest.sample(min(AUDIT["probes_per_level"], len(rest)), random_state=AUDIT["seed"] + 1)
+    aud_items += [{"record_id": i, "bucket": "FLAGGED"} for i in flagged.record_id]
+    aud_items += [{"record_id": i, "bucket": "NO_GAP_SAMPLE"} for i in smp.record_id]
+    aud_items += [{"record_id": i, "bucket": "PROBE"} for i in pr.record_id]
+    print(f"[audit set {lv}] flagged {len(flagged):,} | no-gap sample {len(smp)} | probes {len(pr)}")
+
+def model_view(rec, probe=False):
+    pts = []
+    for p in rec["points"]:
+        el = [{k: e.get(k) for k in ("element", "artefact_quote", "result_checked")} for e in p["elements"]]
+        cov = p["coverage_status"]
+        if probe and p["remit"] == "IN_REMIT":            # planted error: every element claimed ABSENT
+            el = [{"element": e["element"], "artefact_quote": None, "result_checked": "ABSENT"} for e in el] or \
+                 [{"element": "action", "artefact_quote": None, "result_checked": "ABSENT"}]
+            cov = "NOT_COVERED"
+        pts.append({"req_id": p["req_id"], "remit": p["remit"], "elements": el, "coverage_status": cov})
+    return {"artefact_status": "NOT_COVERED" if probe else rec["result"]["artefact_status"], "points": pts}
+
+async def judge_worker(it):
+    rec = BY_ID[it["record_id"]]; lv = rec["artefact"]["level"]; a = rec["alert"]["id"]; aid = rec["artefact"]["id"]
+    payload = {"alert_text": alert_text(a),
+               "requirement_points": [{k: q.get(k) for k in ["req_id", "requirement"] + ELEMENTS} for q in verified_reqs(a)],
+               "artefact_text": artefact_text(lv, aid), "model_output": model_view(rec, it["bucket"] == "PROBE")}
+    obj, st, errs = await call_valid(JUDGE_SYS[lv], payload, LLM_JUDGE_SCHEMA)
+    obj = obj if st == "OK" else {}
+    return {**it, "call_status": st, "verdict": obj.get("verdict", "ERROR"), "error_type": obj.get("error_type"),
+            "correct_status": obj.get("correct_artefact_status"), "checks": obj.get("checks"),
+            "quote_ok": quote_found(obj.get("artefact_quote"), artefact_text(lv, aid))}
+
+JUD = await run_pool(aud_items, judge_worker, f"{GAP_DIR}/gap_audit_ckpt.parquet", ["record_id", "bucket"], "gap_audit")
+JUD["checks"] = JUD["checks"].map(js)
+cost_report("gap_audit")
+LABEL = {("FLAGGED", "AGREE"): "GAP_CONFIRMED", ("FLAGGED", "DISAGREE"): "GAP_DISPUTED", ("FLAGGED", "UNCERTAIN"): "NEEDS_SME",
+         ("NO_GAP_SAMPLE", "AGREE"): "NO_GAP_CONFIRMED", ("NO_GAP_SAMPLE", "DISAGREE"): "POSSIBLE_MISSED_GAP",
+         ("NO_GAP_SAMPLE", "UNCERTAIN"): "NEEDS_SME", ("PROBE", "DISAGREE"): "PROBE_CAUGHT",
+         ("PROBE", "UNCERTAIN"): "PROBE_PARTLY_CAUGHT", ("PROBE", "AGREE"): "PROBE_MISSED"}
+JUD["label"] = [LABEL.get((b, v), "ERROR") for b, v in zip(JUD.bucket, JUD.verdict)]
+for r in JUD[JUD.bucket != "PROBE"].itertuples():
+    BY_ID[r.record_id]["audit"] = {"bucket": r.bucket, "verdict": r.verdict, "label": r.label,
+                                   "error_type": r.error_type, "correct_status": r.correct_status, "checks": r.checks}
+for rec in RECS:
+    triage(rec)                                          # re-derive confidence + route with the judge outcome
+
+def wilson(k, n, z=1.96):
+    if n == 0:
+        return (np.nan, np.nan)
+    p = k / n; d = 1 + z * z / n; c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0, c - h), min(1, c + h))
+
+JUD["level"] = JUD.record_id.map({r["record_id"]: r["artefact"]["level"] for r in RECS})
+REL = []
+for lv in LEVELS:
+    g = JUD[JUD.level == lv]
+    f = g[g.bucket == "FLAGGED"]; k = int((f.label == "GAP_CONFIRMED").sum()); lo, hi = wilson(k, len(f))
+    s = g[g.bucket == "NO_GAP_SAMPLE"]; p = g[g.bucket == "PROBE"]
+    REL.append(dict(level=lv, flagged=len(f), gap_confirmed=k, confirmed_pct=round(100 * k / max(len(f), 1), 1),
+                    ci_low=round(100 * lo, 1) if len(f) else None, ci_high=round(100 * hi, 1) if len(f) else None,
+                    no_gap_sampled=len(s), possible_missed=int((s.label == "POSSIBLE_MISSED_GAP").sum()),
+                    probes=len(p), probes_caught=int((p.label == "PROBE_CAUGHT").sum())))
+REL = pd.DataFrame(REL)
+print("JUDGE RELIABILITY"); print(REL.to_string(index=False))
+print("disputed error types:", JUD[JUD.label == "GAP_DISPUTED"].error_type.value_counts().to_dict())
+
+
+
+# ====== CELL 10B: CONSISTENCY RE-RUN (log-prob substitute; T1-T2 only, checkpointed) ======
+# Same prompt, requirement points in a different order. A stable model gives the same element results;
+# an unstable one (guessing) changes them. Agreement feeds C5 of the confidence score.
+import random
+cons_ids = [r["record_id"] for r in RECS if r["result"]["gap_tier"] in CONSISTENCY["tiers"]]
+random.Random(CONSISTENCY["seed"]).shuffle(cons_ids)
+cons_ids = cons_ids[:CONSISTENCY["max_records"]]
+LK = L.set_index(["alert", "level", "artefact"])
+
+async def cons_worker(it):
+    rec = BY_ID[it["record_id"]]; a, lv, aid = rec["alert"]["id"], rec["artefact"]["level"], rec["artefact"]["id"]
+    pts = verified_reqs(a)[::-1]                                  # reversed order = perturbation
+    lk = LK.loc[(a, lv, aid)]
+    payload = {"alert_text": alert_text(a), "alert_metadata": ALERT[a]["meta"],
+               "requirement_points": [{k: q.get(k) for k in ["req_id", "requirement", "change_type"] + ELEMENTS} for q in pts],
+               "artefact_id": aid, "artefact_text": artefact_text(lv, aid),
+               "impact_link": {"reasoning": lk["link_reason"], "evidence_from_alert": lk["link_ev_alert"],
+                               "evidence_from_artefact": lk["link_ev_artefact"]}}
+    obj, st, errs = await call_valid(GAP_SYS[lv], payload, LLM_GAP_SCHEMA[lv])
+    return {"record_id": it["record_id"], "call_status": st, "llm": obj if st == "OK" else None}
+
+CONS = await run_pool([{"record_id": i} for i in cons_ids], cons_worker, f"{GAP_DIR}/consistency_ckpt.parquet",
+                      ["record_id"], "gap_consistency")
+cost_report("gap_consistency")
+for r in CONS[CONS.call_status == "OK"].itertuples():
+    rec = BY_ID[r.record_id]
+    lk = LK.loc[(rec["alert"]["id"], rec["artefact"]["level"], rec["artefact"]["id"])]
+    link = pd.Series({**lk.to_dict(), "alert": rec["alert"]["id"], "level": rec["artefact"]["level"],
+                      "artefact": rec["artefact"]["id"]})
+    second = derive_record(link, js(r.llm), "OK")                 # same deterministic derivation
+    first_el = {(p["req_id"], e["element"]): e["result_checked"] for p in rec["points"] for e in p["elements"]}
+    first_el.update({(p["req_id"], "_remit"): p["remit"] for p in rec["points"]})
+    sec_el = {(p["req_id"], e["element"]): e["result_checked"] for p in second["points"] for e in p["elements"]}
+    sec_el.update({(p["req_id"], "_remit"): p["remit"] for p in second["points"]})
+    keys = set(first_el) | set(sec_el)
+    agree = sum(first_el.get(k) == sec_el.get(k) for k in keys) / len(keys) if keys else 1.0
+    rec["consistency"] = {"rerun": True, "element_agreement": round(agree, 3),
+                          "status_changed": second["result"]["artefact_status"] != rec["result"]["artefact_status"],
+                          "rerun_status": second["result"]["artefact_status"], "rerun_tier": second["result"]["gap_tier"]}
+for rec in RECS:
+    triage(rec)
+cdf = pd.DataFrame([r["consistency"] for r in RECS if r["consistency"]["rerun"]])
+if len(cdf):
+    print(f"CONSISTENCY | re-run {len(cdf):,} | mean element agreement {cdf.element_agreement.mean():.2f} | "
+          f"artefact status changed {int(cdf.status_changed.sum()):,} ({100 * cdf.status_changed.mean():.0f}%)")
+cs = pd.Series([r["triage"]["confidence_score"] for r in RECS])
+print(f"CONFIDENCE SCORE | mean {cs.mean():.1f} | median {cs.median():.1f} | bands "
+      f"{pd.Series([r['triage']['confidence_tier'] for r in RECS]).value_counts().to_dict()}")
+
+
+
+# ====== CELL 11: ROLL-UPS + WRITE JSON / PARQUET ==============================
+F = flat(RECS)
+PTS = pd.DataFrame([dict(record_id=r["record_id"], alert=r["alert"]["id"], alert_title=r["alert"]["title"],
+                         level=r["artefact"]["level"], artefact=r["artefact"]["id"], artefact_title=r["artefact"]["title"],
+                         req_id=p["req_id"], requirement=p["requirement"], change_type=p["change_type"],
+                         mandatory=p["mandatory"], remit=p["remit"], coverage_status=p["coverage_status"],
+                         gap_tier=p["gap_tier"],
+                         elements="; ".join(f"{e['element']}={e['result_checked']}" for e in p["elements"]),
+                         verified_artefact_quotes=" | ".join(e["artefact_quote"] for e in p["elements"]
+                                                             if e.get("artefact_quote") and e.get("quote_verified")),
+                         missing=p["missing"], recommended_change=p["recommended_change"],
+                         urgency=r["context"]["urgency"], confidence_tier=r["triage"]["confidence_tier"],
+                         route=r["triage"]["route"], audit_label=r["audit"]["label"], sme_decision="", sme_comment="")
+                    for r in RECS for p in r["points"]])
+
+# RGL roll-up from its summaries
+rgl_recs = []
+for (a, rgl), g in F[F.level == "RSM"].groupby(["alert", "regulation_id"]):
+    st = min(g.artefact_status, key=ART_STATUS.index)
+    rgl_recs.append({"schema_version": SCHEMA_VERSION, "alert_id": a, "regulation_id": rgl,
+                     "regulation_title": ART["RGL"].get(rgl, {}).get("title"),
+                     "regulation_status": st,
+                     "gap_tier": min(g.gap_tier, key=TIER_ORDER.get), "summaries": sorted(g.artefact),
+                     "counts": {k: int(v) for k, v in g.artefact_status.value_counts().items()}})
+RGLF = pd.json_normalize(rgl_recs)
+
+# alert summary + rank (lexicographic sort, no invented formula)
+alert_recs = []
+for a, g in F.groupby("alert"):
+    gap = g[g.gap_tier.isin(GAP_TIERS)]
+    alert_recs.append({
+        "schema_version": SCHEMA_VERSION, "alert_id": a, "alert_title": ALERT[a]["title"],
+        "worst_tier": min(g.gap_tier, key=TIER_ORDER.get),
+        "tier_counts": {k: int(v) for k, v in g.gap_tier.value_counts().items()},
+        "by_level": {lv: {k: int(v) for k, v in x.artefact_status.value_counts().items()} for lv, x in g.groupby("level")},
+        "urgency": g.urgency.iloc[0],
+        "days_to_effective": None if pd.isna(g.days_to_effective.iloc[0]) else int(g.days_to_effective.iloc[0]),
+        "gapped_artefacts": len(gap),
+        "live_instances_in_gap": int(sum(json.loads(b).get("live_instances", 0) for b in gap.blast_radius)),
+        "routes": {k: int(v) for k, v in g.route.value_counts().items()},
+        "confirmed_gaps": int((g.audit_label == "GAP_CONFIRMED").sum()), "rank": 1})
+key = lambda x: (TIER_ORDER[x["worst_tier"]], -x["tier_counts"].get("T1", 0), -x["tier_counts"].get("T2", 0),
+                 URGENCY_ORDER[x["urgency"]], -x["live_instances_in_gap"], -x["gapped_artefacts"])
+alert_recs.sort(key=key)
+for i, x in enumerate(alert_recs, 1):
+    x["rank"] = i
+ALF = pd.json_normalize(alert_recs)
+
+print("WRITING (schema-checked)")
+bad = write_jsonl(RECS, f"{GAP_DIR}/gap_records.jsonl", GAP_RECORD_SCHEMA)
+bad += write_jsonl(rgl_recs, f"{GAP_DIR}/rgl_rollup.jsonl", RGL_RECORD_SCHEMA)
+bad += write_jsonl(alert_recs, f"{GAP_DIR}/alert_summary.jsonl", ALERT_SUMMARY_SCHEMA)
+F.to_parquet(f"{GAP_DIR}/gap_records.parquet", index=False)
+PTS.to_parquet(f"{GAP_DIR}/gap_points.parquet", index=False)
+JUD.assign(checks=JUD.checks.map(lambda v: json.dumps(v) if isinstance(v, dict) else None)) \
+   .to_parquet(f"{GAP_DIR}/gap_audit_labelled.parquet", index=False)
+with open(f"{GAP_DIR}/run_manifest.json", "w") as f:
+    json.dump({"run_id": RUN_ID, "schema_version": SCHEMA_VERSION, "run_date": str(RUN_DATE),
+               "sources": {k: resolve(p) for k, p in SRC.items()}, "columns_used": USED, "levels": LEVELS,
+               "link_scope": sorted(LINKED_VALUES),
+               "counts": {"links": len(L), "alerts": int(L.alert.nunique()), "records": len(RECS), "points": len(PTS)},
+               "rule_tables": "schemas/rule_tables.json"}, f, indent=2)
+print(f"  schema-invalid records in total: {bad}")
+
+
+
+# ====== CELL 12: SME PACK + MANAGEMENT SUMMARY ================================
+ACOLS = ["record_id", "alert", "alert_title", "level", "artefact", "artefact_title", "business", "regulation_id",
+         "link_evidence", "artefact_status", "gap_tier", "breakage_types", "entity_in_scope", "confidence_score", "confidence_tier", "confidence_caps", "route",
+         "conf_C1_gap_quotes", "conf_C2_linkage_quotes", "conf_C3_requirements", "conf_C4_decisiveness",
+         "conf_C5_consistency", "conf_C6_judge_verdict", "conf_C7_judge_checks", "consistency_agreement",
+         "grounding_ratio", "hallucination_suspected", "urgency", "days_to_effective", "blast_radius", "audit_label",
+         "audit_error_type", "gap_summary"]
+def srt(d):
+    return (d.assign(_t=d.gap_tier.map(TIER_ORDER), _u=d.urgency.map(URGENCY_ORDER))
+             .sort_values(["_t", "_u", "alert"]).drop(columns=["_t", "_u"]))
+
+with pd.ExcelWriter(f"{GAP_DIR}/GAP_SME_review_pack.xlsx") as xl:
+    pd.DataFrame({"How to read": [
+        "Each impacted artefact (regulation summary, obligation, library risk, control standard, live control) was compared "
+        "with the alert requirement by requirement, element by element (action, who/scope, timing, threshold, records).",
+        "The AI only answered categories with exact quotes. Every status, tier and route was derived by fixed rules "
+        "(schemas/rule_tables.json). A quote the code could not find in the text is discarded.",
+        "coverage_status: COVERED / PARTIAL (an element absent) / NOT_COVERED (action absent) / CONTRADICTED (an element "
+        "differs) / OVER_CONTROLLED (requirement relaxed, artefact still stricter) / OUT_OF_REMIT / CANNOT_DETERMINE.",
+        "gap_tier: T1 = mandatory new or changed requirement not met ... T4 = minor; REVIEW = cannot determine; "
+        "INFO = over-controlled; NONE = no gap. confidence_tier combines our quote checks, the linkage's own evidence quotes and the gap judge.",
+        "route: FAST_TRACK_OWNER / SENIOR_SME / SME_REVIEW / OWNER_BACKLOG / LOG_NO_ACTION / OWNER_INFO / SME_SPOT_CHECK.",
+        "Gap meaning: RSM / ROB = RegMap update; LR = risk statement update; L1C = control design gap; 1C = operating gap.",
+        "Fill sme_decision (AGREE / DISAGREE / PARTLY) and sme_comment on 'requirement points'. AI findings, not conclusions."]}
+    ).to_excel(xl, sheet_name="How to read", index=False)
+    ALF.to_excel(xl, sheet_name="alerts (ranked)", index=False)
+    srt(PTS[~PTS.coverage_status.isin(["COVERED", "OUT_OF_REMIT"])]).to_excel(xl, sheet_name="requirement points", index=False)
+    srt(F)[ACOLS].to_excel(xl, sheet_name="artefacts", index=False)
+    RGLF.to_excel(xl, sheet_name="regulations (roll-up)", index=False)
+    pd.DataFrame([{"alert": x["alert_id"], "effective_date": x["effective_date"], **q} for x in req_recs
+                  for q in x["requirements"]]).to_excel(xl, sheet_name="alert requirements", index=False)
+
+tiers = pd.crosstab(F.level, F.gap_tier).reindex(LEVELS).fillna(0).astype(int)
+status = pd.crosstab(F.level, F.artefact_status).reindex(LEVELS).fillna(0).astype(int)
+routes = pd.crosstab(F.level, F.route).reindex(LEVELS).fillna(0).astype(int)
+conf = pd.crosstab(F.gap_tier, F.confidence_tier)
+bk = F[F.breakage_types != ""]
+brk = (bk.assign(b=bk.breakage_types.str.split(", ")).explode("b").groupby(["level", "b"]).size()
+       .rename("artefacts").reset_index()) if len(bk) else pd.DataFrame(columns=["level", "b", "artefacts"])
+with pd.ExcelWriter(f"{GAP_DIR}/GAP_management_summary.xlsx") as xl:
+    pd.DataFrame({"Read me": [
+        f"Gap assessment of {F.alert.nunique():,} alerts across {len(F):,} impacted artefacts; regulations rolled up.",
+        "T1 = mandatory new / changed requirement not met by the artefact; T2 = mandatory scope change not met, or partly "
+        "met; T3-T4 = clarifications or partial cover; REVIEW = the AI could not determine; NONE = no gap.",
+        "Every tier is derived by fixed, published rules from evidence the code verified - the AI never assigns a score.",
+        "confidence_score 0-100 is computed by a fixed rubric (schemas/rule_tables.json -> CONF_RUBRIC): quotes found, "
+        "linkage quotes found, requirement quality, decisiveness, consistency on re-run, gap judge verdict and checks; "
+        "capped by red flags. HIGH >= 80, MEDIUM 50-79, LOW < 50. All results need SME validation."]}
+    ).to_excel(xl, sheet_name="Read me", index=False)
+    tiers.reset_index().to_excel(xl, sheet_name="gap tier by level", index=False)
+    status.reset_index().to_excel(xl, sheet_name="status by level", index=False)
+    routes.reset_index().to_excel(xl, sheet_name="routes by level", index=False)
+    conf.reset_index().to_excel(xl, sheet_name="tier x confidence", index=False)
+    brk.to_excel(xl, sheet_name="control breakage types", index=False)
+    REL.to_excel(xl, sheet_name="judge reliability", index=False)
+    ALF.head(50).to_excel(xl, sheet_name="top 50 alerts", index=False)
+    srt(F[F.gap_tier.isin(["T1", "T2"]) & (F.confidence_tier == "HIGH")]).head(100)[ACOLS] \
+        .to_excel(xl, sheet_name="T1-2 high-confidence gaps", index=False)
+
+print("GAP TIER BY LEVEL"); print(tiers.to_string())
+print("\nROUTES BY LEVEL"); print(routes.to_string())
+print("\nTIER x CONFIDENCE"); print(conf.to_string())
+cost_report()
+print(f"-> {GAP_DIR}: gap_records.jsonl | gap_points.parquet | rgl_rollup.jsonl | alert_summary.jsonl | requirements.jsonl | "
+      "schemas/ | GAP_SME_review_pack.xlsx | GAP_management_summary.xlsx")
