@@ -1,0 +1,1401 @@
+# ==============================================================================
+# NOTEBOOK 1 of 2 - ALERT -> POLICY / PROCEDURE IMPACT ASSESSMENT - PRODUCTION RUN          RCAI&A
+# ------------------------------------------------------------------------------
+# WHAT THIS NOTEBOOK DOES
+#   For every regulatory alert in scope, it finds the GPPS policies and procedures the alert impacts, and the exact
+#   SECTION / SUB-SECTION of each, with verbatim evidence from both texts and a one-line "change needed".
+#   * POLICIES   : the AI reads EVERY policy for every alert (no search, nothing can be missed by a search step).
+#   * PROCEDURES : a search step (method F: alert-text embedding + AI query plan + expanded keywords, fused by rank)
+#                  shortlists the TOP 200 procedures per alert; the AI then reads each of them in full.
+#   * ONE AI CALL per (alert, document). No second "audit" call in production. The audit (independent AI reviewer,
+#     SME pack) and the management storyboard are in NOTEBOOK 2, which reads this notebook's output folder.
+#
+# DECISION RULES (agreed - see Alert_to_Policy_Procedure_Approach_Decisions)
+#   1. LINKED     = the AI says LINKED + link_score >= 5 + BOTH verbatim quotes are found in the texts by code.
+#   2. JURISDICTION: every document is labelled GLOBAL / LOCAL (this country) / LOCAL (another country) from GPPS.
+#                  A US alert can impact a GLOBAL and a US LOCAL document - never another country's LOCAL one,
+#                  unless that country adopts the US requirement -> such links are SCOPE_REVIEW (SME), not impacts.
+#   3. FRAMEWORK / PROCESS documents (they govern HOW any regulatory change, read-across or regulatory report is
+#      handled - list in SETTINGS D): impacted ONLY if the alert text clearly requires that PROCESS to be updated,
+#      changed or rectified. They are read with the same prompt + a FRAMEWORK RULE and must answer
+#      framework_change = YES. Every other (BUSINESS) document is read with the validated prompt, unchanged.
+#   4. BANDS (one call, a rule on the call's own link_score - SETTINGS D):
+#        IMPACTED        link_score >= 8   (reference judge agreed with ~80% on the US development run)
+#        POSSIBLE_IMPACT link_score 5-7    (~60% agreement -> SME review queue; nothing is thrown away)
+#        SCOPE_REVIEW    linked to another country's LOCAL document
+#        NOT_IMPACTED    everything else
+#
+# HOW TO RUN (any country)
+#   1. CELL 0  : your gateway settings (staff id, use case, base url, model) - copy from a gateway cell that works.
+#   2. CELL 1  : SETTINGS A (country) and B (5 source file paths). C and D: defaults agreed on the US run.
+#   3. Run CELL 0 -> 5 in order. Check: CELL 1 (files found), CELL 2 (document scope examples), CELL 4 (cost gate),
+#      CELL 5 (10-pair test gate). Then CELL 6 (policies, the long one), CELL 7 (procedures), CELL 8 (results).
+#   4. CELL 9 = status at any time ($0). Then NOTEBOOK 2 (audit + storyboard) with NB1_RUN_DIR = this RUN_DIR.
+#   US reference: 161 alerts | 45,402 policy reads + 32,200 procedure reads | ~$150 | ~10-14 h at 24 in parallel.
+#
+# SAFE TO STOP / RESUME
+#   Every paid step is checkpointed (query plans, embeddings, policy reads, procedure reads). Kernel > Interrupt
+#   is safe: pending calls are cancelled and progress is saved. After an interrupt / kernel restart / browser
+#   disconnect: run CELL 0 -> 5 again (no repeat spend - the test gate is skipped once the run has started), then
+#   re-run the cell that was interrupted; finished pairs are never paid for twice.
+#   Gateway login expires after ~1 h idle: if calls start failing with 401, the code logs in again by itself; if it
+#   keeps failing, re-run CELL 0 and then the interrupted cell.
+#
+# OUTPUT (RUN_DIR)
+#   ia_pp_pairs.parquet            one row per (alert, document) read - every decision, score, quote, reason
+#   ia_pp_impacted_sections.parquet one row per impacted SECTION / SUB-SECTION (GPPS numbering + titles)
+#   ia_pp_alert_impacts.jsonl      one JSON per alert: impacted / possible / scope-review documents with sections
+#   ia_pp_results_summary.xlsx     How to read | summary | per alert | by scope | framework documents | document scope
+#   production/                    the exact prompts + production_config.json used in this run
+#   units / alerts / document_scope .parquet   hand-off files read by NOTEBOOK 2 (texts exactly as the AI saw them)
+#
+# SECURITY: CELL 0 holds personal gateway settings - fill your own; never commit filled values to a shared repo.
+# CELLS: 0 gateway | 1 settings + load | 2 document scope | 3 procedure shortlist | 4 prompts + cost gate |
+#        5 runner + test gate | 6 policies | 7 procedures | 8 results + files | 9 status
+# ==============================================================================
+
+
+# ====== CELL 0: GATEWAY + AI CALLER ($0) =======================================
+# One function, call_llm(system, payload) -> parsed JSON dict (or None after retries). Usage and errors are logged
+# for the cost lines and progress prints. Prices: TOKEN_PRICE (USD per token) of the chat model.
+import os, re, ssl, json, time, uuid, math, asyncio, datetime
+import numpy as np
+import pandas as pd
+import httpx, openai, truststore, nest_asyncio
+from py_group_ai_tools import GroupAIClient
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+nest_asyncio.apply()
+
+# >>> GATEWAY SETTINGS - each person sets their own: copy them from a gateway cell that works for you <<<
+os.environ["GOOGLE_CLOUD_QUOTA_PROJECT"] = "<your quota project>"
+STAFF_ID   = "<your staff id>"
+USE_CASE   = "<your GAIP use case, e.g. UC000xxxx>"
+BASE_URL   = "<your gateway base url - must match the use case and model>"
+CHAT_MODEL = "<chat model routed for your use case>"   # 'no Route matched' (404) = wrong model / url for this use case
+MODEL_FAMILY = "gemini" if "gemini" in CHAT_MODEL.lower() else "gpt"
+TOKEN_PRICE = {"in": 0.20 / 1e6, "out": 1.20 / 1e6}
+
+tls_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+async_http_client = httpx.AsyncClient(http2=True, verify=tls_context, timeout=httpx.Timeout(120.0))
+openai_client = openai.AsyncOpenAI(api_key="N/A", http_client=async_http_client, base_url=BASE_URL,
+    default_headers={"Content-Type": "application/json",
+        "x-correlation-id": str(uuid.uuid4()), "x-usersession-id": str(uuid.uuid4())})
+group_ai_client = GroupAIClient.init(staff_id=STAFF_ID)
+# the token method's name differs between versions of py_group_ai_tools -> find the one this version has
+_TOKEN_NAMES = ["get_dsp_token", "get_dap_token", "get_token", "get_access_token", "get_bearer_token"]
+_cands = _TOKEN_NAMES + sorted(m for m in dir(group_ai_client) if "token" in m.lower() and not m.startswith("_"))
+TOKEN_METHOD = next((m for m in _cands if callable(getattr(group_ai_client, m, None))), None)
+assert TOKEN_METHOD, f"no token method found on GroupAIClient: {[m for m in dir(group_ai_client) if not m.startswith('_')]}"
+print("gateway token method:", TOKEN_METHOD)
+
+class TrustTokenCache:
+    def __init__(self):
+        self.token, self.expires_at, self.lock = None, 0.0, asyncio.Lock()
+    async def get(self):
+        now = time.time()
+        if self.token and now < self.expires_at - 5: return self.token
+        async with self.lock:
+            now = time.time()
+            if self.token and now < self.expires_at - 5: return self.token
+            self.token = await asyncio.to_thread(getattr(group_ai_client, TOKEN_METHOD))
+            self.expires_at = now + 300
+            return self.token
+    async def invalidate(self):
+        async with self.lock:
+            self.token, self.expires_at = None, 0.0
+
+trust_token = TrustTokenCache()
+USAGE_LOG, ERROR_LOG, CURRENT_STAGE = [], [], "setup"
+
+async def call_llm(system, payload, schema=None, max_tokens=2500, retries=4):
+    """One gateway call -> parsed JSON dict, or None if all retries fail (logged in ERROR_LOG)."""
+    kw = {"model": CHAT_MODEL, "user": USE_CASE,
+          "messages": [{"role": "system", "content": system},
+                       {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]}
+    if MODEL_FAMILY == "gemini":
+        kw.update(temperature=0.0, seed=42, reasoning_effort="low", max_tokens=max_tokens)
+    else:
+        kw.update(max_completion_tokens=max_tokens)
+    if schema: kw["response_format"] = schema
+    last = None
+    for attempt in range(retries):
+        try:
+            token = await trust_token.get()
+            r = await openai_client.chat.completions.create(
+                extra_headers={"Authorization": f"Bearer {token}"}, **kw)
+            u = getattr(r, "usage", None)
+            USAGE_LOG.append({"stage": CURRENT_STAGE, "in": getattr(u, "prompt_tokens", 0) or 0,
+                              "out": getattr(u, "completion_tokens", 0) or 0, "ts": time.time()})
+            txt = (r.choices[0].message.content or "").replace("```json", "").replace("```", "").strip()
+            return json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if "401" in msg: await trust_token.invalidate()
+            if ("response_format" in msg or "json_schema" in msg) and "response_format" in kw:
+                kw.pop("response_format")
+            await asyncio.sleep(min(2 ** attempt, 20))
+    ERROR_LOG.append({"stage": CURRENT_STAGE, "error": repr(last)[:300], "ts": time.time()})   # logged after ALL retries
+    return None
+
+def cost_report(stage=None):
+    u = pd.DataFrame(USAGE_LOG)
+    if stage and len(u): u = u[u.stage == stage]
+    e = sum(1 for x in ERROR_LOG if not stage or x["stage"] == stage)
+    if u.empty:
+        print(f"[cost{' ' + stage if stage else ''}] no successful calls | failed calls {e}")
+        return {"failed_calls": e}
+    c = u["in"].sum() * TOKEN_PRICE["in"] + u["out"].sum() * TOKEN_PRICE["out"]
+    print(f"[cost{' ' + stage if stage else ''}] calls {len(u):,} | in {u['in'].sum():,} | out {u['out'].sum():,} | "
+          f"${c:.2f} | failed calls {e}")
+    return {"calls": len(u), "cost_usd": round(float(c), 2), "failed_calls": e}
+
+res = await call_llm("Reply with JSON only.", {"task": "return {'ok': true}"}, None, 200)
+print("gateway ready:", CHAT_MODEL, "| check:", res)
+assert res, f"gateway check failed - last error: {ERROR_LOG[-1]['error'] if ERROR_LOG else 'none'}"
+
+
+
+# ====== CELL 1: SETTINGS + LOAD SOURCES + SECTIONS / SUB-SECTIONS ($0) ========
+import os, re, json, html, math, time, glob, random, asyncio, hashlib
+from collections import Counter, defaultdict
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+
+# ------------------------------------------------------------------------------------------------
+# SETTINGS - the ONLY place to edit. For another country change A and B; C and D are the agreed defaults.
+# ------------------------------------------------------------------------------------------------
+# A. COUNTRY
+COUNTRY        = "US"                      # short code: used in folder names and the run id (e.g. "UK", "HK")
+COUNTRY_NAME   = "United States"           # name used in the AI instructions (e.g. "United Kingdom", "Hong Kong")
+COUNTRY_TERMS  = ["united states", "u.s.", "usa", "hsbc usa", "hsbc bank usa", "husi", "hbus", "hnah",
+                  "north america"]         # words that mark a GPPS document as LOCAL to this country (lower case)
+COUNTRY_CODES  = {"US", "USA", "U.S."}     # country codes GPPS may use for this country
+COUNTRY_ENTITY_CODES = {"HBUS", "HCSU", "HNAH", "HTSU", "AMUS"}   # GPPS legalEntyCde of this country's legal entities
+
+# B. SOURCE FILES (parquet / xlsx / csv; a glob pattern such as ".../rsm_linkage_pairs_*.parquet" is allowed -
+#    the newest matching file is used)
+SRC = {
+    # Rapid2 alerts of this country: RECORD_ID, TITLE, SUMM_CONTENT, SUMM_UPDATE, INTRO_TEXT (+ jurisdiction,
+    # regulator and taxonomy columns if present)
+    "rapid2":        "../data/Rapid2_REGDEV_US_2020_2025.parquet",
+    # the alert -> RSM linkage output of this country: only its RECORD_IDs are used (= the alerts in scope)
+    "alert_scope":   "<EXECUTION_OUTPUT_DIR>/rsm_linkage_pairs_*.parquet",
+    # GPPS policies LOCAL to this country: policy_core_id, version_num, json_data
+    "policy_local":  "../data/GPPS/us_policy_26_SEP.parquet",
+    # GPPS GLOBAL policies (same columns)
+    "policy_global": "../data/GPPS/global_policy_26_SEP.parquet",
+    # GPPS procedures: procedure_core_id, version_num, json_data
+    "procedure":     "../data/GPPS/global_procedure_26_SEP.parquet",
+}
+
+# C. RUN SETTINGS
+RUN_DIR        = f"../output/ia_policy_procedure_{COUNTRY}/production_run_v1"   # caches, checkpoints, outputs
+RUN_ID         = f"IA-PP-{COUNTRY}-PROD-V1"
+PUBLISHED_ONLY = True        # GPPS: published versions only, latest version per document
+PROC_TOP_K     = 200         # procedures read per alert (search shortlist); policies are always ALL read
+MAX_TOKENS     = 16000       # answer ceiling per call (reasoning models count thinking tokens here)
+CONCURRENCY    = 24          # calls in parallel; lower it if the gateway rate-limits
+SAVE_EVERY     = 200         # checkpoint every N finished calls
+PROGRESS_EVERY_SEC = 120     # print a progress line (done / left / time left / cost) at least this often
+MAX_COST_USD   = 180         # CELL 4 / 5 stop before spending more than this (US full run measured ~$150)
+REUSE_SEARCH_FROM = None     # optional: folder of an earlier run of the SAME country, e.g.
+                             # "../output/ia_policy_procedure_US/notebook2_run_v1" -> copies its query plans,
+                             # embeddings and procedure shortlist (saves ~30 min, identical shortlist). None = fresh.
+
+# D. DECISION RULES (agreed on the US run - change only with RCAI&A)
+LINK_THRESHOLD     = 5       # LINKED needs link_score >= this (+ both quotes verified)
+HEADLINE_MIN_SCORE = 8       # IMPACTED band: link_score >= this; LINK_THRESHOLD .. this-1 = POSSIBLE_IMPACT band.
+                             # One single list instead: set it equal to LINK_THRESHOLD. Re-run CELL 8 only ($0).
+FRAMEWORK_DOCS = {           # framework / process documents (rule 3). Group-wide documents: same ids for every country.
+    "POL-42":    "Response to Regulatory Change",
+    "PROC-1633": "Group-Wide Read-Across Procedure",
+    "POL-79":    "Change Execution Risk Policy",
+    "POL-40":    "Regulatory Compliance: Regulatory Reporting / Notifications",
+    "POL-83":    "Regulatory Reporting Risk Policy",
+}
+# ------------------------------------------------------------------------------------------------
+os.makedirs(RUN_DIR, exist_ok=True)
+if REUSE_SEARCH_FROM:                        # copy the search caches of an earlier run (never overwrites)
+    import shutil
+    for _f in ("query_plans.parquet", "emb_units_alerts.npz", "emb_queries.npz", f"procedure_shortlist_top{PROC_TOP_K}.parquet"):
+        _s, _d = f"{REUSE_SEARCH_FROM}/{_f}", f"{RUN_DIR}/{_f}"
+        if os.path.exists(_s) and not os.path.exists(_d):
+            shutil.copy2(_s, _d); print(f"  reused from earlier run: {_f}")
+os.makedirs(RUN_DIR, exist_ok=True)
+
+def _resolve(p):
+    if any(ch in p for ch in "*?"):
+        hits = sorted(glob.glob(p, recursive=True), key=os.path.getmtime)
+        return hits[-1] if hits else None
+    return p if os.path.exists(p) else None
+_missing = []
+for k in list(SRC):
+    r = _resolve(SRC[k])
+    print(f"  {k:14s} {r or 'NOT FOUND: ' + SRC[k]}")
+    if r: SRC[k] = r
+    else: _missing.append(k)
+assert not _missing, f"source file(s) not found: {_missing} - fix the path(s) in SETTINGS B (CELL 1)"
+json.dump(SRC, open(f"{RUN_DIR}/sources_used.json", "w"), indent=2)
+
+for _need in ("call_llm", "cost_report", "openai_client", "trust_token", "USE_CASE"):
+    assert _need in globals(), f"'{_need}' not found - run CELL 0 (gateway) first"
+
+# ---- library (same GPPS parsing as the numbers notebook) ----
+NA = {"", "n/a", "na", "-", "--", "none", "nan", "null"}
+
+def N(x):
+    s = str(x).strip().upper()
+    return s[:-2] if re.fullmatch(r"\d+\.0", s) else s
+
+def clean(x):
+    return "" if x is None or str(x).strip().lower() in NA else str(x).strip()
+
+def as_str(x):
+    if x is None: return ""
+    if isinstance(x, list): return " | ".join(str(i).strip() for i in x if i is not None and str(i).strip())
+    return str(x).strip()
+
+def as_dict(x):
+    if isinstance(x, list): x = next((i for i in x if isinstance(i, dict)), {})
+    return x if isinstance(x, dict) else {}
+
+def as_list(x):
+    return [i for i in x if isinstance(i, dict)] if isinstance(x, list) else []
+
+def first(d, keys):
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, "", []): return v
+    return None
+
+def strip_html(s):
+    if not isinstance(s, str) or not s: return ""
+    s = re.sub(r"(?is)<!doctype.*?>|<head.*?>.*?</head>", " ", s)
+    s = re.sub(r"(?s)<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", html.unescape(s)).strip()
+
+def load_json(raw):
+    if isinstance(raw, dict): return raw
+    try: return json.loads(raw)
+    except Exception: return {}
+
+def read_any(path):
+    p = str(path)
+    if p.endswith((".xlsx", ".xls")): return pd.read_excel(p)
+    if p.endswith(".csv"): return pd.read_csv(p)
+    try: return pd.read_parquet(p)
+    except Exception:
+        import pyarrow.parquet as pq
+        return pq.read_table(p).replace_schema_metadata(None).to_pandas(date_as_object=True)
+
+def pick(df, *cands):
+    return next((c for c in cands if c in df.columns), None)
+
+# ---- sub-sections: numbered bold / underlined headings inside a segment's HTML (GPPS UI numbering) ----
+HEADING = re.compile(r"^\s*([A-Z]?\.?\d+(?:\.\d+){1,3})\.?\s+(.{3,150}?)\s*$")    # "2.2. Model Inputs" / "B.2.7.4 Use of ..."
+MARK = "␞SUBHEAD␞"
+
+def split_subsections(raw_html, section_no, strict_prefix):
+    if not isinstance(raw_html, str) or not raw_html.strip(): return []
+    found = []
+    def mark(m):
+        inner = strip_html(m.group(0))
+        h = HEADING.match(inner)
+        top = re.sub(r"^[A-Z]\.?", "", h.group(1)).split(".")[0] if h else ""
+        if h and (not strict_prefix or not section_no or top == str(section_no).split(".")[0]):
+            found.append((h.group(1), h.group(2).strip(" :")))
+            return f" {MARK}{len(found) - 1}{MARK} "
+        return m.group(0)
+    marked = re.sub(r"(?is)<(strong|b|u)\b[^>]*>.*?</\1>|<span[^>]*underline[^>]*>.*?</span>", mark, raw_html)
+    parts = re.split(rf"{MARK}(\d+){MARK}", strip_html(marked))
+    subs, seen = [], set()
+    if parts[0].strip():
+        subs.append({"sub_no": f"{section_no}.0" if section_no else "", "sub_title": "(section introduction)",
+                     "text": parts[0].strip()})
+    for i in range(1, len(parts), 2):
+        num, title = found[int(parts[i])]
+        body = parts[i + 1].strip() if i + 1 < len(parts) else ""
+        if (num, body[:200]) in seen: continue                     # GPPS sometimes repeats a block
+        seen.add((num, body[:200]))
+        subs.append({"sub_no": num, "sub_title": title, "text": body})
+    return subs
+
+# ---- one GPPS document (policy or procedure) -> sections -> sub-sections ----
+KEYS = {
+    "policy": dict(app="policyApplication", core=["plcyCoreId"], title=["policyTitle"],
+                   status=("versn", ["versStatCde"]), top=[("policyText", "Policy Statement"), ("policyPurpose", "Purpose")],
+                   seg_text=["sgmntText"], seg_title=["sgmntTitlText"], seg_disp=["sgmntDispInd"],
+                   seg_no=["dispSortOrdrNum", "sortOrdrNum"], seg_reason=["sgmntReasonText"], strict=True),
+    "procedure": dict(app="procedureApplication", core=["procCoreId"], title=["procedureTitle"],
+                      status=("versn", ["procVersnStatCde", "versStatCde"]), top=[("procedureText", "Procedure Statement")],
+                      seg_text=["procSgmntText", "sgmntText"], seg_title=["procSgmntTitlText", "sgmntTitlText"],
+                      seg_disp=["procSgmntDispInd", "sgmntDispInd"], seg_no=["procDispSortOrdrNum", "procSortOrdrNum",
+                      "dispSortOrdrNum", "sortOrdrNum"], seg_reason=["procSgmntReasonText", "sgmntReasonText"], strict=False),
+}
+
+def parse_doc(raw, kind):
+    K = KEYS[kind]
+    d = load_json(raw)
+    if not d: return None
+    app = as_dict(d.get(K["app"]))
+    secs = []
+    for key, label in K["top"]:
+        o = as_dict(d.get(key))
+        secs.append(dict(section_no="", title=strip_html(as_str(o.get("sgmntTitlText") or label)),
+                         html=o.get("sgmntText") or "", displayed="Y", reason="", kind="top"))
+    for s in as_list(app.get("segment")):
+        secs.append(dict(section_no=clean(as_str(first(s, K["seg_no"]))),
+                         title=strip_html(as_str(first(s, K["seg_title"]) or "Section")),
+                         html=first(s, K["seg_text"]) or "",
+                         displayed=(clean(as_str(first(s, K["seg_disp"]))).upper() or "Y"),
+                         reason=strip_html(as_str(first(s, K["seg_reason"]))), kind="segment"))
+    out, seen = [], set()
+    for s in secs:
+        text = strip_html(s["html"])
+        if not text: continue
+        h = hashlib.md5(text.encode()).hexdigest()
+        if h in seen: continue                                          # duplicate segment text
+        seen.add(h)
+        subs = split_subsections(s["html"], s["section_no"], K["strict"]) if s["kind"] == "segment" else []
+        out.append({**{k: v for k, v in s.items() if k != "html"}, "text": text,
+                    "subsections": subs or [{"sub_no": "", "sub_title": "", "text": text}]})
+    ver = as_dict(d.get(K["status"][0]))
+    return dict(core_id=N(first(d, K["core"]) or ""), title=clean(as_str(first(d, K["title"]))),
+                status=clean(as_str(first(ver, K["status"][1]))), sections=out, top_keys=sorted(d.keys()))
+
+def load_docs(path, kind, scope):
+    df = read_any(path)
+    idc = pick(df, "policy_core_id", "procedure_core_id", "policy_id", "procedure_id")
+    recs = []
+    for _, r in df.iterrows():
+        p = parse_doc(r["json_data"], kind)
+        if p is None: continue
+        p.update(doc_id=N(r[idc]) if idc else p["core_id"], version=r.get("version_num"), scope=scope, kind=kind)
+        recs.append(p)
+    out = pd.DataFrame(recs)
+    n_all = len(out)
+    if PUBLISHED_ONLY and len(out):
+        out = out[out.status.str.upper().str.startswith("PUBL")]
+    out["_v"] = pd.to_numeric(out.version, errors="coerce").fillna(-1)
+    out = out.sort_values("_v", ascending=False).drop_duplicates("doc_id").drop(columns="_v").reset_index(drop=True)
+    print(f"  {kind:9s} {scope:6s}: {n_all:,} rows -> {len(out):,} documents (published, latest version)")
+    return out
+
+def build_units(docs):
+    """Retrieval / assessment unit = a visible numbered SUB-SECTION; a visible section without numbered
+    sub-sections is one unit. Hidden segments (shown 'N' in the GPPS UI) are excluded."""
+    rows = []
+    for d in docs.itertuples():
+        prefix = "POL" if d.kind == "policy" else "PROC"
+        for s in d.sections:
+            for sub in s["subsections"]:
+                rows.append(dict(
+                    unit_id=f"{prefix}-{d.doc_id}|{s['section_no'] or s['title'][:20]}|{sub['sub_no'] or '-'}",
+                    doc_type=d.kind, doc_id=f"{prefix}-{d.doc_id}", doc_title=d.title, scope=d.scope,
+                    section_no=s["section_no"], section_title=s["title"], subsection_no=sub["sub_no"],
+                    subsection_title=sub["sub_title"], hidden=s["displayed"] == "N", hidden_reason=s["reason"],
+                    level="sub-section" if sub["sub_no"] else "section", text=sub["text"], chars=len(sub["text"])))
+    u = pd.DataFrame(rows)
+    return u
+
+
+def clean_words(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+def quote_found(quote, text):
+    """Verbatim (case / punctuation-insensitive); long quotes may match on 8-word ends. Same as every run."""
+    q = clean_words(quote)
+    if len(q) < 12 or q in ("null", "none"): return False
+    t = clean_words(text)
+    if q in t: return True
+    w = q.split()
+    return len(w) >= 6 and (" ".join(w[:8]) in t or " ".join(w[-8:]) in t)
+def wilson(k, n, z=1.96):
+    if n == 0: return (np.nan, np.nan)
+    p = k / n; d = 1 + z * z / n; c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+class Progress:
+    """Prints done / total, %, elapsed, time left and cost so far for a stage, every PROGRESS_EVERY_SEC
+    seconds and at every checkpoint. 'already' = items finished in earlier sessions (checkpoint)."""
+    def __init__(self, stage, total, already=0, what="calls"):
+        self.stage, self.total, self.already, self.what = stage, total, already, what
+        self.done, self.t0, self.last = 0, time.time(), 0.0
+        self.u0 = len(USAGE_LOG) if "USAGE_LOG" in globals() else 0
+        todo = total - already
+        print(f"[{stage}] {total:,} {what} in total | {already:,} done earlier (checkpoint) | {todo:,} to do now")
+    def _cost(self):
+        if "USAGE_LOG" not in globals() or len(USAGE_LOG) <= self.u0: return 0.0
+        u = pd.DataFrame(USAGE_LOG[self.u0:])
+        return float(u["in"].sum() * TOKEN_PRICE["in"] + u["out"].sum() * TOKEN_PRICE["out"])
+    def update(self, n=1, force=False, note=""):
+        self.done += n
+        now = time.time()
+        if not force and now - self.last < PROGRESS_EVERY_SEC and self.done < self.total - self.already:
+            return
+        self.last = now
+        el = now - self.t0
+        fin = self.already + self.done
+        rate = self.done / el if el > 0 else 0
+        left = (self.total - fin) / rate if rate > 0 else float("nan")
+        cost = self._cost()
+        cost_left = cost / self.done * (self.total - fin) if self.done else float("nan")
+        errs = sum(1 for x in (ERROR_LOG if "ERROR_LOG" in globals() else []) if x.get("stage") == self.stage)
+        fmt = lambda sec: "-" if sec != sec else (f"{int(sec // 3600)}h{int(sec % 3600 // 60):02d}m" if sec >= 3600
+                                                  else f"{int(sec // 60)}m{int(sec % 60):02d}s")
+        print(f"  [{self.stage}] {fin:,}/{self.total:,} {self.what} ({100 * fin / max(self.total, 1):.1f}%) | "
+              f"elapsed {fmt(el)} | time left ~{fmt(left)} | {rate * 60:.0f}/min | cost this session ${cost:.2f} "
+              f"(+~${cost_left:.2f} to finish) | failed calls {errs}" + (f" | {note}" if note else ""), flush=True)
+
+def unit_doc_text(u):
+    return (u.doc_title + " | " + u.section_title + " | " + u.subsection_title.fillna("") + " | " + u.text)
+def _clean_emb(t):
+    t = str(t) if t is not None else ""
+    return (t if t.strip() else " ")[:6000]
+def _md5(t):
+    return hashlib.md5(t.encode("utf-8")).hexdigest()
+
+# ---- GPPS -> sections / sub-sections (cached; rebuilt only if missing) ----
+UNITS_PATH = f"{RUN_DIR}/units.parquet"
+if os.path.exists(UNITS_PATH):
+    UNITS_ALL = pd.read_parquet(UNITS_PATH)
+    print(f"sections / sub-sections loaded from cache: {len(UNITS_ALL):,}")
+else:
+    print("parsing GPPS ...")
+    POL = pd.concat([load_docs(SRC["policy_local"], "policy", "local"),
+                     load_docs(SRC["policy_global"], "policy", "global")], ignore_index=True).drop_duplicates("doc_id")
+    PROC = load_docs(SRC["procedure"], "procedure", "global")
+    UNITS_ALL = build_units(pd.concat([POL, PROC], ignore_index=True))
+    UNITS_ALL.to_parquet(UNITS_PATH, index=False)
+for _c in ("doc_title", "section_no", "section_title", "subsection_no", "subsection_title", "text"):
+    UNITS_ALL[_c] = UNITS_ALL[_c].map(lambda v: "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v))
+UNITS = UNITS_ALL[~UNITS_ALL.hidden.astype(bool)].reset_index(drop=True)
+
+# ---- alerts: Rapid2 text for the alerts in the linkage scope (same build as every IA run) ----
+r2 = read_any(SRC["rapid2"])
+scope_df = read_any(SRC["alert_scope"])
+scope_ids = set(scope_df[pick(scope_df, "RECORD_ID", "RID")].map(N))
+r2 = r2[r2["RECORD_ID"].map(N).isin(scope_ids)].drop_duplicates("RECORD_ID")
+ALERTS = pd.DataFrame({
+    "alert": r2["RECORD_ID"].map(N),
+    "title": r2["TITLE"].map(clean),
+    "text": r2.apply(lambda r: " ".join(x for x in (clean(r.get("TITLE")), clean(r.get("SUMM_CONTENT")),
+                                                    clean(r.get("SUMM_UPDATE")), clean(r.get("INTRO_TEXT"))) if x), axis=1)})
+ALERTS = ALERTS.reset_index(drop=True)
+_g = lambda r, c: clean(r.get(c)) if c in r2.columns else ""
+META = {N(r["RECORD_ID"]): {"jurisdiction": _g(r, "RECORD_JURISDICTION_NAME"), "regulator": _g(r, "REGULATOR_CODE"),
+                            "taxonomy": " > ".join(x for x in (_g(r, "LEVEL_1_RISK_TAXONOMY"), _g(r, "LEVEL_2_RISK_TAXONOMY"),
+                                                               _g(r, "LEVEL_3_RISK_TAXONOMY")) if x)}
+        for _, r in r2.iterrows()}
+ATEXT = dict(zip(ALERTS.alert, ALERTS.text))
+AIDX = {a: i for i, a in enumerate(ALERTS.alert)}
+
+DOC_TEXT, DOC_UNITS, DOC_TITLE, DOC_SRC_CHARS, DOC_TYPE, DOC_FILE_SCOPE = {}, {}, {}, {}, {}, {}
+UNIT_INFO = {}
+for doc_id, g in UNITS.groupby("doc_id", sort=False):
+    parts, ids = [], []
+    for i, r in enumerate(g.itertuples(), start=1):
+        sec = f"{(str(r.section_no) + ' ') if r.section_no else ''}{r.section_title}"
+        sub = f" > {r.subsection_no} {r.subsection_title}" if r.subsection_no else ""
+        parts.append(f"[S{i} | {sec}{sub}]\n{r.text}")
+        ids.append(r.unit_id)
+        UNIT_INFO[r.unit_id] = dict(section_no=str(r.section_no or ""), section_title=r.section_title,
+                                    subsection_no=str(r.subsection_no or ""), subsection_title=r.subsection_title or "",
+                                    gpps_label=(f"Section {r.section_no} {r.section_title}" if r.section_no else r.section_title)
+                                    + (f" > {r.subsection_no} {r.subsection_title}" if r.subsection_no else ""),
+                                    text=r.text)
+    DOC_TEXT[doc_id], DOC_UNITS[doc_id] = "\n\n".join(parts), ids
+    DOC_TITLE[doc_id], DOC_SRC_CHARS[doc_id] = g.doc_title.iloc[0], int(g.chars.sum())
+    DOC_TYPE[doc_id], DOC_FILE_SCOPE[doc_id] = g.doc_type.iloc[0], g.scope.iloc[0]
+DOCS_BY_TYPE = {k: [d for d in DOC_TEXT if DOC_TYPE[d] == k] for k in ("policy", "procedure")}
+print(f"alerts {len(ALERTS)} | policies {len(DOCS_BY_TYPE['policy']):,} | procedures {len(DOCS_BY_TYPE['procedure']):,} "
+      f"| visible sections / sub-sections {len(UNITS):,} -> {RUN_DIR}")
+# hand-off for NOTEBOOK 2: the alert texts exactly as sent to the AI (units.parquet is saved above)
+pd.DataFrame({"alert": ALERTS.alert, "title": ALERTS.title, "text": ALERTS.text,
+              "meta": [json.dumps(META.get(a, {}), ensure_ascii=False) for a in ALERTS.alert]}) \
+  .to_parquet(f"{RUN_DIR}/alerts.parquet", index=False)
+_fw_missing = [d for d in FRAMEWORK_DOCS if d not in DOC_TEXT]
+print(f"framework documents found: {len(FRAMEWORK_DOCS) - len(_fw_missing)} of {len(FRAMEWORK_DOCS)}"
+      + (f" | NOT in GPPS (check SETTINGS D): {_fw_missing}" if _fw_missing else ""))
+
+
+
+# ====== CELL 2: DOCUMENT SCOPE - GLOBAL / LOCAL (this country) / LOCAL (other country) ($0) =====
+# Reads the raw GPPS JSON and labels each document:
+#   LEVEL  : GPPS level field (country.plcyLglEntyCde / procLglEntyCde / region) = GLOBAL -> GLOBAL.
+#            Otherwise the applicable legal entities / countries decide: this country's entities -> LOCAL_COUNTRY,
+#            only other countries' entities -> LOCAL_OTHER. No usable field -> the source file decides.
+#   APPLICABILITY (GLOBAL documents, information only): do the legal entities GPPS lists as applicable include
+#            this country's entities? APPLIES / OTHER_COUNTRIES_ONLY / NOT_LISTED. Given to the AI as context and
+#            shown in the outputs; it does not by itself reject a link (a GLOBAL document applies group-wide).
+# Entity NAMES are never used to decide GLOBAL (e.g. "HSBC Global Asset Management (USA)" is a US entity).
+SCOPE_KEY = re.compile(r"cntry|country|jurs|juris|lvl|level|scope|glbl|global|regn|region|locl|local|geo|"
+                       r"applic|entity|lgl|legal", re.I)
+HOME_TERMS = [t.lower() for t in COUNTRY_TERMS]                      # this country (SETTINGS A)
+HOME_CODES = {c.upper() for c in COUNTRY_CODES}
+OTHER_COUNTRIES = ["united kingdom", "uk", "england", "hong kong", "china", "india", "singapore", "mexico", "canada",
+    "france", "germany", "united arab emirates", "uae", "saudi", "australia", "malaysia", "indonesia", "japan", "korea",
+    "taiwan", "vietnam", "philippines", "thailand", "egypt", "turkey", "turkiye", "switzerland", "luxembourg", "ireland",
+    "bermuda", "jersey", "guernsey", "isle of man", "channel islands", "malta", "qatar", "bahrain", "oman", "kuwait",
+    "sri lanka", "bangladesh", "mauritius", "argentina", "brazil", "chile", "new zealand", "macau", "netherlands",
+    "spain", "italy", "poland", "sweden", "belgium", "greece", "armenia", "algeria", "uruguay", "colombia", "peru"]
+OTHER_CODES = {"GB", "UK", "HK", "CN", "IN", "SG", "MX", "CA", "FR", "DE", "AE", "SA", "AU", "MY", "ID", "JP", "KR",
+               "TW", "VN", "PH", "TH", "EG", "TR", "CH", "LU", "IE", "BM", "JE", "GG", "IM", "MT", "QA", "BH", "OM",
+               "KW", "LK", "BD", "MU", "AR", "BR", "CL", "NZ", "MO", "NL", "ES", "IT", "PL", "SE", "BE", "GR"}
+OTHER_COUNTRIES = [t for t in OTHER_COUNTRIES if t not in HOME_TERMS]
+OTHER_CODES = OTHER_CODES - HOME_CODES
+GLOBAL_TERMS = ["global", "group-wide", "groupwide", "group wide", "all countries", "all jurisdictions", "enterprise-wide"]
+
+def _walk(o, path=""):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield from _walk(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(o, list):
+        for v in o:
+            yield from _walk(v, path + "[]")
+    else:
+        yield path, o
+
+def _has(term, text):
+    return re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", text) is not None
+
+FIELD_VALUES, SCOPE_ROWS = defaultdict(Counter), []
+for kind, keys, idcands, prefix in (("policy", ("policy_local", "policy_global"), ("policy_core_id", "policy_id"), "POL-"),
+                                    ("procedure", ("procedure",), ("procedure_core_id", "procedure_id"), "PROC-")):
+    known = set(DOCS_BY_TYPE[kind])
+    for key in keys:
+        df = read_any(SRC[key])
+        idc = next(c for c in idcands if c in df.columns)
+        if "version_num" in df.columns:
+            df = df.assign(_v=pd.to_numeric(df["version_num"], errors="coerce")).sort_values("_v", ascending=False)
+        df = df.drop_duplicates(idc)
+        for _, r in df.iterrows():
+            doc = prefix + N(r[idc])
+            if doc not in known:
+                continue
+            vals = []
+            for p, v in _walk(load_json(r["json_data"])):
+                leaf = re.sub(r"\[\]", "", p).split(".")[-1]
+                if v is None or isinstance(v, (dict, list)) or not SCOPE_KEY.search(leaf) or "sgmnt" in p.lower():
+                    continue
+                s = str(v).strip()
+                if not s or len(s) > 200 or s.lower() in NA:
+                    continue
+                FIELD_VALUES[f"{kind}: {p.replace('[]', '')}"][s[:60]] += 1
+                vals.append((leaf.lower(), s, p.lower()))
+            lvl = [s.upper() for k, s, _ in vals if k in ("plcylglentycde", "proclglentycde", "region") or "lvl" in k
+                   or "level" in k]
+            appl = [(k, s) for k, s, pth in vals if ("apblctry" in pth or "apblenty" in pth or "legalenty" in k
+                    or "cntry" in k or "country" in k) and "appendix" not in pth
+                    and k not in ("plcylglentycde", "proclglentycde")]
+            low = [s.lower() for _, s in appl]
+            home = any(_has(t, x) for t in HOME_TERMS for x in low) or \
+                   any(s.upper() in HOME_CODES | {c.upper() for c in COUNTRY_ENTITY_CODES} for _, s in appl)
+            others = sorted({t for t in OTHER_COUNTRIES for x in low if _has(t, x)} |
+                            {s.upper() for k, s in appl if re.search("cntry|country", k) and s.upper() in OTHER_CODES})
+            if "GLOBAL" in lvl:
+                scope, how = "GLOBAL", "GPPS level field"
+            elif home:
+                scope, how = "LOCAL_COUNTRY", "GPPS applicable entities"
+            elif others:
+                scope, how = "LOCAL_OTHER", "GPPS applicable entities"
+            else:
+                scope = "LOCAL_COUNTRY" if key == "policy_local" else "GLOBAL"
+                how = "source file"
+            applic = ("APPLIES" if home else "OTHER_COUNTRIES_ONLY" if others else "NOT_LISTED") if scope == "GLOBAL" else ""
+            us = home
+            SCOPE_ROWS.append(dict(doc_id=doc, doc_type=kind, title=DOC_TITLE[doc], source_file=key, scope=scope,
+                                   applicability=applic, decided_by=how,
+                                   countries_found=", ".join(others + ([COUNTRY] if us else [])),
+                                   evidence=" | ".join(f"{k}={s}" for k, s, _ in vals)[:300]))
+SCOPE = pd.DataFrame(SCOPE_ROWS).drop_duplicates("doc_id")
+missing_scope = [d for d in DOC_TEXT if d not in set(SCOPE.doc_id)]
+if missing_scope:
+    SCOPE = pd.concat([SCOPE, pd.DataFrame([dict(doc_id=d, doc_type=DOC_TYPE[d], title=DOC_TITLE[d], source_file="-",
+        scope="LOCAL_COUNTRY" if DOC_FILE_SCOPE[d] == "local" else "GLOBAL", applicability="", decided_by="source file",
+        countries_found="",
+        evidence="") for d in missing_scope])], ignore_index=True)
+DOC_SCOPE = dict(zip(SCOPE.doc_id, SCOPE.scope))
+DOC_APPLIC = dict(zip(SCOPE.doc_id, SCOPE.applicability))
+APPLIC_NOTE = {"APPLIES": f"GPPS lists {COUNTRY_NAME} legal entities among the applicable entities",
+               "OTHER_COUNTRIES_ONLY": f"GPPS lists only other countries' legal entities as applicable (none in {COUNTRY_NAME})",
+               "NOT_LISTED": "GPPS lists no applicable legal entities", "": ""}
+SCOPE_LABEL = {"GLOBAL": f"GLOBAL (applies to all countries, including {COUNTRY_NAME})",
+               "LOCAL_COUNTRY": f"LOCAL - {COUNTRY_NAME}",
+               "LOCAL_OTHER": f"LOCAL - another country (not {COUNTRY_NAME})"}
+
+print("GPPS FIELDS THAT LOOK LIKE LEVEL / COUNTRY / JURISDICTION (top 12, with their commonest values):")
+for f, c in sorted(FIELD_VALUES.items(), key=lambda kv: -sum(kv[1].values()))[:12]:
+    print(f"  {f:60s} {dict(c.most_common(5))}")
+print("\nDOCUMENT SCOPE")
+print(pd.crosstab([SCOPE.doc_type, SCOPE.scope], SCOPE.decided_by).to_string())
+print("\nGLOBAL documents - do the applicable legal entities include " + COUNTRY_NAME + "?")
+print(pd.crosstab(SCOPE[SCOPE.scope == "GLOBAL"].doc_type, SCOPE[SCOPE.scope == "GLOBAL"].applicability).to_string())
+for (k, s), g in SCOPE.groupby(["doc_type", "scope"]):
+    print(f"\n  examples {k} / {s}:")
+    for r in g.head(3).itertuples():
+        print(f"    {r.doc_id:14s} {r.title[:50]:50s} | {r.applicability or '-':20s} | {r.countries_found[:40] or '-':40s}")
+_us_file = SCOPE[SCOPE.source_file == "policy_local"]
+print(f"\nCHECK local policy file: {len(_us_file)} documents -> {_us_file.scope.value_counts().to_dict()}"
+      + ("" if (_us_file.scope == "LOCAL_COUNTRY").all() else "  (see document_scope.xlsx for the ones marked GLOBAL)"))
+print("\nCHECK: open 2-3 of the examples in GPPS. If the scope is wrong, tell RCAI&A which field GPPS uses.")
+SCOPE.to_excel(f"{RUN_DIR}/document_scope.xlsx", index=False)
+SCOPE.astype(str).to_parquet(f"{RUN_DIR}/document_scope.parquet", index=False)   # hand-off for NOTEBOOK 2
+
+
+
+# ====== CELL 3: PROCEDURE SHORTLIST - search method F, top PROC_TOP_K per alert (~$1, checkpointed) =====
+# Step 1: an AI "query plan" per alert (requirements / activities / procedure language / keywords) - checkpointed.
+# Step 2: embeddings of every procedure section + alert + query (gemini-embedding-001) - cached.
+# Step 3: three rankings fused by rank (RRF): A alert-text embedding, B best query-plan embedding, D TF-IDF keywords
+#         (scikit-learn, in-process). Document score = its best section. Top PROC_TOP_K per alert are read in CELL 7.
+# The shortlist is FROZEN on first build (procedure_shortlist_top{K}.parquet) so a resumed run reads the same pairs.
+from sklearn.feature_extraction.text import TfidfVectorizer
+EMB_UNITS_PATH = f"{RUN_DIR}/emb_units_alerts.npz"          # caches of THIS notebook (checkpointed)
+EMB_Q_PATH     = f"{RUN_DIR}/emb_queries.npz"
+QP_PATH        = f"{RUN_DIR}/query_plans.parquet"
+EMB_MODEL      = "gemini-embedding-001"
+
+def _load_npz(path):
+    if not os.path.exists(path): return {}
+    z = np.load(path, allow_pickle=False)
+    return dict(zip(z["h"].tolist(), z["X"]))
+def _save_npz(path, cache):
+    if cache:
+        np.savez(path + ".tmp.npz", h=np.array(list(cache.keys())), X=np.vstack(list(cache.values())))
+        os.replace(path + ".tmp.npz", path)
+
+async def _emb_call(batch):
+    token = await trust_token.get()
+    r = await openai_client.embeddings.create(model=EMB_MODEL, input=batch, user=USE_CASE,
+                                              extra_headers={"Authorization": f"Bearer {token}"})
+    return np.asarray([d.embedding for d in r.data], dtype=np.float32)
+
+async def embed_missing(texts, cache, path):
+    """embeds texts not yet in cache (dict md5 -> vector), 64 per request, 16 in parallel; saved every 2,000"""
+    need = list(dict.fromkeys(t for t in texts if _md5(t) not in cache))
+    if not need:
+        return 0
+    sem = asyncio.Semaphore(16)
+    async def one(b):
+        async with sem:
+            for attempt in range(6):
+                try:
+                    return b, await _emb_call(b)
+                except Exception as e:
+                    if "401" in str(e): await trust_token.invalidate()
+                    await asyncio.sleep(min(2 ** attempt, 20) * (1 + random.random()))
+            return b, None
+    since = 0
+    prog = Progress("embeddings", len(need), 0, "texts embedded")
+    _tasks = [asyncio.create_task(one(need[i:i + 64])) for i in range(0, len(need), 64)]
+    try:
+        for fut in tqdm(asyncio.as_completed(_tasks), total=len(_tasks), desc="embed"):
+            b, X = await fut
+            if X is not None:
+                for t, x in zip(b, X):
+                    cache[_md5(t)] = x
+                since += len(b)
+            prog.update(len(b))
+            if since >= 2000:
+                _save_npz(path, cache); since = 0
+    except BaseException:
+        cancel_pending(_tasks, "embedding batches"); _save_npz(path, cache); raise
+    _save_npz(path, cache)
+    failed = sum(_md5(t) not in cache for t in need)
+    assert failed == 0, f"{failed} texts could not be embedded - re-run this cell (finished ones are kept)"
+    return len(need)
+
+QP_PROMPT = """ROLE:
+You are a lead Regulatory Compliance & Policy Governance AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to turn ONE incoming regulatory development (alert_text) into SEARCH QUERIES that will find the internal policies and procedures (in the bank's GPPS) that the development may impact.
+
+WHAT THE INPUT CONTAINS:
+* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, taxonomy tag).
+
+CORE PRINCIPLES: COVER EVERY REQUIREMENT, USE BANK LANGUAGE
+An alert often contains several distinct requirements (e.g. a notice, a deadline, a record, a licence, a prohibition). Each one may be governed by a different policy or procedure. List them separately. Alerts use statute / regulator language; GPPS documents use internal language (e.g. "fair treatment of customers", "dormant accounts", "third-party risk", "records retention", "customer due diligence", "complaints handling", "regulatory reporting"). Translate.
+
+INSTRUCTIONS:
+ * "core_mandate": one sentence - what the bank must now do, for whom.
+ * "requirements": 2-6 short sentences, ONE distinct requirement each (what must be done / prohibited / recorded / disclosed, by when, for whom). Do not invent requirements the alert does not state.
+ * "affected_activities": 2-6 short phrases in internal bank language naming the products, customers, business activities or control areas affected.
+ * "policy_language": 3-5 sentences written the way an internal POLICY would state the principle or minimum requirement that governs this.
+ * "procedure_language": 3-5 sentences written the way an internal PROCEDURE step would carry it out.
+ * "keywords": 5-15 search terms (regulatory and internal synonyms).
+ * If the alert has no actionable requirement (e.g. a consultation or a speech), still describe the area it touches.
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).
+{
+"alert_id": "string",
+"core_mandate": "string",
+"requirements": ["string", ...],
+"affected_activities": ["string", ...],
+"policy_language": ["string", ...],
+"procedure_language": ["string", ...],
+"keywords": ["string", ...]
+}"""
+QP_PROMPT = QP_PROMPT.replace("United States", COUNTRY_NAME)    # country from SETTINGS A (before any call)
+
+_LAST_REAUTH = [0.0]
+async def _reauth_if_auth_error():
+    """Long runs: the gateway login can expire (~1 h). On an auth-type error, log in again (at most every 5 min)."""
+    global group_ai_client
+    last = (ERROR_LOG[-1]["error"] if ERROR_LOG else "").lower()
+    if not any(k in last for k in ("401", "403", "unauthor", "expired", "token", "auth")):
+        return
+    if time.time() - _LAST_REAUTH[0] < 300 or "GroupAIClient" not in globals():
+        return
+    _LAST_REAUTH[0] = time.time()
+    try:
+        group_ai_client = await asyncio.to_thread(GroupAIClient.init, staff_id=STAFF_ID)
+        await trust_token.invalidate()
+        print("  gateway: logged in again after an authentication error", flush=True)
+    except Exception as e:
+        print("  gateway: re-login failed -", repr(e)[:200], flush=True)
+
+async def ask(system, payload):
+    """call_llm with real retries; re-logs in to the gateway if the failures are authentication errors."""
+    for attempt in range(4):
+        a = await call_llm(system, payload, None, MAX_TOKENS)
+        if isinstance(a, dict) and isinstance(a.get("items"), list) and a["items"]:
+            a = a["items"][0]
+        if isinstance(a, dict) and a:
+            return a
+        await _reauth_if_auth_error()
+        await asyncio.sleep(min(2 ** attempt, 20) * (1 + random.random()))
+    return {}
+
+def cancel_pending(tasks, what):
+    """Interrupt-safe: Jupyter's Interrupt stops the cell but NOT tasks already started -> cancel them."""
+    n = sum(1 for t in tasks if not t.done())
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+    if n:
+        print(f"  interrupted - {n:,} pending {what} cancelled (nothing keeps running in the background)", flush=True)
+
+def _as_list(x):
+    if isinstance(x, list): return [str(i).strip() for i in x if str(i).strip()]
+    return [s.strip() for s in re.split(r"[;\n]", str(x or "")) if s.strip()]
+
+plans = {}
+if os.path.exists(QP_PATH):
+    _p = pd.read_parquet(QP_PATH)
+    plans = {a: json.loads(j) for a, j in zip(_p.alert, _p.plan) if j and j != "{}"}
+todo = [a for a in ALERTS.alert if a not in plans]
+if todo:
+    CURRENT_STAGE = "query_plan"
+    sem = asyncio.Semaphore(16)
+    async def _plan(a):
+        async with sem:
+            return a, await ask(QP_PROMPT, {"alert_id": a, "alert_text": ATEXT[a], "alert_metadata": META.get(a, {})})
+    def _save_plans():
+        pd.DataFrame({"alert": list(plans), "plan": [json.dumps(plans[a], ensure_ascii=False) for a in plans]}) \
+          .to_parquet(QP_PATH, index=False)
+    prog = Progress("query_plan", len(ALERTS), len(ALERTS) - len(todo), "query plans")
+    _tasks = [asyncio.create_task(_plan(a)) for a in todo]
+    try:
+        for i, fut in enumerate(tqdm(asyncio.as_completed(_tasks), total=len(todo), desc="query plans"), 1):
+            prog.update(1)
+            a, r = await fut
+            if r:
+                plans[a] = {k: (_as_list(r.get(k)) if k != "core_mandate" else str(r.get(k) or ""))
+                            for k in ("core_mandate", "requirements", "affected_activities", "policy_language",
+                                      "procedure_language", "keywords")}
+            if i % 20 == 0:
+                _save_plans()
+    except BaseException:
+        cancel_pending(_tasks, "query plans"); _save_plans(); raise
+    _save_plans()
+print(f"query plans {len(plans)} of {len(ALERTS)} (made now: {len(todo)})")
+assert len(plans) == len(ALERTS), "some query plans failed - re-run this cell (finished ones are kept)"
+
+
+def queries(a):
+    p = plans.get(a, {})
+    q = [ATEXT[a][:6000]] + ([p["core_mandate"]] if p.get("core_mandate") else [])
+    q += p.get("requirements", []) + p.get("affected_activities", []) + p.get("procedure_language", [])
+    return [x for x in dict.fromkeys(q) if x.strip()]
+
+PV = UNITS[UNITS.doc_type == "procedure"].reset_index(drop=True)
+EU, EQ = _load_npz(EMB_UNITS_PATH), _load_npz(EMB_Q_PATH)
+u_txt = [_clean_emb(t) for t in unit_doc_text(PV).tolist()]
+a_txt = [_clean_emb(t) for t in ALERTS.text.tolist()]
+n1 = await embed_missing(u_txt + a_txt, EU, EMB_UNITS_PATH)
+n2 = await embed_missing([q for a in ALERTS.alert for q in queries(a)], EQ, EMB_Q_PATH)
+print(f"embeddings: newly embedded units/alerts {n1:,} | queries {n2:,} (0 = all from cache)")
+PROC_SHORTLIST_PATH = f"{RUN_DIR}/procedure_shortlist_top{PROC_TOP_K}.parquet"   # frozen per PROC_TOP_K
+
+def _norm(X):
+    return X / np.clip(np.linalg.norm(X, axis=1, keepdims=True), 1e-9, None)
+UE = _norm(np.vstack([EU[_md5(t)] for t in u_txt]))
+QA = _norm(np.vstack([EU[_md5(t)] for t in a_txt]))
+S_a = QA @ UE.T                                                          # A: alert text
+S_b = np.zeros_like(S_a)                                                 # B: best LLM query per section
+for a, i in AIDX.items():
+    Q = _norm(np.vstack([EQ[_md5(q)] for q in queries(a) if _md5(q) in EQ] or [QA[i]]))
+    S_b[i] = (Q @ UE.T).max(axis=0)
+vec = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=2, max_df=0.5, sublinear_tf=True)
+U_kw = vec.fit_transform(unit_doc_text(PV))
+S_d = (vec.transform([" ".join([ATEXT[a]] + queries(a)[1:] + plans.get(a, {}).get("keywords", []))
+                      for a in ALERTS.alert]) @ U_kw.T).toarray()            # D: expanded keyword
+def _rrf(*mats, k=60):
+    out = np.zeros_like(mats[0], dtype=np.float32)
+    for M in mats:
+        out += 1.0 / (k + np.argsort(np.argsort(-M, axis=1), axis=1) + 1)
+    return out
+S_f = _rrf(S_a, S_b, S_d)                                                # F: fusion (best in the benchmark)
+PDOCS = pd.unique(PV.doc_id)
+D_f = pd.DataFrame(S_f.T).groupby(PV.doc_id.values).max().reindex(PDOCS).values.T
+rows = []
+for a, i in AIDX.items():
+    order = np.argsort(-D_f[i], kind="stable")[:PROC_TOP_K]
+    rows += [dict(alert=a, doc=PDOCS[j], doc_type="procedure", search_rank=r + 1) for r, j in enumerate(order)]
+PROC_CAND = pd.DataFrame(rows)
+if os.path.exists(PROC_SHORTLIST_PATH):                                  # keep the shortlist the run started with
+    _old = pd.read_parquet(PROC_SHORTLIST_PATH)
+    if set(zip(_old.alert, _old.doc)) != set(zip(PROC_CAND.alert, PROC_CAND.doc)):
+        print("note: shortlist differs from the saved one (e.g. new query plans) - using the SAVED shortlist")
+    PROC_CAND = _old
+else:
+    PROC_CAND.to_parquet(PROC_SHORTLIST_PATH, index=False)
+POL_CAND = pd.DataFrame([dict(alert=a, doc=d, doc_type="policy", search_rank=np.nan)
+                         for a in ALERTS.alert for d in DOCS_BY_TYPE["policy"]])
+CAND = pd.concat([POL_CAND, PROC_CAND], ignore_index=True)
+CAND["doc_scope"] = CAND.doc.map(DOC_SCOPE)
+print(f"pairs: policies {len(POL_CAND):,} (all) | procedures {len(PROC_CAND):,} (top-{PROC_TOP_K}) | "
+      f"scope of pairs {CAND.groupby(['doc_type', 'doc_scope']).size().to_dict()}")
+
+
+
+# ====== CELL 4: PROMPTS + NO-TRUNCATION PROOF + COST GATE ($0) ================
+# House format of the alert linkages (RSM / ROB / LR / L1C / 1C): the first seven fields are identical, in the
+# same order; the last three are the section-level extensions this linkage needs.
+# BUSINESS prompt = the validated prompt of the US full run. FRAMEWORK prompt = the same + FRAMEWORK RULE + the field
+# "framework_change" (rule 3). The country name in every prompt comes from SETTINGS A.
+FORMAT_DOC = """FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).
+{
+"{id_field}": "string",
+"reasoning": "string",
+"decision": "LINKED | NOT_LINKED | INSUFFICIENT_EVIDENCE",
+"link_score": integer,
+"confidence_level": integer,
+"evidence_from_alert": "verbatim substring or null",
+"{evidence_field}": "verbatim substring or null",
+"linked_sections": ["S<n>", ...],
+"impact_type": "CHANGE_REQUIRED | REVIEW_REQUIRED | NONE",
+"change_needed": "one sentence or null"
+}"""
+
+JURISDICTION = """JURISDICTION RULE:
+document_scope says whether the {label} is GLOBAL (applies in every country, including the United States) or LOCAL to one country. A United States alert can impact a GLOBAL {label} and a United States LOCAL {label}. It does NOT impact a {label} that is LOCAL to another country, unless that {label} itself states that it adopts or applies the United States requirement - in that case say so in "reasoning". For a GLOBAL {label}, document_scope may also say which countries' legal entities GPPS lists as applicable; use it as context only - a GLOBAL {label} applies group-wide unless its own text clearly excludes the United States.
+Judge the content first, then apply this rule.
+"""
+
+PROMPT_POLICY = """ROLE:
+You are a lead Regulatory Compliance & Policy Governance AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate an incoming regulatory development (alert_text) against ONE internal POLICY from the bank's Global Policy & Procedure System, GPPS (document_text), and determine whether the development impacts that policy, i.e. whether the policy owner must review or update it, and which section(s) / sub-section(s).
+
+WHAT THE INPUT CONTAINS:
+* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, and the alert's OWN taxonomy tag L1 > L2 > L3, assigned upstream in RAPID2).
+* document_scope: GLOBAL or LOCAL (and which country) for this policy.
+* document_text: the FULL visible text of the policy, split into GPPS sections and sub-sections, each labelled [S<n> | <GPPS section number> <title> > <sub-section number> <title>]. Sections hidden in GPPS are already removed.
+
+CORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING
+You must evaluate the ENTIRE policy text. Do not anchor solely on the policy title, on one section, or on a shared keyword.
+A policy sets principles and minimum control requirements for a perimeter (risk area, products, customers, businesses, activities). An alert IMPACTS a policy when the regulatory change creates, removes, tightens, re-scopes or re-interprets a requirement that a section of the policy governs - what must be done, permitted, prohibited, by when, for whom, or what must be recorded, disclosed or approved - within the policy's perimeter.
+
+SEMANTIC BRIDGING & BANK TAXONOMY:
+Alerts use statute / regulator language; policies use internal principle language. Human experts link specific regulatory mandates to the policy section that governs them. Apply these equivalency rules:
+ * Consumer protection mandates (UDAAP, disclosures, complaint handling, fee / billing rules, fair lending) ARE LINKED to policy sections on fair treatment of customers, disclosures, complaints, product governance or customer outcomes.
+ * Unclaimed property, escheatment and dormancy rules ARE LINKED to sections on dormant / inactive accounts, account closure, customer contact or client-asset protection.
+ * Financial exploitation / vulnerable adult rules ARE LINKED to sections on vulnerable customers, customer protection, fraud against customers or account management.
+ * Licensing, registration, qualification and continuing-education rules ARE LINKED to sections on licensing, registration, fit-and-proper, training or competence of staff.
+ * Records, information-request and retention rules ARE LINKED to records management, data retention and information-request handling sections.
+ * Reporting-field / data-standard rules (e.g. LEI, transaction reporting) ARE LINKED to regulatory reporting accuracy / data quality sections for THAT regime.
+ * AML, sanctions, KYC, beneficial-ownership and fraud-reporting rules ARE LINKED to the matching financial-crime policy sections - not to generic compliance sections.
+
+TWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):
+These guards remove a small number of clearly-wrong links. When a genuine perimeter overlap exists, still LINK.
+GUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING.
+If your own reasoning concludes that no section of the policy governs the requirement the alert changes, decide NOT_LINKED. Never write "the policy is about something else, but ... therefore LINKED." If you cannot name the concrete section and the requirement in it that the alert adds to or changes, it is NOT_LINKED.
+GUARD 2 - A GENERIC STATEMENT OR A DIFFERENT REGIME IS NOT A BRIDGE.
+(a) Generic statements ("comply with all applicable laws and regulations", "this policy applies to all businesses", "report to regulators as required") do not link merely because a new regulation exists. Link only if the alert changes a specific requirement a section governs.
+(b) A different regulatory regime, entity type, product or activity does not link: a state insurance producer rule does not link to a deposit-account policy, merely because both concern "customers" or "training". Require overlap in the actual activity, product or requirement.
+
+""" + JURISDICTION.format(label="policy") + """
+INSTRUCTIONS:
+ * Read the alert_text. Identify the core regulatory mandate, who it applies to, and what it requires.
+ * Read the document_text in full, every section and sub-section.
+ * Formulate "reasoning":
+   * First sentence: identify the policy's perimeter and the section(s) closest to the alert's mandate (by S-id).
+   * Second sentence: explain how the alert concretely changes a requirement in that section (using the Semantic Bridging rules), OR state that it does not and therefore NOT_LINKED.
+ * Assign "decision":
+   * "LINKED": the alert creates or changes a requirement that a named section of this policy governs, within its perimeter.
+   * "NOT_LINKED": no section governs the changed requirement (Guard 1), or only a generic statement / different regime overlaps (Guard 2).
+   * "INSUFFICIENT_EVIDENCE": the alert or policy text is truncated or empty.
+ * Assign "link_score" (0-10): 8-10 the alert directly changes a specific requirement in a named section; 5-7 the alert falls within the perimeter / objective of a section; 1-4 tangential or thematic only; 0 completely unrelated.
+ * Assign "confidence_level" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with textual gaps; 1 relies heavily on assumptions.
+ * "linked_sections": the S-ids (the most specific sub-sections) the link rests on (empty if NOT_LINKED).
+ * "impact_type": CHANGE_REQUIRED (the section conflicts with, or is missing, what the alert now requires), REVIEW_REQUIRED (the section governs the affected activity; a change may be needed after review), NONE (NOT_LINKED).
+ * "change_needed": one sentence on what the policy owner should look at, or null.
+ * Extract verbatim substrings for "evidence_from_alert" and "evidence_from_policy" (copy exactly, from one of the linked sections; if linking on a section's perimeter, extract the exact sentence of that section).
+
+EXAMPLE EVALUATION (valid link):
+alert_text: "Pennsylvania amends insurance producer continuing education: producers must complete 30 hours every two years, including 3 hours of ethics."
+document_text: "... [S4 | 3 Licensing > 3.2 Licensing and training of insurance staff] Licensed insurance staff must complete 24 hours of continuing education every two years ..."
+reasoning: "The policy covers insurance distribution, and S4 (3.2) sets continuing-education requirements for licensed insurance staff. The alert raises the required hours from 24 to 30 and adds an ethics component, so S4 no longer meets the new requirement."
+decision: "LINKED"   link_score: 9   confidence_level: 5   linked_sections: ["S4"]   impact_type: "CHANGE_REQUIRED"
+
+EXAMPLE EVALUATION (Guard 2 - generic statement, different regime):
+alert_text: "California amends the law on deferred compensation for public-sector reservists."
+document_text: "... [S2 | 1 Policy statement > 1.1 Scope] All businesses must comply with applicable consumer protection laws ... [S6 | 4 Complaints > 4.1 Acknowledgement] Complaints must be acknowledged within 5 days ..."
+reasoning: "The policy covers customer complaints handling across retail businesses; the closest section is S2, a generic statement on complying with consumer laws. The alert changes public-sector reservist compensation, which no section of this policy governs; only a generic 'comply with applicable laws' statement overlaps."
+decision: "NOT_LINKED"   link_score: 1   confidence_level: 4   linked_sections: []   impact_type: "NONE"
+
+"""
+
+PROMPT_PROCEDURE = """ROLE:
+You are a lead Operational Risk & Process Controls AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate an incoming regulatory development (alert_text) against ONE internal PROCEDURE from the bank's Global Policy & Procedure System, GPPS (document_text), and determine operational impact, i.e. whether the procedure owner must review or update its steps, and which section(s) / sub-section(s).
+
+WHAT THE INPUT CONTAINS:
+* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, and the alert's OWN taxonomy tag L1 > L2 > L3, assigned upstream in RAPID2).
+* document_scope: GLOBAL or LOCAL (and which country) for this procedure.
+* document_text: the FULL visible text of the procedure, split into GPPS sections and sub-sections, each labelled [S<n> | <GPPS section number> <title> > <sub-section number> <title>] (purpose, scope, steps, roles, timelines, records). Sections hidden in GPPS are already removed.
+
+CORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING
+You must evaluate the ENTIRE procedure text. Do not anchor solely on the procedure title, on one step, or on a shared keyword.
+Procedures often state a broad purpose / scope and then specific steps. If the alert impacts the stated purpose or scope AND a step must change as a result, it is LINKED, even if the specific step wording seems unrelated. An alert impacts a procedure when it changes what a step must do, check, approve, record, disclose or notify, by when, how often, or for whom.
+
+SEMANTIC BRIDGING & BANK TAXONOMY:
+Alerts use statute / regulator language; procedures use internal process language. Apply these equivalency rules:
+ * Consumer protection mandates (UDAAP, disclosures, complaints, fee / billing rules) ARE LINKED to steps for customer communications, disclosure checklists, complaint handling, billing disputes or product QA.
+ * Unclaimed property, escheatment and dormancy rules ARE LINKED to steps for dormant accounts, account closure, owner notices or customer contact.
+ * Financial exploitation / vulnerable adult rules ARE LINKED to steps for vulnerable-customer handling, holds on disbursements, escalation or account management.
+ * Licensing, registration and continuing-education rules ARE LINKED to steps for staff registration, licence tracking, training assignment and attestation.
+ * Records, information-request and retention rules ARE LINKED to steps for request intake, response timelines, record keeping and retention.
+ * Data validation / reporting-field rules (e.g. LEI) ARE LINKED to steps for data capture, validation and regulatory report production for THAT regime.
+ * AML, sanctions, KYC and beneficial-ownership rules ARE LINKED to the matching financial-crime steps (screening, CDD, EDD, SAR filing).
+
+TWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):
+These guards remove a small number of clearly-wrong links. They are NOT a licence to reject genuine scope-level links - when a real activity overlap exists, still LINK.
+GUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING.
+If your own reasoning concludes the procedure's steps AND its purpose / scope are both unrelated to the alert, decide NOT_LINKED. Never write "the steps are unrelated, but ... therefore LINKED." If you cannot name a concrete step or section the alert adds to or changes, it is NOT_LINKED.
+GUARD 2 - A GENERIC STATEMENT OR A DIFFERENT REGIME IS NOT A BRIDGE.
+(a) Generic statements ("comply with applicable regulations", "escalate regulatory matters to Compliance") do not link merely because a new regulation exists. Link ONLY if the alert changes a specific step, timeline, check or record in this procedure.
+(b) A different regulatory regime, entity, product or activity does not link: a securities-settlement rule does NOT link to a deposit-statement procedure merely because both involve "timely communications". Require overlap in the actual activity, product or requirement.
+
+""" + JURISDICTION.format(label="procedure") + """
+INSTRUCTIONS:
+ * Read the alert_text. Identify the core regulatory mandate.
+ * Read the document_text in full, every section and sub-section, including purpose, scope, steps, timelines and records.
+ * Formulate "reasoning":
+   * First sentence: identify the procedure's purpose / scope and the section(s) or step(s) closest to the alert's mandate (by S-id).
+   * Second sentence: explain how the alert concretely changes what that step must do (using the Semantic Bridging rules), OR state that it does not and therefore NOT_LINKED.
+ * Assign "decision":
+   * "LINKED": the alert concretely changes a step, timeline, check, approval or record in a named section, within the procedure's scope.
+   * "NOT_LINKED": disjoint activity / business, OR only a generic statement / regime overlaps (Guard 2), OR no concrete step is changed (Guard 1).
+   * "INSUFFICIENT_EVIDENCE": the alert or procedure text is truncated or empty.
+ * Assign "link_score" (0-10): 8-10 the alert changes a specific step in a named section; 5-7 the alert falls within the procedure's purpose / scope (the exact step may differ); 1-4 tangential / weak; 0 completely unrelated.
+ * Assign "confidence_level" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with textual gaps; 1 relies heavily on assumptions.
+ * "linked_sections": the S-ids (the most specific sub-sections) the link rests on (empty if NOT_LINKED).
+ * "impact_type": CHANGE_REQUIRED (a step conflicts with, or is missing, what the alert now requires), REVIEW_REQUIRED (the procedure governs the affected activity; a change may be needed after review), NONE (NOT_LINKED).
+ * "change_needed": one sentence on what the procedure owner should look at, or null.
+ * Extract verbatim substrings for "evidence_from_alert" and "evidence_from_procedure" (from one of the linked sections). If linking on purpose / scope, extract the exact purpose or scope sentence.
+
+EXAMPLE EVALUATION (valid link):
+alert_text: "Ohio amends its request-for-information rules: institutions must respond to consumer information requests within 10 business days."
+document_text: "... [S5 | 3 Responding to customer information requests > 3.1 Response timeline] Log the request and send the response within 30 calendar days of receipt ..."
+reasoning: "The procedure covers handling of customer information requests, and S5 (3.1) sets the response timeline. The alert shortens the deadline to 10 business days for Ohio consumers, so the 30-day step in S5 no longer meets the requirement."
+decision: "LINKED"   link_score: 9   confidence_level: 5   linked_sections: ["S5"]   impact_type: "CHANGE_REQUIRED"
+
+EXAMPLE EVALUATION (Guard 2 - generic statement is not a bridge):
+alert_text: "CFTC extends no-action relief on swap data reporting for non-US swap dealers."
+document_text: "... [S1 | Purpose] Ensure regulatory matters are escalated to Compliance ... [S3 | 2 Branch cash handling > 2.1 Daily count] Count and reconcile cash daily ..."
+reasoning: "The procedure covers branch cash handling; the closest section is S1, a generic escalation statement. The alert relaxes a CFTC swap-reporting deadline for non-US swap dealers and changes no step of this procedure; only a generic 'regulatory matters' phrase overlaps."
+decision: "NOT_LINKED"   link_score: 1   confidence_level: 4   linked_sections: []   impact_type: "NONE"
+
+"""
+ID_FIELD = {"policy": "policy_id", "procedure": "procedure_id"}
+PROMPTS = {k: base + FORMAT_DOC.replace("{id_field}", ID_FIELD[k]).replace("{evidence_field}", f"evidence_from_{k}")
+           for k, base in (("policy", PROMPT_POLICY), ("procedure", PROMPT_PROCEDURE))}
+PROMPTS = {k: v.replace("United States", COUNTRY_NAME) for k, v in PROMPTS.items()}     # country from SETTINGS A
+EVIDENCE_FIELD = {"policy": "evidence_from_policy", "procedure": "evidence_from_procedure"}
+
+FRAMEWORK_RULE = """
+FRAMEWORK / PROCESS DOCUMENTS:
+document_role = FRAMEWORK means this {label} governs HOW the bank handles regulatory change in general - identifying,
+assessing and implementing regulatory change, read-across, change execution, or the governance of regulatory reporting /
+notifications. Every regulatory alert passes through such a {label}, so that alone is NOT an impact.
+* Decide LINKED only if the alert text itself clearly requires the PROCESS to be updated, changed or rectified - for
+  example a new rule on how regulatory change or reporting must be governed, a new mandated step, timeline, approval,
+  control or record IN that process, or a regulator finding that the process itself must be fixed.
+* A new law, a new obligation or a new report that simply has to be handled THROUGH the process is NOT_LINKED.
+* When LINKED, evidence_from_alert must be the alert sentence that requires the process change, and
+  "framework_change" = YES. Otherwise "framework_change" = NO.
+document_role = BUSINESS: judge as usual and set "framework_change" = NOT_APPLICABLE.
+"""
+def _framework_prompt(base, kind):
+    cut = base.index("INSTRUCTIONS:")                                  # the rule goes right before INSTRUCTIONS
+    fmt = FORMAT_DOC.replace("{id_field}", ID_FIELD[kind]).replace("{evidence_field}", f"evidence_from_{kind}").rstrip()
+    fmt = fmt[:-1].rstrip() + ',\n"framework_change": "YES | NO | NOT_APPLICABLE"\n}'
+    return (base[:cut] + FRAMEWORK_RULE.format(label=kind) + "\n" + base[cut:] + fmt).replace("United States", COUNTRY_NAME)
+PROMPTS_BY_ROLE = {"BUSINESS": PROMPTS,
+                   "FRAMEWORK": {k: _framework_prompt(b, k) for k, b in (("policy", PROMPT_POLICY), ("procedure", PROMPT_PROCEDURE))}}
+assert all('"framework_change"' in v for v in PROMPTS_BY_ROLE["FRAMEWORK"].values())
+
+def doc_role(doc_id):
+    return "FRAMEWORK" if doc_id in FRAMEWORK_DOCS else "BUSINESS"
+
+def build_payload(alert, doc_id):
+    """The AI input for one (alert, document): alert text + metadata, document id / title / scope, FULL document text."""
+    p = {"alert_id": alert, "alert_text": ATEXT[alert], "alert_metadata": META.get(alert, {}),
+         ID_FIELD[DOC_TYPE[doc_id]]: doc_id, "document_title": DOC_TITLE[doc_id],
+         "document_scope": SCOPE_LABEL.get(DOC_SCOPE.get(doc_id, ""), "unknown")
+                           + (f" | {APPLIC_NOTE[DOC_APPLIC.get(doc_id, '')]}" if DOC_APPLIC.get(doc_id) else ""),
+         "document_text": DOC_TEXT[doc_id]}
+    if doc_role(doc_id) == "FRAMEWORK":
+        p["document_role"] = "FRAMEWORK"
+    return p
+
+# NO-TRUNCATION PROOF: every document is sent in full (the text sent = all visible GPPS text)
+short = sum(len(DOC_TEXT[d]) < DOC_SRC_CHARS[d] for d in CAND.doc.unique())
+doc_chars = pd.Series({d: len(DOC_TEXT[d]) for d in CAND.doc.unique()})
+pay_chars = CAND.doc.map(doc_chars) + CAND.alert.map(lambda a: len(ATEXT[a])) + 600
+print(f"payload chars median {int(pay_chars.median()):,} | max {int(pay_chars.max()):,} (~{int(pay_chars.max() / 4):,} tok) | "
+      f"TRUNCATION CHECK: {'NONE TRUNCATED' if short == 0 else f'{short} DOCUMENTS SHORTER THAN SOURCE - STOP'}")
+assert short == 0
+# COST GATE (estimate; CELL 5 replaces it with the measured cost per call)
+OUT_EST = 450                                                          # output tokens per call measured on the US run
+in_tok = float(pay_chars.sum() / 4 + len(CAND) * len(PROMPTS["policy"]) / 4)
+EST_USD = in_tok * TOKEN_PRICE["in"] + len(CAND) * OUT_EST * TOKEN_PRICE["out"]
+print(f"COST GATE | calls {len(CAND):,} (policies {len(POL_CAND):,} + procedures {len(PROC_CAND):,}) | "
+      f"framework-document pairs {int(CAND.doc.isin(FRAMEWORK_DOCS).sum()):,} | input ~{in_tok / 1e6:.0f}M tok | "
+      f"~${EST_USD:.0f} (cap ${MAX_COST_USD}) | time at {CONCURRENCY} parallel ~{len(CAND) * 5.5 / CONCURRENCY / 3600:.1f} h")
+assert EST_USD <= MAX_COST_USD, f"estimate ${EST_USD:.0f} > MAX_COST_USD ${MAX_COST_USD} - raise it in CELL 1 if acceptable"
+print("cost gate passed -> CELL 5")
+
+
+
+# ====== CELL 5: RUNNER + 10-PAIR TEST GATE (~$0.03) ===========================
+# run_pairs: one AI call per (alert, document), CONCURRENCY in parallel, checkpoint every SAVE_EVERY answers,
+#            progress line every PROGRESS_EVERY_SEC, interrupt-safe. Failed answers are retried on the next re-run.
+# finalise : code checks - both quotes found in the texts (grounding_flag), quote inside the cited section
+#            (section_grounded), the LINKED rule (rule 1).
+def section_ids(doc_id, s_ids):
+    ids, out = DOC_UNITS[doc_id], []
+    raw = " ".join(map(str, s_ids)) if isinstance(s_ids, (list, tuple)) else str(s_ids or "")
+    for n in re.findall(r"S\s*(\d+)", raw, flags=re.I) or re.findall(r"\d+", raw):
+        if 1 <= int(n) <= len(ids) and ids[int(n) - 1] not in out:
+            out.append(ids[int(n) - 1])
+    return out
+
+def save_safe(df, path):
+    out = df.copy()
+    for c in out.columns:
+        if out[c].dtype == object:
+            out[c] = out[c].map(lambda v: None if v is None else str(v))
+    out.to_parquet(path + ".tmp", index=False)
+    os.replace(path + ".tmp", path)
+
+async def run_pairs(cand, ckpt, stage):
+    global CURRENT_STAGE
+    CURRENT_STAGE = stage
+    rows = []
+    if ckpt and os.path.exists(ckpt):
+        prev = pd.read_parquet(ckpt)
+        rows = prev[prev["model_decision"] != "ERROR"].to_dict("records")
+        print(f"[resume {stage}] {len(rows):,} pairs already done")
+    done = {(r["alert"], r["doc"]) for r in rows}
+    todo = [r for r in cand.itertuples() if (r.alert, r.doc) not in done]
+    prog = Progress(stage, len(cand), len(cand) - len(todo), "documents read")
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def one(row):
+        role = doc_role(row.doc)
+        async with sem:
+            a = await ask(PROMPTS_BY_ROLE[role][row.doc_type], build_payload(row.alert, row.doc))
+        dec = str(a.get("decision", "ERROR")).upper().strip().replace(" ", "_") if a else "ERROR"
+        return {"alert": row.alert, "doc": row.doc, "doc_type": row.doc_type, "doc_scope": row.doc_scope,
+                "document_role": role, "search_rank": row.search_rank,
+                "model_decision": dec if dec in ("LINKED", "NOT_LINKED", "INSUFFICIENT_EVIDENCE") else "ERROR",
+                "link_score": a.get("link_score"), "confidence_level": a.get("confidence_level"),
+                "linked_units": "; ".join(section_ids(row.doc, a.get("linked_sections"))),
+                "impact_type": a.get("impact_type"), "change_needed": a.get("change_needed"),
+                "evidence_from_alert": a.get("evidence_from_alert"),
+                "evidence_from_target": a.get(EVIDENCE_FIELD[row.doc_type]), "reasoning": a.get("reasoning"),
+                "framework_change": (str(a.get("framework_change") or "NO").upper() if role == "FRAMEWORK"
+                                     else "NOT_APPLICABLE")}
+
+    tasks = [asyncio.create_task(one(r)) for r in todo]
+    try:
+        for i, fut in enumerate(tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=stage), 1):
+            rows.append(await fut)
+            if ckpt and i % SAVE_EVERY == 0:
+                save_safe(pd.DataFrame(rows), ckpt)
+                prog.update(1, force=True, note="checkpoint saved")
+            else:
+                prog.update(1)
+    except BaseException:
+        cancel_pending(tasks, "document reads")
+        if ckpt and rows:
+            save_safe(pd.DataFrame(rows), ckpt)
+            print(f"  progress saved: {len(rows):,} pairs in {os.path.basename(ckpt)} - re-run this cell to continue")
+        raise
+    out = pd.DataFrame(rows)
+    if ckpt and len(out):
+        save_safe(out, ckpt)
+    if todo:
+        prog.update(0, force=True, note="stage finished")
+    for c in out.columns:
+        out[c] = out[c].map(lambda v: None if v is None or str(v) in ("None", "nan") else v)
+    for c in ("link_score", "confidence_level", "search_rank"):
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
+
+def finalise(j):
+    o = j.copy()
+    a_ok = np.array([quote_found(q, ATEXT[a]) for q, a in zip(o["evidence_from_alert"], o["alert"])])
+    t_ok = np.array([quote_found(q, DOC_TEXT[d]) for q, d in zip(o["evidence_from_target"], o["doc"])])
+    s_ok = np.array([bool(u) and quote_found(q, " ".join(UNIT_INFO[x]["text"] for x in str(u).split("; ") if x in UNIT_INFO))
+                     for q, u in zip(o["evidence_from_target"], o["linked_units"].fillna(""))])
+    o["grounding_flag"] = np.select([a_ok & t_ok, a_ok | t_ok], ["GROUNDED", "PARTIAL"], default="UNGROUNDED")
+    o["section_grounded"] = s_ok
+    o["decision_prob"] = (o["link_score"] / 10).round(2)
+    lk = (o["model_decision"] == "LINKED") & (o["link_score"].fillna(0) >= LINK_THRESHOLD)
+    o["final_decision"] = np.select(
+        [o["model_decision"] == "ERROR", lk & (o["grounding_flag"] == "GROUNDED"), lk,
+         o["model_decision"] == "INSUFFICIENT_EVIDENCE"],
+        ["ERROR", "LINKED", "INSUFFICIENT_EVIDENCE", "INSUFFICIENT_EVIDENCE"], default="NOT_LINKED")
+    return o
+
+if os.path.exists(f"{RUN_DIR}/policy_ckpt.parquet") or os.path.exists(f"{RUN_DIR}/procedure_ckpt.parquet"):
+    print("full run already started (checkpoint found) -> test gate skipped, no spend. Go to CELL 6 / 7.")
+else:
+    # 4 random policies + 1 framework document + the 5 best-ranked procedures of the first alert
+    a0 = ALERTS.alert.iloc[0]
+    _fw = [d for d in FRAMEWORK_DOCS if d in DOC_TEXT][:1]
+    test = pd.concat([CAND[(CAND.alert == a0) & (CAND.doc_type == "policy") & ~CAND.doc.isin(FRAMEWORK_DOCS)].sample(4, random_state=1),
+                      CAND[(CAND.alert == a0) & CAND.doc.isin(_fw)],
+                      CAND[(CAND.alert == a0) & (CAND.doc_type == "procedure")].head(5)])
+    _u0 = len(USAGE_LOG)
+    test_res = finalise(await run_pairs(test, None, "test_gate"))
+    cost_report("test_gate")
+    n_err = int((test_res.model_decision == "ERROR").sum())
+    ml = test_res[test_res.model_decision == "LINKED"]
+    grounded = (ml.grounding_flag == "GROUNDED").mean() if len(ml) else 1.0
+    print(test_res[["alert", "doc", "doc_type", "document_role", "doc_scope", "model_decision", "final_decision",
+                    "link_score", "grounding_flag", "framework_change", "linked_units"]].to_string(index=False, max_colwidth=40))
+    if len(USAGE_LOG) > _u0:
+        u = pd.DataFrame(USAGE_LOG[_u0:])
+        per_call = (u["in"].sum() * TOKEN_PRICE["in"] + u["out"].sum() * TOKEN_PRICE["out"]) / len(u)
+        proj = per_call * len(CAND) * 1.05
+        print(f"real cost per call ${per_call:.4f} -> projected full run ~${proj:.0f}")
+        assert proj <= MAX_COST_USD, f"projected ${proj:.0f} > MAX_COST_USD ${MAX_COST_USD} - stopped before the full run"
+    print(f"TEST GATE | pairs {len(test_res)} | ERROR {n_err} | model-LINKED {len(ml)} | grounded {grounded:.0%}")
+    assert n_err <= 1, "too many ERROR answers - check the gateway / ERROR_LOG; stopped"
+    assert grounded >= 0.7, "model quotes not found in the texts - stopped before the full run"
+    print("test gate passed -> CELL 6 (policies), then CELL 7 (procedures)")
+
+
+
+# ====== CELL 6: POLICIES - EVERY POLICY x EVERY ALERT (checkpointed: re-run to resume) =====
+# The long step (US: 45,402 reads, ~$95, ~8 h). Progress line every ~2 minutes: done / total, %, time left, cost.
+RES_POL = finalise(await run_pairs(POL_CAND.assign(doc_scope=POL_CAND.doc.map(DOC_SCOPE)),
+                                   f"{RUN_DIR}/policy_ckpt.parquet", "policy"))
+save_safe(RES_POL, f"{RUN_DIR}/policy_pairs.parquet")
+cost_report("policy")
+print(RES_POL.groupby("doc_scope").final_decision.value_counts().unstack(fill_value=0).to_string())
+print(f"ERROR pairs {int((RES_POL.final_decision == 'ERROR').sum())} (re-run this cell to retry them)")
+
+
+
+# ====== CELL 7: PROCEDURES - TOP PROC_TOP_K PER ALERT (checkpointed: re-run to resume) =====
+# US: 32,200 reads, ~$55, ~5 h.
+RES_PROC = finalise(await run_pairs(PROC_CAND.assign(doc_scope=PROC_CAND.doc.map(DOC_SCOPE)),
+                                    f"{RUN_DIR}/procedure_ckpt.parquet", "procedure"))
+save_safe(RES_PROC, f"{RUN_DIR}/procedure_pairs.parquet")
+cost_report("procedure")
+print(RES_PROC.groupby("doc_scope").final_decision.value_counts().unstack(fill_value=0).to_string())
+lk = RES_PROC[RES_PROC.final_decision == "LINKED"]
+print(f"LINKED procedures by search rank: top-50 {int((lk.search_rank <= 50).sum())} | 51-100 "
+      f"{int(lk.search_rank.between(51, 100).sum())} | 101-150 {int(lk.search_rank.between(101, 150).sum())} | "
+      f"151-{PROC_TOP_K} {int((lk.search_rank > 150).sum())}  (many in the last band = the cut-off may be too tight)")
+print(f"ERROR pairs {int((RES_PROC.final_decision == 'ERROR').sum())} (re-run this cell to retry them)")
+
+
+
+# ====== CELL 8: RESULTS - status, sections, JSON per alert, Excel, production config ($0) =====
+# Re-run any time ($0), e.g. after changing HEADLINE_MIN_SCORE in SETTINGS D.
+if "RES_POL" not in globals(): RES_POL = pd.read_parquet(f"{RUN_DIR}/policy_pairs.parquet")
+if "RES_PROC" not in globals(): RES_PROC = pd.read_parquet(f"{RUN_DIR}/procedure_pairs.parquet")
+RES = pd.concat([RES_POL, RES_PROC], ignore_index=True)
+for c in ("link_score", "confidence_level", "search_rank"):
+    RES[c] = pd.to_numeric(RES[c], errors="coerce")
+n_err = int((RES.final_decision == "ERROR").sum())
+if n_err:
+    print(f"WARNING: {n_err} pairs have no answer (ERROR) - re-run CELL 6 / 7 to retry them, then this cell")
+
+# ---- the decision rules 1-4 ----
+linked = (RES.final_decision == "LINKED") & ((RES.document_role != "FRAMEWORK") |
+                                              RES.framework_change.astype(str).str.upper().str.startswith("YES"))
+other_country = RES.doc_scope.eq("LOCAL_OTHER")
+RES["impact_status"] = np.select([linked & other_country, linked & (RES.link_score >= HEADLINE_MIN_SCORE), linked],
+                                 ["SCOPE_REVIEW", "IMPACTED", "POSSIBLE_IMPACT"], default="NOT_IMPACTED")
+RES["confidence_tier"] = np.select([linked & ((RES.link_score >= 9) | (RES.confidence_level >= 5)),
+                                    linked & (RES.link_score >= 8), linked], ["HIGH", "MEDIUM", "LOW"], default="")
+RES["doc_applicability"] = RES.doc.map(DOC_APPLIC).fillna("")
+RES["doc_title"] = RES.doc.map(DOC_TITLE)
+RES["alert_title"] = RES.alert.map(dict(zip(ALERTS.alert, ALERTS.title)))
+RES["linked_sections"] = RES.linked_units.fillna("").map(
+    lambda s: " | ".join(UNIT_INFO[u]["gpps_label"] for u in str(s).split("; ") if u in UNIT_INFO))
+RES["run_id"] = RUN_ID
+
+# pair table in the house column names (as the rsm / rob linkage pairs)
+PAIRS = RES.rename(columns={"alert": "RECORD_ID", "doc": "DOC_ID", "doc_type": "DOC_TYPE"})[[
+    "RECORD_ID", "alert_title", "DOC_TYPE", "DOC_ID", "doc_title", "doc_scope", "doc_applicability", "document_role",
+    "search_rank", "model_decision", "final_decision", "impact_status", "confidence_tier", "link_score", "decision_prob",
+    "confidence_level", "impact_type", "change_needed", "linked_sections", "linked_units", "reasoning",
+    "evidence_from_alert", "evidence_from_target", "grounding_flag", "section_grounded", "framework_change", "run_id"]]
+save_safe(PAIRS, f"{RUN_DIR}/ia_pp_pairs.parquet")
+SHOWN = ["IMPACTED", "POSSIBLE_IMPACT", "SCOPE_REVIEW"]
+
+# one row per impacted SECTION / SUB-SECTION
+srows = []
+for r in PAIRS[PAIRS.impact_status.isin(SHOWN)].itertuples():
+    for u in str(r.linked_units or "").split("; "):
+        if u in UNIT_INFO:
+            I = UNIT_INFO[u]
+            srows.append(dict(RECORD_ID=r.RECORD_ID, DOC_TYPE=r.DOC_TYPE, DOC_ID=r.DOC_ID, doc_title=r.doc_title,
+                              doc_scope=r.doc_scope, impact_status=r.impact_status, unit_id=u,
+                              section_no=I["section_no"], section_title=I["section_title"],
+                              subsection_no=I["subsection_no"], subsection_title=I["subsection_title"],
+                              gpps_label=I["gpps_label"], quote_in_this_section=quote_found(r.evidence_from_target, I["text"]),
+                              impact_type=r.impact_type, link_score=r.link_score, change_needed=r.change_needed))
+SECTIONS = pd.DataFrame(srows)
+save_safe(SECTIONS, f"{RUN_DIR}/ia_pp_impacted_sections.parquet")
+
+# one JSON per alert
+def _j(v):
+    return None if v is None or (isinstance(v, float) and math.isnan(v)) else v
+def _items(g):
+    return [{"doc_id": r.DOC_ID, "title": r.doc_title, "scope": r.doc_scope, "role": r.document_role,
+             "impact_status": r.impact_status, "confidence_tier": r.confidence_tier,
+             "link_score": None if pd.isna(r.link_score) else int(r.link_score),
+             "impact_type": _j(r.impact_type), "change_needed": _j(r.change_needed),
+             "sections": [{k: UNIT_INFO[u][k] for k in ("section_no", "section_title", "subsection_no",
+                                                         "subsection_title", "gpps_label")}
+                          for u in str(r.linked_units or "").split("; ") if u in UNIT_INFO],
+             "section_grounded": bool(r.section_grounded), "evidence_from_alert": _j(r.evidence_from_alert),
+             "evidence_from_target": _j(r.evidence_from_target), "reasoning": _j(r.reasoning)}
+            for r in g.sort_values("link_score", ascending=False).itertuples()]
+_title = dict(zip(ALERTS.alert, ALERTS.title))
+_shown = PAIRS[PAIRS.impact_status.isin(SHOWN)]
+with open(f"{RUN_DIR}/ia_pp_alert_impacts.jsonl", "w") as f:
+    for a in ALERTS.alert:
+        g = _shown[_shown.RECORD_ID == a]
+        f.write(json.dumps({
+            "record_id": a, "alert_title": _title.get(a), "run_id": RUN_ID,
+            "counts": {s.lower(): {t: int(((g.impact_status == s) & (g.DOC_TYPE == t)).sum()) for t in ("policy", "procedure")}
+                       for s in SHOWN},
+            "impacted": {"policies": _items(g[(g.impact_status == "IMPACTED") & (g.DOC_TYPE == "policy")]),
+                         "procedures": _items(g[(g.impact_status == "IMPACTED") & (g.DOC_TYPE == "procedure")])},
+            "possible_impact": {"policies": _items(g[(g.impact_status == "POSSIBLE_IMPACT") & (g.DOC_TYPE == "policy")]),
+                                "procedures": _items(g[(g.impact_status == "POSSIBLE_IMPACT") & (g.DOC_TYPE == "procedure")])},
+            "scope_review": _items(g[g.impact_status == "SCOPE_REVIEW"])}, ensure_ascii=False) + "\n")
+
+# summary tables
+n_alerts = len(ALERTS)
+mrows = []
+for kind in ("policy", "procedure"):
+    pk = PAIRS[PAIRS.DOC_TYPE == kind]
+    imp, pos = pk[pk.impact_status == "IMPACTED"], pk[pk.impact_status == "POSSIBLE_IMPACT"]
+    both = pk[pk.impact_status.isin(["IMPACTED", "POSSIBLE_IMPACT"])]
+    mrows.append(dict(doc_type=kind, pairs_read=len(pk), no_answer=int((pk.final_decision == "ERROR").sum()),
+                      impacted=len(imp), impacted_per_alert=round(len(imp) / n_alerts, 1),
+                      alerts_with_impacted=imp.RECORD_ID.nunique(),
+                      possible_impact=len(pos), possible_per_alert=round(len(pos) / n_alerts, 1),
+                      alerts_with_any=both.RECORD_ID.nunique(),
+                      scope_review=int((pk.impact_status == "SCOPE_REVIEW").sum()),
+                      framework_links=int((both.document_role == "FRAMEWORK").sum()),
+                      change_required_pct=round(100 * both.impact_type.astype(str).eq("CHANGE_REQUIRED").mean(), 1) if len(both) else np.nan,
+                      section_grounded_pct=round(100 * both.section_grounded.astype(str).eq("True").mean(), 1) if len(both) else np.nan))
+SUMMARY = pd.DataFrame(mrows)
+BY_SCOPE = PAIRS[PAIRS.impact_status.isin(SHOWN)].groupby(["DOC_TYPE", "doc_scope", "impact_status"]).size().unstack(fill_value=0)
+PER_ALERT = PAIRS[PAIRS.impact_status.isin(SHOWN)].pivot_table(index="RECORD_ID", columns=["DOC_TYPE", "impact_status"],
+                                                               values="DOC_ID", aggfunc="count", fill_value=0)
+PER_ALERT.columns = [f"{a}_{b.lower()}" for a, b in PER_ALERT.columns]
+PER_ALERT = PER_ALERT.reindex(ALERTS.alert, fill_value=0).rename_axis("RECORD_ID").reset_index()
+PER_ALERT.insert(1, "alert_title", PER_ALERT.RECORD_ID.map(_title))
+FW_TABLE = PAIRS[PAIRS.document_role == "FRAMEWORK"].groupby(["DOC_ID", "doc_title"]).agg(
+    pairs_read=("RECORD_ID", "size"), model_linked=("model_decision", lambda s: int((s == "LINKED").sum())),
+    process_change_required=("impact_status", lambda s: int(s.isin(["IMPACTED", "POSSIBLE_IMPACT"]).sum()))).reset_index()
+print(f"RESULTS {RUN_ID} | {n_alerts} alerts | IMPACTED = link_score >= {HEADLINE_MIN_SCORE} | "
+      f"POSSIBLE_IMPACT = {LINK_THRESHOLD}-{HEADLINE_MIN_SCORE - 1}")
+print(SUMMARY.to_string(index=False))
+print("\nby document scope:"); print(BY_SCOPE.to_string())
+print("\nframework / process documents (linked only when the alert requires the process itself to change):")
+print(FW_TABLE.to_string(index=False))
+
+with pd.ExcelWriter(f"{RUN_DIR}/ia_pp_results_summary.xlsx") as xl:
+    pd.DataFrame({"How to read": [
+        f"Run {RUN_ID}: every policy read for every alert; procedures = search top {PROC_TOP_K} per alert, each read in "
+        "full. ONE AI call per (alert, document).",
+        f"IMPACTED = AI LINKED with link_score >= {HEADLINE_MIN_SCORE} and both verbatim quotes verified by code.",
+        f"POSSIBLE_IMPACT = AI LINKED with link_score {LINK_THRESHOLD}-{HEADLINE_MIN_SCORE - 1}, quotes verified - SME review queue.",
+        f"SCOPE_REVIEW = linked to another country's LOCAL document: a {COUNTRY_NAME} alert should not impact it "
+        "unless that country adopts the requirement.",
+        "Framework / process documents count only when the alert requires the process itself to change (framework_change = YES).",
+        "section_grounded = the document quote sits inside the cited section / sub-section.",
+        "Every pair, every section and one JSON per alert are in the parquet / jsonl files of the same folder."]}
+    ).to_excel(xl, sheet_name="How to read", index=False)
+    SUMMARY.to_excel(xl, sheet_name="summary", index=False)
+    PER_ALERT.to_excel(xl, sheet_name="per alert", index=False)
+    BY_SCOPE.reset_index().to_excel(xl, sheet_name="by scope", index=False)
+    FW_TABLE.to_excel(xl, sheet_name="framework documents", index=False)
+    SCOPE.to_excel(xl, sheet_name="document scope", index=False)
+
+# production record: the exact prompts and rules of this run
+PROD_DIR = f"{RUN_DIR}/production"
+os.makedirs(PROD_DIR, exist_ok=True)
+for role, ps in PROMPTS_BY_ROLE.items():
+    for k, v in ps.items():
+        open(f"{PROD_DIR}/prompt_{k}_{role}.txt", "w").write(v)
+open(f"{PROD_DIR}/prompt_query_plan.txt", "w").write(QP_PROMPT)
+json.dump({"run_id": RUN_ID, "country": COUNTRY, "country_name": COUNTRY_NAME, "n_alerts": len(ALERTS),
+           "headline_min_score": HEADLINE_MIN_SCORE, "link_threshold": LINK_THRESHOLD,
+           "cost_this_session": cost_report(), "finder_model": CHAT_MODEL, "embedding_model": EMB_MODEL,
+           "calls": "ONE per (alert, document) - no audit call in production",
+           "policies": "all read for every alert", "procedures": f"search method F (RRF of A, B, D), top {PROC_TOP_K} per alert",
+           "prompt_routing": {"BUSINESS": "prompt_<type>_BUSINESS.txt",
+                              "FRAMEWORK": "prompt_<type>_FRAMEWORK.txt (+ document_role = FRAMEWORK in the input)"},
+           "framework_documents": FRAMEWORK_DOCS,
+           "rules": {"linked": f"decision LINKED + link_score >= {LINK_THRESHOLD} + both quotes verified",
+                     "framework": "also framework_change = YES",
+                     "IMPACTED": f"link_score >= {HEADLINE_MIN_SCORE}", "POSSIBLE_IMPACT": f"link_score {LINK_THRESHOLD}-{HEADLINE_MIN_SCORE - 1}",
+                     "SCOPE_REVIEW": "linked to another country's LOCAL document"},
+           "audit": "NOTEBOOK 2 - separate from production",
+           "sources": SRC}, open(f"{PROD_DIR}/production_config.json", "w"), indent=2)
+print(f"\n-> {RUN_DIR}: ia_pp_pairs.parquet | ia_pp_impacted_sections.parquet | ia_pp_alert_impacts.jsonl | "
+      f"ia_pp_results_summary.xlsx | production/")
+
+
+
+# ====== CELL 9: STATUS - where is the run? ($0, run any time after CELL 1) =====
+def _n(path, col=None):
+    if not os.path.exists(path): return 0
+    d = pd.read_parquet(path)
+    return int((d[col] != "ERROR").sum()) if col and col in d.columns else len(d)
+_pol_total = len(ALERTS) * len(DOCS_BY_TYPE["policy"])
+_sl = f"{RUN_DIR}/procedure_shortlist_top{PROC_TOP_K}.parquet"
+_proc_total = len(pd.read_parquet(_sl)) if os.path.exists(_sl) else 0
+_qp = f"{RUN_DIR}/query_plans.parquet"
+print("RUN STATUS", RUN_ID)
+print(f"  query plans          {len(pd.read_parquet(_qp)) if os.path.exists(_qp) else 0:>7,} / {len(ALERTS):,}")
+print(f"  policies read        {_n(f'{RUN_DIR}/policy_ckpt.parquet', 'model_decision'):>7,} / {_pol_total:,}")
+print(f"  procedures read      {_n(f'{RUN_DIR}/procedure_ckpt.parquet', 'model_decision'):>7,} / {_proc_total:,}")
+print(f"  results written      {'yes' if os.path.exists(f'{RUN_DIR}/ia_pp_results_summary.xlsx') else 'no'}")
