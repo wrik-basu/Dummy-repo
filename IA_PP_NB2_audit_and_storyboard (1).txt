@@ -1,0 +1,798 @@
+# ==============================================================================
+# NOTEBOOK 2 of 2 - AUDIT (independent AI reviewer + SME pack) and MANAGEMENT STORYBOARD             RCAI&A
+# ------------------------------------------------------------------------------
+# WHAT THIS NOTEBOOK DOES
+#   Reads the output folder of NOTEBOOK 1 (the production run) and, separately from production:
+#   * AUDIT   : an independent reviewer prompt ("LLM as a judge") re-checks the links and samples of the rejections:
+#               - every link (AUDIT_MODE = "ALL_LINKS", ~$15 on the US run) or a small stratified sample ("SAMPLE", ~$2)
+#               - rejected pairs: the highest-scored, the best search-ranked and a random sample -> missed impacts
+#               - planted wrong links (clear rejections dressed up as links) -> proves the reviewer is not a rubber stamp
+#               A reviewer AGREE on a link counts only if the reviewer's own quotes are found in the texts by code.
+#               Framework / process documents are reviewed with the same framework rule as production (rule 3).
+#   * SME PACK: a blind, shuffled review sheet for subject-matter experts (+ a separate key that is NOT sent), and a
+#               scoring cell for when the SMEs return it. The SME verdict is the final word; the reviewer is a proxy.
+#   * STORYBOARD: one self-contained HTML page (+ Excel) for senior management: headline numbers, how it works, the
+#               funnel, quality by band, 4 example alerts end-to-end with sections and evidence, guardrails, next steps.
+# INPUTS (from NOTEBOOK 1's RUN_DIR - nothing is re-parsed, texts are exactly as the AI saw them)
+#   ia_pp_pairs.parquet | units.parquet | alerts.parquet | document_scope.parquet | production/production_config.json
+# HOW TO RUN
+#   1. CELL 0: gateway settings (same as notebook 1).   2. CELL 1: NB1_RUN_DIR (+ AUDIT_MODE).
+#   3. Run CELL 0 -> 7 in order. CELL 2 prints the cost before anything is spent. CELL 3 is checkpointed and
+#      interrupt-safe (re-run to resume). CELL 6 does nothing until the SME file is back. CELL 7 = the storyboard.
+#   The storyboard also works without the audit (it then shows the production numbers only).
+# SECURITY: fill your own gateway settings in CELL 0; never commit filled values. Never send sme_key.parquet or
+#   audit_pairs.parquet to the SMEs (they reveal the AI's answer).
+# CELLS: 0 gateway | 1 settings + load | 2 audit set + cost | 3 reviewer run | 4 audit report | 5 SME pack |
+#        6 SME scoring | 7 storyboard
+# ==============================================================================
+
+
+# ====== CELL 0: GATEWAY + AI CALLER ($0) =======================================
+# CHAT_MODEL here = the REVIEWER model. The method was developed with the same model as the finder (gpt-5.6-luna)
+# and an independent reviewer prompt; a different routed model can be used if your use case has one.
+# One function, call_llm(system, payload) -> parsed JSON dict (or None after retries). Usage and errors are logged
+# for the cost lines and progress prints. Prices: TOKEN_PRICE (USD per token) of the chat model.
+import os, re, ssl, json, time, uuid, math, asyncio, datetime
+import numpy as np
+import pandas as pd
+import httpx, openai, truststore, nest_asyncio
+from py_group_ai_tools import GroupAIClient
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+nest_asyncio.apply()
+
+# >>> GATEWAY SETTINGS - each person sets their own: copy them from a gateway cell that works for you <<<
+os.environ["GOOGLE_CLOUD_QUOTA_PROJECT"] = "<your quota project>"
+STAFF_ID   = "<your staff id>"
+USE_CASE   = "<your GAIP use case, e.g. UC000xxxx>"
+BASE_URL   = "<your gateway base url - must match the use case and model>"
+CHAT_MODEL = "<chat model routed for your use case>"   # 'no Route matched' (404) = wrong model / url for this use case
+MODEL_FAMILY = "gemini" if "gemini" in CHAT_MODEL.lower() else "gpt"
+TOKEN_PRICE = {"in": 0.20 / 1e6, "out": 1.20 / 1e6}
+
+tls_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+async_http_client = httpx.AsyncClient(http2=True, verify=tls_context, timeout=httpx.Timeout(120.0),
+                                      limits=httpx.Limits(max_connections=300, max_keepalive_connections=200))  # >100 parallel calls possible
+openai_client = openai.AsyncOpenAI(api_key="N/A", http_client=async_http_client, base_url=BASE_URL,
+    default_headers={"Content-Type": "application/json",
+        "x-correlation-id": str(uuid.uuid4()), "x-usersession-id": str(uuid.uuid4())})
+group_ai_client = GroupAIClient.init(staff_id=STAFF_ID)
+# the token method's name differs between versions of py_group_ai_tools -> find the one this version has
+_TOKEN_NAMES = ["get_dsp_token", "get_dap_token", "get_token", "get_access_token", "get_bearer_token"]
+_cands = _TOKEN_NAMES + sorted(m for m in dir(group_ai_client) if "token" in m.lower() and not m.startswith("_"))
+TOKEN_METHOD = next((m for m in _cands if callable(getattr(group_ai_client, m, None))), None)
+assert TOKEN_METHOD, f"no token method found on GroupAIClient: {[m for m in dir(group_ai_client) if not m.startswith('_')]}"
+print("gateway token method:", TOKEN_METHOD)
+
+class TrustTokenCache:
+    def __init__(self):
+        self.token, self.expires_at, self.lock = None, 0.0, asyncio.Lock()
+    async def get(self):
+        now = time.time()
+        if self.token and now < self.expires_at - 5: return self.token
+        async with self.lock:
+            now = time.time()
+            if self.token and now < self.expires_at - 5: return self.token
+            self.token = await asyncio.to_thread(getattr(group_ai_client, TOKEN_METHOD))
+            self.expires_at = now + 300
+            return self.token
+    async def invalidate(self):
+        async with self.lock:
+            self.token, self.expires_at = None, 0.0
+
+trust_token = TrustTokenCache()
+USAGE_LOG, ERROR_LOG, CURRENT_STAGE = [], [], "setup"
+
+async def call_llm(system, payload, schema=None, max_tokens=2500, retries=4):
+    """One gateway call -> parsed JSON dict, or None if all retries fail (logged in ERROR_LOG)."""
+    kw = {"model": CHAT_MODEL, "user": USE_CASE,
+          "messages": [{"role": "system", "content": system},
+                       {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]}
+    if MODEL_FAMILY == "gemini":
+        kw.update(temperature=0.0, seed=42, reasoning_effort="low", max_tokens=max_tokens)
+    else:
+        kw.update(max_completion_tokens=max_tokens)
+    if schema: kw["response_format"] = schema
+    last = None
+    for attempt in range(retries):
+        try:
+            token = await trust_token.get()
+            r = await openai_client.chat.completions.create(
+                extra_headers={"Authorization": f"Bearer {token}"}, **kw)
+            u = getattr(r, "usage", None)
+            USAGE_LOG.append({"stage": CURRENT_STAGE, "in": getattr(u, "prompt_tokens", 0) or 0,
+                              "out": getattr(u, "completion_tokens", 0) or 0, "ts": time.time()})
+            txt = (r.choices[0].message.content or "").replace("```json", "").replace("```", "").strip()
+            return json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if "401" in msg: await trust_token.invalidate()
+            if ("response_format" in msg or "json_schema" in msg) and "response_format" in kw:
+                kw.pop("response_format")
+            await asyncio.sleep(min(2 ** attempt, 20))
+    ERROR_LOG.append({"stage": CURRENT_STAGE, "error": repr(last)[:300], "ts": time.time()})   # logged after ALL retries
+    return None
+
+def cost_report(stage=None):
+    u = pd.DataFrame(USAGE_LOG)
+    if stage and len(u): u = u[u.stage == stage]
+    e = sum(1 for x in ERROR_LOG if not stage or x["stage"] == stage)
+    if u.empty:
+        print(f"[cost{' ' + stage if stage else ''}] no successful calls | failed calls {e}")
+        return {"failed_calls": e}
+    c = u["in"].sum() * TOKEN_PRICE["in"] + u["out"].sum() * TOKEN_PRICE["out"]
+    print(f"[cost{' ' + stage if stage else ''}] calls {len(u):,} | in {u['in'].sum():,} | out {u['out'].sum():,} | "
+          f"${c:.2f} | failed calls {e}")
+    return {"calls": len(u), "cost_usd": round(float(c), 2), "failed_calls": e}
+
+res = await call_llm("Reply with JSON only.", {"task": "return {'ok': true}"}, None, 200)
+print("gateway ready:", CHAT_MODEL, "| check:", res)
+assert res, f"gateway check failed - last error: {ERROR_LOG[-1]['error'] if ERROR_LOG else 'none'}"
+
+
+
+# ====== CELL 1: SETTINGS + LOAD NOTEBOOK 1 OUTPUT ($0) =========================
+import os, re, json, html, math, time, random, asyncio
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+
+# ------------------------------------------------------------------------------------------------
+# SETTINGS
+# ------------------------------------------------------------------------------------------------
+NB1_RUN_DIR = "../output/ia_policy_procedure_US/production_run_v1"   # RUN_DIR of NOTEBOOK 1 (its output folder)
+AUDIT_DIR   = f"{NB1_RUN_DIR}/audit"                                 # everything this notebook writes
+AUDIT_MODE  = "ALL_LINKS"    # "ALL_LINKS": review every link (best numbers for management, ~$15 US)
+                             # "SAMPLE"   : review SAMPLE_RATES of each band (routine production QC, ~$2)
+SAMPLE_RATES = {"IMPACTED": 0.03, "POSSIBLE_IMPACT": 0.10, "SCOPE_REVIEW": 1.0}
+SAMPLE_MIN   = 30            # at least this many per band and document type (or all, if fewer)
+REJECTED     = {"top_score": 50, "top_rank": 50, "random": 100}      # rejected pairs reviewed per document type
+PROBES       = 30            # planted wrong links per document type
+SEED         = 7
+CONCURRENCY  = 24
+MAX_TOKENS   = 16000
+SAVE_EVERY   = 100
+PROGRESS_EVERY_SEC = 120
+MAX_COST_USD = 40            # CELL 2 stops before spending more than this
+SME_PACK_SIZE   = 200        # items in the blind SME sheet (CELL 5)
+SME_FILLED_PATH = f"{AUDIT_DIR}/sme_pack_FILLED.xlsx"   # where you put the sheet when the SMEs return it (CELL 6)
+STORY_N      = 4             # example alerts in the storyboard (CELL 7)
+STORY_ALERTS = []            # optional: fix the example alerts, e.g. ["159763", "158001"]; empty = picked by code
+# ------------------------------------------------------------------------------------------------
+os.makedirs(AUDIT_DIR, exist_ok=True)
+for _need in ("call_llm", "cost_report", "USAGE_LOG", "ERROR_LOG"):
+    assert _need in globals(), f"'{_need}' not found - run CELL 0 (gateway) first"
+for _f in ("ia_pp_pairs.parquet", "units.parquet", "alerts.parquet", "document_scope.parquet", "production/production_config.json"):
+    assert os.path.exists(f"{NB1_RUN_DIR}/{_f}"), f"{_f} not found in NB1_RUN_DIR - run NOTEBOOK 1 to the end (CELL 8) first"
+
+CONFIG = json.load(open(f"{NB1_RUN_DIR}/production/production_config.json"))
+COUNTRY, COUNTRY_NAME, RUN_ID = CONFIG["country"], CONFIG["country_name"], CONFIG["run_id"]
+HEADLINE_MIN_SCORE, LINK_THRESHOLD = CONFIG["headline_min_score"], CONFIG["link_threshold"]
+FRAMEWORK_DOCS = CONFIG["framework_documents"]
+
+# ---- library (identical to notebook 1) ----
+def clean_words(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+def quote_found(quote, text):
+    """Verbatim (case / punctuation-insensitive); long quotes may match on 8-word ends. Same as every run."""
+    q = clean_words(quote)
+    if len(q) < 12 or q in ("null", "none"): return False
+    t = clean_words(text)
+    if q in t: return True
+    w = q.split()
+    return len(w) >= 6 and (" ".join(w[:8]) in t or " ".join(w[-8:]) in t)
+def wilson(k, n, z=1.96):
+    if n == 0: return (np.nan, np.nan)
+    p = k / n; d = 1 + z * z / n; c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+class Progress:
+    """Prints done / total, %, elapsed, time left and cost so far for a stage, every PROGRESS_EVERY_SEC
+    seconds and at every checkpoint. 'already' = items finished in earlier sessions (checkpoint)."""
+    def __init__(self, stage, total, already=0, what="calls"):
+        self.stage, self.total, self.already, self.what = stage, total, already, what
+        self.done, self.t0, self.last = 0, time.time(), 0.0
+        self.u0 = len(USAGE_LOG) if "USAGE_LOG" in globals() else 0
+        todo = total - already
+        print(f"[{stage}] {total:,} {what} in total | {already:,} done earlier (checkpoint) | {todo:,} to do now")
+    def _cost(self):
+        if "USAGE_LOG" not in globals() or len(USAGE_LOG) <= self.u0: return 0.0
+        u = pd.DataFrame(USAGE_LOG[self.u0:])
+        return float(u["in"].sum() * TOKEN_PRICE["in"] + u["out"].sum() * TOKEN_PRICE["out"])
+    def update(self, n=1, force=False, note=""):
+        self.done += n
+        now = time.time()
+        if not force and now - self.last < PROGRESS_EVERY_SEC and self.done < self.total - self.already:
+            return
+        self.last = now
+        el = now - self.t0
+        fin = self.already + self.done
+        rate = self.done / el if el > 0 else 0
+        left = (self.total - fin) / rate if rate > 0 else float("nan")
+        cost = self._cost()
+        cost_left = cost / self.done * (self.total - fin) if self.done else float("nan")
+        errs = sum(1 for x in (ERROR_LOG if "ERROR_LOG" in globals() else []) if x.get("stage") == self.stage)
+        fmt = lambda sec: "-" if sec != sec else (f"{int(sec // 3600)}h{int(sec % 3600 // 60):02d}m" if sec >= 3600
+                                                  else f"{int(sec // 60)}m{int(sec % 60):02d}s")
+        print(f"  [{self.stage}] {fin:,}/{self.total:,} {self.what} ({100 * fin / max(self.total, 1):.1f}%) | "
+              f"elapsed {fmt(el)} | time left ~{fmt(left)} | {rate * 60:.0f}/min | cost this session ${cost:.2f} "
+              f"(+~${cost_left:.2f} to finish) | failed calls {errs}" + (f" | {note}" if note else ""), flush=True)
+def save_safe(df, path):
+    out = df.copy()
+    for c in out.columns:
+        if out[c].dtype == object:
+            out[c] = out[c].map(lambda v: None if v is None else str(v))
+    out.to_parquet(path + ".tmp", index=False)
+    os.replace(path + ".tmp", path)
+
+# ---- texts exactly as notebook 1 sent them to the AI ----
+UNITS_ALL = pd.read_parquet(f"{NB1_RUN_DIR}/units.parquet")
+for _c in ("doc_title", "section_no", "section_title", "subsection_no", "subsection_title", "text"):
+    UNITS_ALL[_c] = UNITS_ALL[_c].map(lambda v: "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v))
+UNITS = UNITS_ALL[~UNITS_ALL.hidden.astype(bool)].reset_index(drop=True)
+DOC_TEXT, DOC_UNITS, DOC_TITLE, DOC_SRC_CHARS, DOC_TYPE, DOC_FILE_SCOPE = {}, {}, {}, {}, {}, {}
+UNIT_INFO = {}
+for doc_id, g in UNITS.groupby("doc_id", sort=False):
+    parts, ids = [], []
+    for i, r in enumerate(g.itertuples(), start=1):
+        sec = f"{(str(r.section_no) + ' ') if r.section_no else ''}{r.section_title}"
+        sub = f" > {r.subsection_no} {r.subsection_title}" if r.subsection_no else ""
+        parts.append(f"[S{i} | {sec}{sub}]\n{r.text}")
+        ids.append(r.unit_id)
+        UNIT_INFO[r.unit_id] = dict(section_no=str(r.section_no or ""), section_title=r.section_title,
+                                    subsection_no=str(r.subsection_no or ""), subsection_title=r.subsection_title or "",
+                                    gpps_label=(f"Section {r.section_no} {r.section_title}" if r.section_no else r.section_title)
+                                    + (f" > {r.subsection_no} {r.subsection_title}" if r.subsection_no else ""),
+                                    text=r.text)
+    DOC_TEXT[doc_id], DOC_UNITS[doc_id] = "\n\n".join(parts), ids
+    DOC_TITLE[doc_id], DOC_SRC_CHARS[doc_id] = g.doc_title.iloc[0], int(g.chars.sum())
+    DOC_TYPE[doc_id], DOC_FILE_SCOPE[doc_id] = g.doc_type.iloc[0], g.scope.iloc[0]
+DOCS_BY_TYPE = {k: [d for d in DOC_TEXT if DOC_TYPE[d] == k] for k in ("policy", "procedure")}
+ALERTS = pd.read_parquet(f"{NB1_RUN_DIR}/alerts.parquet")
+ATEXT = dict(zip(ALERTS.alert, ALERTS.text))
+ATITLE = dict(zip(ALERTS.alert, ALERTS.title))
+META = {a: json.loads(m) if m else {} for a, m in zip(ALERTS.alert, ALERTS.meta)}
+SCOPE = pd.read_parquet(f"{NB1_RUN_DIR}/document_scope.parquet")
+DOC_SCOPE = dict(zip(SCOPE.doc_id, SCOPE.scope))
+DOC_APPLIC = {d: ("" if a in ("None", "nan") else a) for d, a in zip(SCOPE.doc_id, SCOPE.applicability)}
+APPLIC_NOTE = {"APPLIES": f"GPPS lists {COUNTRY_NAME} legal entities among the applicable entities",
+               "OTHER_COUNTRIES_ONLY": f"GPPS lists only other countries' legal entities as applicable (none in {COUNTRY_NAME})",
+               "NOT_LISTED": "GPPS lists no applicable legal entities", "": ""}
+SCOPE_LABEL = {"GLOBAL": f"GLOBAL (applies to all countries, including {COUNTRY_NAME})",
+               "LOCAL_COUNTRY": f"LOCAL - {COUNTRY_NAME}", "LOCAL_OTHER": f"LOCAL - another country (not {COUNTRY_NAME})"}
+
+PAIRS = pd.read_parquet(f"{NB1_RUN_DIR}/ia_pp_pairs.parquet")
+for _c in ("link_score", "confidence_level", "search_rank"):
+    PAIRS[_c] = pd.to_numeric(PAIRS[_c], errors="coerce")
+PAIRS["RECORD_ID"] = PAIRS.RECORD_ID.astype(str)
+_miss = sorted(set(PAIRS.DOC_ID) - set(DOC_TEXT))
+assert not _miss, f"{len(_miss)} documents of the pairs are not in units.parquet - wrong NB1_RUN_DIR?"
+print(f"loaded {RUN_ID} | {len(ALERTS)} alerts | {len(PAIRS):,} pairs | status "
+      f"{PAIRS.groupby(['DOC_TYPE', 'impact_status']).size().to_dict()}")
+
+
+
+# ====== CELL 2: AUDIT SET + COST GATE ($0) =====================================
+# Strata per document type:
+#   linked bands  : IMPACTED / POSSIBLE_IMPACT / SCOPE_REVIEW - all (ALL_LINKS) or SAMPLE_RATES (SAMPLE)
+#   REJ_TOP_SCORE : the highest-scored rejections (near misses)
+#   REJ_TOP_RANK  : procedures ranked in the search top 20 but rejected
+#   REJ_RANDOM    : a random sample of all rejections -> estimate of missed impacts across the whole population
+#   PROBE         : planted wrong links - the reviewer must DISAGREE
+P = PAIRS[PAIRS.final_decision != "ERROR"].rename(columns={"RECORD_ID": "alert", "DOC_ID": "doc", "DOC_TYPE": "doc_type"})
+parts, POPULATION = [], {}
+for kind, t in P.groupby("doc_type"):
+    for band in ("IMPACTED", "POSSIBLE_IMPACT", "SCOPE_REVIEW"):
+        g = t[t.impact_status == band]
+        n = len(g) if AUDIT_MODE == "ALL_LINKS" else min(len(g), max(SAMPLE_MIN, int(round(SAMPLE_RATES[band] * len(g)))))
+        parts.append(g.sample(n, random_state=SEED).assign(stratum=band))
+        POPULATION[(kind, band)] = len(g)
+    rj = t[t.impact_status == "NOT_IMPACTED"]
+    POPULATION[(kind, "REJ_RANDOM")] = len(rj)
+    s1 = rj.sort_values("link_score", ascending=False).head(REJECTED["top_score"])
+    s2 = rj[(rj.search_rank <= 20)].drop(s1.index, errors="ignore") if kind == "procedure" else rj.iloc[0:0]
+    s2 = s2.sample(min(REJECTED["top_rank"], len(s2)), random_state=SEED)
+    rest = rj.drop(s1.index.union(s2.index))
+    s3 = rest.sample(min(REJECTED["random"], len(rest)), random_state=SEED)
+    clear = rest.drop(s3.index)
+    clear = clear[clear.link_score.fillna(0) <= 2]
+    pr = clear.sample(min(PROBES, len(clear)), random_state=SEED + 1).copy()
+    pr["model_decision"] = "LINKED"; pr["link_score"] = 7; pr["impact_type"] = "REVIEW_REQUIRED"; pr["linked_units"] = ""
+    pr["evidence_from_alert"] = None; pr["evidence_from_target"] = None
+    pr["reasoning"] = (f"The {kind}'s scope covers regulatory compliance for the bank's products and customers; "
+                       f"the alert introduces related regulatory requirements, so the {kind} is impacted.")
+    parts += [s1.assign(stratum="REJ_TOP_SCORE"), s2.assign(stratum="REJ_TOP_RANK"), s3.assign(stratum="REJ_RANDOM"),
+              pr.assign(stratum="PROBE")]
+AUDIT_SET = pd.concat(parts, ignore_index=True)
+AUDIT_SET["alert"] = AUDIT_SET.alert.astype(str)
+print(f"AUDIT SET ({AUDIT_MODE}):")
+print(AUDIT_SET.groupby(["doc_type", "stratum"]).size().unstack(fill_value=0).to_string())
+_chars = AUDIT_SET.doc.map(lambda d: len(DOC_TEXT[d])) + AUDIT_SET.alert.map(lambda a: len(ATEXT[a])) + 5000
+EST_USD = float(_chars.sum() / 4 * TOKEN_PRICE["in"] + len(AUDIT_SET) * 500 * TOKEN_PRICE["out"])
+print(f"COST GATE | reviewer calls {len(AUDIT_SET):,} | ~${EST_USD:.1f} (cap ${MAX_COST_USD})")
+assert EST_USD <= MAX_COST_USD, "estimate above MAX_COST_USD - use AUDIT_MODE = 'SAMPLE' or raise the cap in CELL 1"
+
+
+
+# ====== CELL 3: REVIEWER RUN - LLM as a judge (checkpointed: re-run to resume) ===
+JUDGE = """ROLE:
+You are a senior Regulatory Compliance & Policy Assurance reviewer at a Tier-1 Global Bank - HSBC (United States). You are
+auditing the output of ANOTHER AI model. That model decided whether a regulatory development (alert_text) impacts an internal
+{target_label} (target_text), i.e. whether its owner must review or update it. Your job is to judge whether the MODEL'S
+DECISION IS CORRECT. Do not assume it is: look for errors first, then confirm only what the texts support.
+
+WHAT THE INPUT CONTAINS:
+* alert_text: the regulatory development, with alert_metadata (jurisdiction, regulator, taxonomy tag).
+* document_scope: GLOBAL or LOCAL (and which country) for the {target_short}.
+* target_text: the FULL visible text of the {target_label} from GPPS, sections / sub-sections labelled [S<n> | ...].
+* model_output: the model's decision, link_score (0-10), linked_sections, impact_type, reasoning and verbatim quotes.
+
+WHAT "IMPACTED" MEANS:
+The alert impacts the {target_label} when it creates, removes, tightens, re-scopes or re-interprets a requirement that a
+section of the {target_short} governs - what must be done, checked, approved, recorded, disclosed or notified, by when, how
+often, or for whom - within the {target_short}'s perimeter (products, customers, businesses, activities). Linking on a
+section's stated purpose / scope is valid when the alert's mandate clearly falls inside it. It is NOT impacted when the only
+overlap is a generic statement ("comply with applicable laws", "escalate regulatory matters", "supervisory oversight"), a
+generic theme ("compliance", "reporting", "customers"), or a different regime / entity / product / business perimeter.
+A United States alert does not impact a {target_short} that is LOCAL to another country, unless the {target_short} itself
+adopts the United States requirement.
+
+CHECK, IN THIS ORDER:
+1. Evidence: do the model's quotes really appear in the texts, and do they support its decision?
+2. Section: does the cited section really govern the requirement the alert changes?
+3. Scope: are the regime, regulator, product, customer segment, business and country compatible?
+4. Reasoning: is the model's reasoning sound, or does it rely on a generic statement / theme or contradict itself?
+5. Impact type: if LINKED, is CHANGE_REQUIRED (the text conflicts with or misses the new requirement) or REVIEW_REQUIRED right?
+
+VERDICT:
+* AGREE - the model's decision is correct.
+* DISAGREE - the model's decision is wrong.
+* UNCERTAIN - the texts are not sufficient to decide; an SME is needed.
+error_type (only when DISAGREE, else "NONE"):
+* FALSE_LINK_THEMATIC - linked on a generic statement or shared theme only.
+* FALSE_LINK_WRONG_SCOPE - different regime / entity / product / business / country perimeter.
+* FALSE_LINK_UNSUPPORTED - the evidence does not exist or does not support the link.
+* MISSED_LINK - the model said NOT_LINKED but the alert does impact the {target_short}.
+
+FORMAT REQUIREMENTS:
+Return ONLY a valid JSON object. Do not use markdown formatting.
+{{"verdict": "AGREE | DISAGREE | UNCERTAIN",
+ "error_type": "NONE | FALSE_LINK_THEMATIC | FALSE_LINK_WRONG_SCOPE | FALSE_LINK_UNSUPPORTED | MISSED_LINK",
+ "correct_decision": "LINKED | NOT_LINKED | UNCERTAIN",
+ "model_evidence_supports_decision": true or false,
+ "impact_type_correct": true or false or null,
+ "alert_quote": "short verbatim substring of alert_text, or null",
+ "target_quote": "short verbatim substring of target_text, or null",
+ "confidence_level": integer 1-5,
+ "rationale": "2-3 sentences"}}"""
+JUDGE_PROMPTS = {"policy": JUDGE.format(target_label="POLICY (principles and minimum control requirements)", target_short="policy"),
+                 "procedure": JUDGE.format(target_label="PROCEDURE (operational steps, timelines and records)", target_short="procedure")}
+JUDGE_PROMPTS = {k: v.replace("United States", COUNTRY_NAME) for k, v in JUDGE_PROMPTS.items()}
+
+# Rule 3 of notebook 1, given to the reviewer too: without it the reviewer counts every new report / law that flows
+# THROUGH a framework document as a "missed link" (seen on the US run: 19 of 28 flagged policy misses).
+FRAMEWORK_JUDGE_RULE = """FRAMEWORK / PROCESS DOCUMENTS (the input says document_role = FRAMEWORK):
+Such a document governs HOW the bank handles regulatory change in general - identifying, assessing and implementing
+regulatory change, read-across, change execution, or the governance of regulatory reporting / notifications. Every
+alert passes through it, so that alone is NOT an impact. It is impacted ONLY if the alert itself clearly requires
+that PROCESS to be updated, changed or rectified (e.g. a new rule on how regulatory change or reporting must be
+governed, a new mandated step, timeline, approval, control or record IN that process, or a regulator finding that the
+process itself must be fixed). A new law, obligation or report that is simply handled THROUGH the process does NOT
+impact it: a NOT_LINKED decision on that basis is correct.
+
+"""
+JUDGE_PROMPTS_FW = {k: v.replace("CHECK, IN THIS ORDER:", FRAMEWORK_JUDGE_RULE + "CHECK, IN THIS ORDER:")
+                    for k, v in JUDGE_PROMPTS.items()}
+assert all(FRAMEWORK_JUDGE_RULE in v for v in JUDGE_PROMPTS_FW.values())
+JUDGE_VERSION = {"BUSINESS": "v1", "FRAMEWORK": "fw1"}
+
+_LAST_REAUTH = [0.0]
+async def _reauth_if_auth_error():
+    """Long runs: the gateway login can expire (~1 h). On an auth-type error, log in again (at most every 5 min)."""
+    global group_ai_client
+    last = (ERROR_LOG[-1]["error"] if ERROR_LOG else "").lower()
+    if not any(k in last for k in ("401", "403", "unauthor", "expired", "token", "auth")):
+        return
+    if time.time() - _LAST_REAUTH[0] < 300 or "GroupAIClient" not in globals():
+        return
+    _LAST_REAUTH[0] = time.time()
+    try:
+        group_ai_client = await asyncio.to_thread(GroupAIClient.init, staff_id=STAFF_ID)
+        await trust_token.invalidate()
+        print("  gateway: logged in again after an authentication error", flush=True)
+    except Exception as e:
+        print("  gateway: re-login failed -", repr(e)[:200], flush=True)
+
+async def ask(system, payload):
+    """call_llm with real retries; re-logs in to the gateway if the failures are authentication errors."""
+    for attempt in range(4):
+        a = await call_llm(system, payload, None, MAX_TOKENS)
+        if isinstance(a, dict) and isinstance(a.get("items"), list) and a["items"]:
+            a = a["items"][0]
+        if isinstance(a, dict) and a:
+            return a
+        await _reauth_if_auth_error()
+        await asyncio.sleep(min(2 ** attempt, 20) * (1 + random.random()))
+    return {}
+
+def cancel_pending(tasks, what):
+    """Interrupt-safe: Jupyter's Interrupt stops the cell but NOT tasks already started -> cancel them."""
+    n = sum(1 for t in tasks if not t.done())
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+    if n:
+        print(f"  interrupted - {n:,} pending {what} cancelled (nothing keeps running in the background)", flush=True)
+
+def build_payload(alert, doc_id):
+    return {"alert_text": ATEXT[alert], "alert_metadata": META.get(alert, {}),
+            "document_scope": SCOPE_LABEL.get(DOC_SCOPE.get(doc_id, ""), "unknown")
+                              + (f" | {APPLIC_NOTE[DOC_APPLIC.get(doc_id, '')]}" if DOC_APPLIC.get(doc_id) else ""),
+            "document_text": DOC_TEXT[doc_id]}
+
+async def run_judge(audit, ckpt):
+    global CURRENT_STAGE
+    CURRENT_STAGE = "audit"
+    key = lambda df: list(zip(df["alert"], df["doc"], df["stratum"]))
+    rows, done = [], set()
+    if os.path.exists(ckpt):
+        prev = pd.read_parquet(ckpt)
+        prev = prev[prev["verdict"] != "ERROR"]
+        jv = prev["judge_version"] if "judge_version" in prev.columns else pd.Series("", index=prev.index)
+        stale = prev.doc.isin(FRAMEWORK_DOCS) & (jv != JUDGE_VERSION["FRAMEWORK"])
+        if stale.any():
+            print(f"  {int(stale.sum())} framework-document reviews made without the framework rule -> reviewed again")
+        prev = prev[~stale]
+        rows, done = prev.to_dict("records"), set(key(prev))
+    todo = audit[[k not in done for k in key(audit)]]
+    prog = Progress("audit", len(audit), len(audit) - len(todo), "reviews")
+    sem = asyncio.Semaphore(CONCURRENCY)
+    async def one(row):
+        p = build_payload(row.alert, row.doc)
+        labels = [UNIT_INFO[u]["gpps_label"] for u in str(row.linked_units or "").split("; ") if u in UNIT_INFO]
+        payload = {"alert_text": p["alert_text"], "alert_metadata": p["alert_metadata"], "target_id": row.doc,
+                   "document_scope": p["document_scope"], "target_text": p["document_text"],
+                   "model_output": {"decision": "LINKED" if row.stratum in ("IMPACTED", "POSSIBLE_IMPACT", "SCOPE_REVIEW", "PROBE")
+                                    else "NOT_LINKED",
+                                    "link_score": None if pd.isna(row.link_score) else float(row.link_score),
+                                    "linked_sections": labels, "impact_type": row.impact_type, "reasoning": row.reasoning,
+                                    "evidence_from_alert": row.evidence_from_alert,
+                                    "evidence_from_target": row.evidence_from_target}}
+        role = "FRAMEWORK" if row.doc in FRAMEWORK_DOCS else "BUSINESS"
+        if role == "FRAMEWORK":
+            payload["document_role"] = "FRAMEWORK"
+        async with sem:
+            a = await ask((JUDGE_PROMPTS_FW if role == "FRAMEWORK" else JUDGE_PROMPTS)[row.doc_type], payload)
+        v = str(a.get("verdict", "ERROR")).upper().strip() if a else "ERROR"
+        return {"alert": row.alert, "doc": row.doc, "stratum": row.stratum, "judge_version": JUDGE_VERSION[role],
+                "verdict": v if v in ("AGREE", "DISAGREE", "UNCERTAIN") else "ERROR",
+                "error_type": a.get("error_type"), "correct_decision": a.get("correct_decision"),
+                "impact_type_ok": a.get("impact_type_correct"), "reviewer_alert_quote": a.get("alert_quote"),
+                "reviewer_target_quote": a.get("target_quote"), "reviewer_confidence": a.get("confidence_level"),
+                "reviewer_rationale": a.get("rationale")}
+    tasks = [asyncio.create_task(one(r)) for r in todo.itertuples()]
+    try:
+        for i, fut in enumerate(tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="audit"), 1):
+            rows.append(await fut)
+            if i % SAVE_EVERY == 0:
+                save_safe(pd.DataFrame(rows), ckpt); prog.update(1, force=True, note="checkpoint saved")
+            else:
+                prog.update(1)
+    except BaseException:
+        cancel_pending(tasks, "reviews")
+        if rows: save_safe(pd.DataFrame(rows), ckpt)
+        raise
+    out = pd.DataFrame(rows)
+    save_safe(out, ckpt)
+    if len(todo): prog.update(0, force=True, note="audit finished")
+    for c in out.columns:
+        out[c] = out[c].map(lambda v: None if v is None or str(v) in ("None", "nan") else v)
+    print("[audit] verdicts:", out["verdict"].value_counts().to_dict())
+    return out
+
+JUDGED = await run_judge(AUDIT_SET, f"{AUDIT_DIR}/audit_ckpt.parquet")
+cost_report("audit")
+n_err = int((JUDGED.verdict == "ERROR").sum())
+print(f"reviews without an answer: {n_err}" + (" -> re-run this cell to retry them" if n_err else ""))
+
+
+
+# ====== CELL 4: AUDIT REPORT ($0) ==============================================
+# good = the reviewer confirms the production answer: AGREE on a link (with its own quotes verified), AGREE on a
+# rejection (= correct rejection), DISAGREE on a probe (= planted wrong link caught).
+A = AUDIT_SET.merge(JUDGED, on=["alert", "doc", "stratum"], how="left")
+q1 = np.array([quote_found(q, ATEXT[a]) for q, a in zip(A.reviewer_alert_quote, A.alert)])
+q2 = np.array([quote_found(q, DOC_TEXT[d]) for q, d in zip(A.reviewer_target_quote, A.doc)])
+LINK_STRATA = ["IMPACTED", "POSSIBLE_IMPACT", "SCOPE_REVIEW"]
+vv = A.verdict.fillna("ERROR")
+A["verdict_final"] = np.where((vv == "AGREE") & A.stratum.isin(LINK_STRATA) & ~(q1 & q2), "UNCERTAIN", vv)
+A["good"] = np.where(A.stratum == "PROBE", A.verdict_final == "DISAGREE", A.verdict_final == "AGREE")
+A["label"] = np.select(
+    [A.stratum.isin(LINK_STRATA) & (A.verdict_final == "AGREE"), A.stratum.isin(LINK_STRATA) & (A.verdict_final == "DISAGREE"),
+     A.stratum.str.startswith("REJ") & (A.verdict_final == "DISAGREE"), A.stratum.str.startswith("REJ") & (A.verdict_final == "AGREE"),
+     A.stratum == "PROBE", A.verdict_final == "UNCERTAIN"],
+    ["CONFIRMED", "DISPUTED", "POSSIBLE_MISS", "CORRECT_REJECTION", "PROBE", "NEEDS_SME"], default="NO_ANSWER")
+save_safe(A, f"{AUDIT_DIR}/audit_pairs.parquet")                   # internal - do NOT send to SMEs
+MEASURE = {"IMPACTED": "reviewer confirms", "POSSIBLE_IMPACT": "reviewer confirms", "SCOPE_REVIEW": "reviewer confirms",
+           "REJ_TOP_SCORE": "correct rejections", "REJ_TOP_RANK": "correct rejections", "REJ_RANDOM": "correct rejections",
+           "PROBE": "planted wrong links caught"}
+ORDER = list(MEASURE)
+rows = []
+for (kind, s), g in A[A.verdict_final != "ERROR"].groupby(["doc_type", "stratum"]):
+    k, n = int(g.good.sum()), len(g)
+    lo, hi = wilson(k, n)
+    rows.append(dict(doc_type=kind, stratum=s, population=POPULATION.get((kind, s), np.nan), reviewed=n,
+                     measure=MEASURE[s], pct=round(100 * k / n, 1) if n else np.nan, ci_95=f"{100 * lo:.0f}-{100 * hi:.0f}",
+                     needs_sme=int((g.verdict_final == "UNCERTAIN").sum())))
+REPORT = pd.DataFrame(rows)
+REPORT["_o"] = REPORT.stratum.map(ORDER.index)
+REPORT = REPORT.sort_values(["doc_type", "_o"]).drop(columns="_o")
+
+# headline estimates per document type (sampled strata scaled to their population)
+H = []
+for kind in ("policy", "procedure"):
+    r = {x.stratum: x for x in REPORT[REPORT.doc_type == kind].itertuples()}
+    pk = PAIRS[PAIRS.DOC_TYPE == kind]
+    def _p(s): return (r[s].pct / 100) if s in r else np.nan
+    n_imp, n_pos = int((pk.impact_status == "IMPACTED").sum()), int((pk.impact_status == "POSSIBLE_IMPACT").sum())
+    n_rej = POPULATION.get((kind, "REJ_RANDOM"), 0)
+    miss = 1 - _p("REJ_RANDOM") if "REJ_RANDOM" in r else np.nan
+    conf_imp, conf_pos = n_imp * _p("IMPACTED"), n_pos * _p("POSSIBLE_IMPACT")
+    H.append(dict(doc_type=kind, impacted=n_imp, impacted_confirmed_pct=round(100 * _p("IMPACTED"), 1),
+                  possible=n_pos, possible_confirmed_pct=round(100 * _p("POSSIBLE_IMPACT"), 1),
+                  est_confirmed_links=int(round(np.nansum([conf_imp, conf_pos]))),
+                  est_confirmed_per_alert=round(np.nansum([conf_imp, conf_pos]) / len(ALERTS), 1),
+                  share_of_confirmed_in_impacted_band=round(100 * conf_imp / max(np.nansum([conf_imp, conf_pos]), 1), 1),
+                  rejected_pairs=n_rej, est_missed_impacts=int(round(n_rej * miss)) if miss == miss else np.nan,
+                  probes_caught_pct=round(100 * _p("PROBE"), 1)))
+HEADLINE = pd.DataFrame(H)
+L_ = A[A.stratum.isin(["IMPACTED", "POSSIBLE_IMPACT"]) & (A.verdict_final != "ERROR")]
+BY_SCORE = L_.groupby(["doc_type", "link_score"]).agg(reviewed=("good", "size"),
+                                                      confirmed_pct=("good", lambda s: round(100 * s.mean(), 1))).reset_index()
+BY_SCOPE = L_.groupby(["doc_type", "doc_scope"]).agg(reviewed=("good", "size"),
+                                                     confirmed_pct=("good", lambda s: round(100 * s.mean(), 1))).reset_index()
+ERR = A[A.label.isin(["DISPUTED", "POSSIBLE_MISS"])].groupby(["doc_type", "label", "error_type"]).size().rename("n").reset_index()
+print("AUDIT REPORT (reviewer = independent AI prompt; SMEs have the final word)")
+print(REPORT.to_string(index=False))
+print("\nHEADLINE ESTIMATES"); print(HEADLINE.to_string(index=False))
+print("\nconfirmed % by link_score:"); print(BY_SCORE.pivot(index="link_score", columns="doc_type", values="confirmed_pct").to_string())
+print("\nwhy the reviewer disagreed:"); print(ERR.to_string(index=False))
+_pm = A[A.label == "POSSIBLE_MISS"].assign(role=lambda d: np.where(d.doc.isin(FRAMEWORK_DOCS), "FRAMEWORK", "BUSINESS"))
+print("possible misses by document role:", _pm.groupby(["doc_type", "stratum", "role"]).size().to_dict())
+PER_ALERT = None
+if AUDIT_MODE == "ALL_LINKS":
+    PER_ALERT = A[A.label == "CONFIRMED"].groupby(["alert", "doc_type"]).size().unstack(fill_value=0) \
+        .reindex(index=ALERTS.alert.astype(str), columns=["policy", "procedure"], fill_value=0).rename_axis("RECORD_ID").reset_index()
+    PER_ALERT.insert(1, "alert_title", PER_ALERT.RECORD_ID.map(ATITLE))
+    print(f"\nalerts with >= 1 reviewer-confirmed policy {int((PER_ALERT.policy > 0).sum())} | procedure "
+          f"{int((PER_ALERT.procedure > 0).sum())} | of {len(ALERTS)}")
+with pd.ExcelWriter(f"{AUDIT_DIR}/audit_report.xlsx") as xl:
+    pd.DataFrame({"How to read": [
+        f"Audit of {RUN_ID} ({AUDIT_MODE}). Reviewer = independent AI prompt; it is a proxy - SMEs have the final word.",
+        "reviewer confirms = AGREE on a production link, with the reviewer's own quotes found in the texts by code.",
+        "correct rejections = AGREE on a rejected pair; the rest of REJ_RANDOM estimates missed impacts in all rejections.",
+        "planted wrong links caught = DISAGREE on a clear rejection dressed up as a link (must be high).",
+        "est_* columns scale the sampled strata to their population."]}).to_excel(xl, sheet_name="How to read", index=False)
+    HEADLINE.to_excel(xl, sheet_name="headline", index=False)
+    REPORT.to_excel(xl, sheet_name="by stratum", index=False)
+    BY_SCORE.to_excel(xl, sheet_name="by link_score", index=False)
+    BY_SCOPE.to_excel(xl, sheet_name="by scope", index=False)
+    ERR.to_excel(xl, sheet_name="disagreement types", index=False)
+    if PER_ALERT is not None: PER_ALERT.to_excel(xl, sheet_name="confirmed per alert", index=False)
+print(f"\n-> {AUDIT_DIR}/audit_report.xlsx | audit_pairs.parquet (internal)")
+
+
+
+# ====== CELL 5: BLIND SME PACK ($0) ============================================
+# Stratified so the SMEs see confirmed AND disputed links of both bands, possible misses and scope reviews.
+# The sheet hides the AI's answer and the reviewer's verdict and is shuffled. The key is a separate file.
+STRATA = [("IMPACTED", "CONFIRMED", 0.20), ("IMPACTED", "DISPUTED", 0.15), ("POSSIBLE_IMPACT", "CONFIRMED", 0.15),
+          ("POSSIBLE_IMPACT", "DISPUTED", 0.15), ("REJ", "POSSIBLE_MISS", 0.15), ("REJ", "CORRECT_REJECTION", 0.10),
+          ("SCOPE_REVIEW", None, 0.10)]
+pool, picks = A[A.stratum != "PROBE"], []
+for s, lab, w in STRATA:
+    g = pool[pool.stratum.str.startswith(s)] if s == "REJ" else pool[pool.stratum == s]
+    if lab: g = g[g.label == lab]
+    picks.append(g.sample(min(len(g), int(SME_PACK_SIZE * w)), random_state=SEED).assign(sme_stratum=f"{s}|{lab or 'ALL'}"))
+PACK = pd.concat(picks).drop_duplicates(["alert", "doc"]).sample(frac=1, random_state=SEED).reset_index(drop=True)
+PACK["item"] = [f"SME-{i + 1:03d}" for i in range(len(PACK))]
+SHEET = pd.DataFrame({"item": PACK.item, "RECORD_ID": PACK.alert, "alert_title": PACK.alert.map(ATITLE),
+                      "alert_text": PACK.alert.map(lambda a: ATEXT[a][:3000]), "DOC_TYPE": PACK.doc_type, "DOC_ID": PACK.doc,
+                      "doc_title": PACK.doc.map(DOC_TITLE), "doc_scope": PACK.doc.map(DOC_SCOPE),
+                      "sections_to_check": PACK.linked_sections.fillna(""),
+                      "sme_impacted_YES_NO": "", "sme_correct_sections": "", "sme_comment": ""})
+with pd.ExcelWriter(f"{AUDIT_DIR}/sme_pack.xlsx") as xl:
+    pd.DataFrame({"Instructions": [
+        "For each row: does the regulatory alert require the owner of this policy / procedure to review or update it?",
+        "Write YES or NO in sme_impacted_YES_NO. If YES, write the GPPS section numbers that need the change.",
+        "'sections_to_check' is a hint only (may be empty or wrong). Open the document in GPPS for the full text.",
+        f"Return the file as {os.path.basename(SME_FILLED_PATH)} to RCAI&A."]}).to_excel(xl, sheet_name="Instructions", index=False)
+    SHEET.to_excel(xl, sheet_name="items", index=False)
+save_safe(PACK[["item", "alert", "doc", "doc_type", "stratum", "label", "sme_stratum", "impact_status", "link_score"]],
+          f"{AUDIT_DIR}/sme_key.parquet")
+print(f"SME pack: {len(PACK)} items {PACK.sme_stratum.value_counts().to_dict()}")
+print(f"-> {AUDIT_DIR}/sme_pack.xlsx (send) | sme_key.parquet (do NOT send)")
+
+
+
+# ====== CELL 6: SME SCORING (run when the SMEs have returned the sheet) ($0) ======
+if not os.path.exists(SME_FILLED_PATH):
+    print(f"SME sheet not returned yet - put it at {SME_FILLED_PATH} and re-run this cell")
+else:
+    S = pd.read_excel(SME_FILLED_PATH, sheet_name="items", dtype=str)
+    S["sme"] = S.sme_impacted_YES_NO.fillna("").str.strip().str.upper().str[:1].map({"Y": True, "N": False})
+    S = S[S.sme.notna()].merge(pd.read_parquet(f"{AUDIT_DIR}/sme_key.parquet"), on="item")
+    S["ai_says_impacted"] = S.stratum.isin(LINK_STRATA)
+    S["reviewer_says_impacted"] = np.where(S.ai_says_impacted, S.label == "CONFIRMED", S.label == "POSSIBLE_MISS")
+    out = []
+    for name, g in [("all", S)] + list(S.groupby("sme_stratum")):
+        out.append(dict(group=name, answered=len(g), sme_yes_pct=round(100 * g.sme.mean(), 1),
+                        ai_correct_pct=round(100 * (g.ai_says_impacted == g.sme).mean(), 1),
+                        reviewer_correct_pct=round(100 * (g.reviewer_says_impacted == g.sme).mean(), 1)))
+    SME_SCORE = pd.DataFrame(out)
+    print("SME SCORING (AI = production answer | reviewer = audit verdict | both against the SME)")
+    print(SME_SCORE.to_string(index=False))
+    SME_SCORE.to_excel(f"{AUDIT_DIR}/sme_scoring.xlsx", index=False)
+
+
+
+# ====== CELL 7: MANAGEMENT STORYBOARD (one HTML page + Excel) ($0) ==============
+# Works with or without the audit (CELLs 3-4). Example alerts: STORY_ALERTS, or picked by code - alerts with an
+# IMPACTED policy AND an IMPACTED procedure, best scores, quotes inside the cited section, reviewer-confirmed if
+# audited, spread over different taxonomy areas.
+E = html.escape
+AUD = A if "A" in globals() and isinstance(globals().get("A"), pd.DataFrame) else None
+conf_key = set(zip(AUD[AUD.label == "CONFIRMED"].alert, AUD[AUD.label == "CONFIRMED"].doc)) if AUD is not None else set()
+V = PAIRS[PAIRS.impact_status.isin(["IMPACTED", "POSSIBLE_IMPACT"])].copy()
+V["confirmed"] = [(a, d) in conf_key for a, d in zip(V.RECORD_ID, V.DOC_ID)]
+V["grounded"] = V.section_grounded.astype(str).eq("True")
+
+def pick_stories():
+    if STORY_ALERTS: return [str(a) for a in STORY_ALERTS]
+    imp = V[V.impact_status == "IMPACTED"]
+    ok = set(imp[imp.DOC_TYPE == "policy"].RECORD_ID) & set(imp[imp.DOC_TYPE == "procedure"].RECORD_ID)
+    sc = imp[imp.RECORD_ID.isin(ok)].assign(pts=lambda d: d.link_score + 2 * d.grounded + 3 * d.confirmed) \
+            .groupby("RECORD_ID").pts.apply(lambda s: s.nlargest(4).mean()).sort_values(ascending=False)
+    out, areas = [], set()
+    for a in sc.index:                                                  # one per taxonomy area first
+        area = (META.get(a, {}).get("taxonomy") or "").split(" > ")[0]
+        if area not in areas or len(sc) <= STORY_N:
+            out.append(a); areas.add(area)
+        if len(out) == STORY_N: break
+    return out + [a for a in sc.index if a not in out][:STORY_N - len(out)]
+STORIES = pick_stories()
+
+def kpi(label, value, note=""):
+    return f'<div class="kpi"><div class="v">{E(str(value))}</div><div class="l">{E(label)}</div><div class="n">{E(note)}</div></div>'
+def bar(label, n, top, cls=""):
+    w = 100 * n / max(top, 1)
+    return f'<div class="br"><span class="bl">{E(label)}</span><span class="bt"><span class="bf {cls}" style="width:{w:.1f}%"></span></span><span class="bn">{n:,}</span></div>'
+def cut(s, n=260):
+    s = "" if s is None or (isinstance(s, float) and math.isnan(s)) else str(s)
+    return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + " ..."
+
+n_al = len(ALERTS)
+pol, pro = PAIRS[PAIRS.DOC_TYPE == "policy"], PAIRS[PAIRS.DOC_TYPE == "procedure"]
+cnt = lambda d, s: int((d.impact_status == s).sum())
+hl = {r.doc_type: r for r in HEADLINE.itertuples()} if AUD is not None else {}
+kp = [kpi("alerts assessed", n_al, COUNTRY_NAME),
+      kpi("AI document reads", f"{len(PAIRS):,}", f"all {pol.DOC_ID.nunique():,} policies + top {CONFIG['procedures'].split('top ')[-1].split(' ')[0]} procedures per alert"),
+      kpi("impacted policies / alert", round(cnt(pol, "IMPACTED") / n_al, 1), f"+ {cnt(pol, 'POSSIBLE_IMPACT') / n_al:.1f} possible"),
+      kpi("impacted procedures / alert", round(cnt(pro, "IMPACTED") / n_al, 1), f"+ {cnt(pro, 'POSSIBLE_IMPACT') / n_al:.1f} possible")]
+if hl:
+    kp.append(kpi("reviewer confirms (IMPACTED band)",
+                  f"{hl['policy'].impacted_confirmed_pct:.0f}% / {hl['procedure'].impacted_confirmed_pct:.0f}%", "policies / procedures"))
+    kp.append(kpi("planted wrong links caught", f"{np.nanmean([hl['policy'].probes_caught_pct, hl['procedure'].probes_caught_pct]):.0f}%",
+                  "the reviewer is not a rubber stamp"))
+
+funnel = []
+for kind, d in (("Policies", pol), ("Procedures", pro)):
+    top = len(d)
+    rows_ = [bar("documents read by the AI", top, top), bar("AI said LINKED", int((d.model_decision == "LINKED").sum()), top),
+             bar("evidence verified by code", int((d.final_decision == "LINKED").sum()), top),
+             bar("after jurisdiction + framework rules", int(d.impact_status.isin(["IMPACTED", "POSSIBLE_IMPACT"]).sum()), top),
+             bar(f"IMPACTED (score {HEADLINE_MIN_SCORE}+)", cnt(d, "IMPACTED"), top, "hi")]
+    if AUD is not None and AUDIT_MODE == "ALL_LINKS":
+        _dt = "policy" if kind == "Policies" else "procedure"
+        rows_.append(bar("IMPACTED and reviewer-confirmed",
+                         int(((AUD.doc_type == _dt) & (AUD.stratum == "IMPACTED") & (AUD.label == "CONFIRMED")).sum()), top, "ok"))
+    funnel.append(f'<div class="fn"><h4>{kind}</h4>{"".join(rows_)}<p class="note">bars are to scale against all documents '
+                  f'read: most pairs are correctly rejected, only the few that matter remain.</p></div>')
+
+quality = ""
+if AUD is not None:
+    PLAIN = {"IMPACTED": "Impacted band", "POSSIBLE_IMPACT": "Possible-impact band", "SCOPE_REVIEW": "Other-country local",
+             "REJ_TOP_SCORE": "Rejected - near misses", "REJ_TOP_RANK": "Rejected - top search hits",
+             "REJ_RANDOM": "Rejected - random sample", "PROBE": "Planted wrong links"}
+    qrows = "".join(f"<tr><td>{E(r.doc_type)}</td><td>{E(PLAIN.get(r.stratum, r.stratum))}</td><td>{E(r.measure)}</td><td>{r.reviewed:,}</td>"
+                    f"<td><b>{r.pct:.0f}%</b></td><td>{E(r.ci_95)}</td></tr>" for r in REPORT.itertuples())
+    quality = (f'<h2>Quality - independent review ({E(AUDIT_MODE.replace("_", " ").lower())})</h2>'
+               '<table><tr><th>type</th><th>group</th><th>measure</th><th>reviewed</th><th>result</th><th>95% CI</th></tr>'
+               f'{qrows}</table><p class="note">The reviewer is an independent AI prompt used as a proxy. SME validation '
+               '(blind pack prepared) gives the final figures.</p>')
+else:
+    quality = '<h2>Quality</h2><p class="note">Audit not run yet (CELLs 2-4 of this notebook).</p>'
+
+cards = []
+for a in STORIES:
+    g = V[V.RECORD_ID == a].sort_values(["impact_status", "link_score"], ascending=[True, False])
+    m = META.get(a, {})
+    items = []
+    for kind in ("policy", "procedure"):
+        for r in g[g.DOC_TYPE == kind].head(3).itertuples():
+            badge = '<span class="b ok">reviewer confirmed</span>' if r.confirmed else ""
+            items.append(f'<div class="it"><div class="ih"><span class="t {kind}">{kind}</span> <b>{E(r.DOC_ID)}</b> {E(cut(r.doc_title, 80))}'
+                         f' <span class="b">{E(r.impact_status.replace("_", " ").lower())} | score {int(r.link_score)}</span>{badge}</div>'
+                         f'<div class="sec">Section: {E(cut(r.linked_sections, 200)) or "-"}</div>'
+                         f'<div class="q"><span>alert says</span> "{E(cut(r.evidence_from_alert, 220))}"</div>'
+                         f'<div class="q"><span>{kind} says</span> "{E(cut(r.evidence_from_target, 220))}"</div>'
+                         f'<div class="ch"><span>change needed</span> {E(cut(r.change_needed, 220))}</div></div>')
+    n_p = int(((g.DOC_TYPE == "policy") & (g.impact_status == "IMPACTED")).sum())
+    n_q = int(((g.DOC_TYPE == "procedure") & (g.impact_status == "IMPACTED")).sum())
+    cards.append(f'<div class="card"><div class="ah">Alert {E(a)} <span class="b">{E(m.get("regulator", ""))}</span> '
+                 f'<span class="b">{E(cut(m.get("taxonomy", ""), 60))}</span></div><h3>{E(cut(ATITLE.get(a), 160))}</h3>'
+                 f'<p class="al">{E(cut(ATEXT.get(a), 420))}</p><p class="cnt">IMPACTED: <b>{n_p}</b> policies, <b>{n_q}</b> '
+                 f'procedures (top 3 of each shown)</p>{"".join(items)}</div>')
+
+fw = PAIRS[(PAIRS.document_role == "FRAMEWORK")]
+fw_lk, fw_kept = int((fw.final_decision == "LINKED").sum()), int(fw.impact_status.isin(["IMPACTED", "POSSIBLE_IMPACT"]).sum())
+ex = fw[(fw.final_decision == "LINKED") & (fw.impact_status == "NOT_IMPACTED")].sort_values("link_score", ascending=False).head(1)
+fw_ex = (f'<div class="q"><span>example screened out</span> {E(ex.DOC_ID.iloc[0])} {E(cut(ex.doc_title.iloc[0], 60))} x alert '
+         f'{E(ex.RECORD_ID.iloc[0])}: "{E(cut(ex.reasoning.iloc[0], 300))}"</div>') if len(ex) else ""
+guards = (f'<h2>Guardrails built in</h2><ul>'
+          f'<li><b>Evidence or nothing</b>: a link counts only if both verbatim quotes are found in the alert and the document by code.</li>'
+          f'<li><b>Jurisdiction</b>: a {E(COUNTRY_NAME)} alert never impacts another country\'s local document '
+          f'({cnt(PAIRS, "SCOPE_REVIEW")} such links sent to scope review).</li>'
+          f'<li><b>Framework / process documents</b> ({len(FRAMEWORK_DOCS)} documents every alert passes through) count only when '
+          f'the alert requires the process itself to change: {fw_lk} AI links checked, {fw_kept} kept.</li>{fw_ex}'
+          f'<li><b>Two bands</b>: IMPACTED (score {HEADLINE_MIN_SCORE}+) for owners to act on; POSSIBLE IMPACT '
+          f'(score {LINK_THRESHOLD}-{HEADLINE_MIN_SCORE - 1}) as an SME review queue - nothing is silently dropped.</li>'
+          f'<li><b>One AI call per alert x document</b> in production; the audit is separate and sampled.</li></ul>')
+how = ('<h2>How it works</h2><div class="steps">'
+       '<div><b>1 Alert</b><br>Rapid2 regulatory alert (title, summary, update, regulator, taxonomy).</div>'
+       '<div><b>2 Documents</b><br>GPPS policies and procedures split into the GPPS sections / sub-sections; '
+       'each labelled global or local.</div>'
+       '<div><b>3 Shortlist</b><br>All policies. Procedures: search picks the top 200 per alert.</div>'
+       '<div><b>4 AI read</b><br>The AI reads the full document and returns decision, score, sections, '
+       'quotes and change needed.</div>'
+       '<div><b>5 Code checks</b><br>Quotes verified, jurisdiction and framework rules, bands.</div>'
+       '<div><b>6 Output</b><br>Per alert: impacted policies / procedures with sections and evidence, for SME '
+       'validation.</div></div>')
+nxt = ('<h2>Next steps</h2><ul><li>SME validation of the blind review pack (control-level benchmark) - the reference '
+       'data, not the model, is the main limit today.</li><li>Use as an AI-assisted discovery tool: owners act on IMPACTED; SMEs '
+       'triage POSSIBLE IMPACT.</li><li>Roll out to other countries with the same notebooks (settings A and B only).</li></ul>')
+CSS = ("body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f5f7;color:#1d2330}main{max-width:1100px;margin:auto;"
+       "padding:28px}h1{margin:0 0 4px;font-size:26px}h2{margin:34px 0 12px;font-size:19px;border-bottom:2px solid #db0011;"
+       "padding-bottom:6px}.sub{color:#5a6270}.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));"
+       "gap:12px;margin-top:20px}.kpi{background:#fff;border-radius:8px;padding:14px;box-shadow:0 1px 2px #0002}.kpi .v"
+       "{font-size:26px;font-weight:700}.kpi .l{font-weight:600;margin-top:2px}.kpi .n{color:#6b7280;font-size:12px}.steps"
+       "{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.steps div{background:#fff;border-top:4px solid #db0011;"
+       "padding:10px;border-radius:6px;font-size:13px}.fns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.fn{background:"
+       "#fff;padding:14px;border-radius:8px}.br{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px}.bl{width:"
+       "230px}.bt{flex:1;background:#eceef2;height:14px;border-radius:7px;overflow:hidden}.bf{display:block;height:100%;"
+       "background:#9aa3b2}.bf.hi{background:#db0011}.bf.ok{background:#1f8a4c}.bn{width:70px;text-align:right;font-weight:600}"
+       "table{border-collapse:collapse;width:100%;background:#fff;font-size:13px}th,td{padding:7px 9px;border-bottom:1px solid "
+       "#e5e7eb;text-align:left}th{background:#eef0f3}.card{background:#fff;border-radius:8px;padding:16px;margin:14px 0;"
+       "box-shadow:0 1px 2px #0002}.ah{color:#6b7280;font-size:12px}.card h3{margin:6px 0}.al{color:#374151;font-size:13px}"
+       ".cnt{font-size:13px}.it{border-left:3px solid #d1d5db;padding:6px 10px;margin:8px 0}.ih{font-size:14px}.t{font-size:11px;"
+       "text-transform:uppercase;padding:2px 6px;border-radius:4px;color:#fff;background:#4b5563}.t.policy{background:#7c3aed}"
+       ".t.procedure{background:#0e7490}.b{font-size:11px;background:#eef0f3;padding:2px 6px;border-radius:4px;margin-left:4px}"
+       ".b.ok{background:#dcfce7;color:#166534}.sec{font-size:12px;color:#374151;margin:3px 0}.q,.ch{font-size:12.5px;margin:3px 0}"
+       ".q span,.ch span{display:inline-block;width:110px;color:#6b7280;font-size:11px;text-transform:uppercase}.note{color:#6b7280;"
+       "font-size:12px}ul{line-height:1.6}@media(max-width:800px){.steps,.fns{grid-template-columns:1fr}}")
+PAGE = (f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Alert to policy and procedure impact - {E(COUNTRY)}</title>'
+        f'<style>{CSS}</style></head><body><main><h1>Alert &rarr; policy &amp; procedure impact assessment</h1>'
+        f'<div class="sub">{E(COUNTRY_NAME)} | run {E(RUN_ID)} | RCAI&amp;A</div><div class="kpis">{"".join(kp)}</div>'
+        f'{how}<h2>From every document to the few that matter</h2><div class="fns">{"".join(funnel)}</div>{quality}'
+        f'<h2>Example alerts, end to end</h2>{"".join(cards)}{guards}{nxt}</main></body></html>')
+SB_PATH = f"{AUDIT_DIR}/storyboard_{COUNTRY}.html"
+open(SB_PATH, "w", encoding="utf-8").write(PAGE)
+with pd.ExcelWriter(f"{AUDIT_DIR}/storyboard_{COUNTRY}.xlsx") as xl:
+    V[V.RECORD_ID.isin(STORIES)][["RECORD_ID", "alert_title", "DOC_TYPE", "DOC_ID", "doc_title", "impact_status", "link_score",
+                                  "linked_sections", "evidence_from_alert", "evidence_from_target", "change_needed",
+                                  "confirmed"]].to_excel(xl, sheet_name="example alerts", index=False)
+    (HEADLINE if AUD is not None else pd.DataFrame({"note": ["audit not run"]})).to_excel(xl, sheet_name="headline", index=False)
+print(f"storyboard alerts: {STORIES}")
+print(f"-> {SB_PATH} ({os.path.getsize(SB_PATH) / 1024:.0f} KB, opens in any browser) | storyboard_{COUNTRY}.xlsx")
