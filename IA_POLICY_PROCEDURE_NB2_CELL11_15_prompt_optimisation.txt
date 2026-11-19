@@ -1,0 +1,327 @@
+# ==============================================================================
+# NOTEBOOK 2 - CELLS 11-15: PROMPT OPTIMISATION FOR A SINGLE-CALL PRODUCTION RUN          [~$1 per run, gated]
+# ------------------------------------------------------------------------------
+# GOAL (management requirement): production makes ONE call per (alert, document). The separate judge is kept
+#   only as quality control on a SMALL SAMPLE. So the finder prompt itself must reject the false links the judge
+#   removed in the full run (thematic / wrong scope / unsupported) WITHOUT losing real impacts.
+# METHOD (scientific, pre-registered):
+#   labels     : the full run's judge verdicts (CONFIRMED / DISPUTED by error type / CORRECT_REJECTION /
+#                POSSIBLE_MISS). Judge labels are a PROXY - the winning prompt is confirmed on the SME pack.
+#   split      : by ALERT - half the alerts = DEV (tune here), half = TEST (touched ONCE at the end). No leakage.
+#   sets       : stratified per document type: confirmed links, disputed links (by error type), rejections
+#                (incl. the judge's possible misses).
+#   baseline   : the CURRENT prompt is re-run on DEV too -> measures run-to-run noise, so a difference is only
+#                believed if it is bigger than that noise.
+#   metrics    : weighted to the full-run population (so a balanced sample still estimates real-world numbers):
+#                PRECISION = share of predicted links that the judge confirmed;
+#                RETENTION = share of confirmed links still found (= recall of real impacts);
+#                REJECTED-BY-TYPE = share of thematic / wrong-scope / unsupported false links now rejected;
+#                NEW LINKS among rejections (possible misses recovered vs new false links).
+#                95% CI by bootstrap over alerts; paired difference vs the baseline.
+#   acceptance : (set BEFORE looking at TEST) precision +10 points or more vs V1 AND retention not more than
+#                5 points below V1 (lower end of the 95% CI of the difference >= -5).
+#                The earlier stricter procedure prompt (ontology v2) failed exactly this retention test.
+# CELLS: 11 build DEV / TEST + error analysis ($0) | 12 prompt variants | 13 run a variant on DEV (~$1)
+#        14 compare variants on DEV ($0) | 15 final TEST of the chosen variant + baseline (~$2) and verdict.
+# RUN in the SAME kernel as notebook 2, after CELL 9 (uses PAIRS, lab, prompts, ask, finalise ...).
+# Checkpointed like the rest (each variant x set has its own file). Interrupt-safe.
+# ==============================================================================
+
+
+# ====== CELL 11: DEV / TEST SETS + ERROR ANALYSIS ($0) ========================
+import os, re, json, math, random, asyncio
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+
+OPT_DIR = f"{RUN_DIR}/prompt_opt"
+os.makedirs(OPT_DIR, exist_ok=True)
+OPT_SEED, PER_STRATUM = 11, {"CONFIRMED": 120, "DISPUTED": 120, "CORRECT_REJECTION": 40}   # per doc type, per set
+for _need in ("PAIRS", "lab", "PROMPT_POLICY", "PROMPT_PROCEDURE", "FORMAT_DOC", "ask", "build_payload"):
+    assert _need in globals(), f"'{_need}' not found - run notebook 2 CELLs 0-9 in this kernel first"
+
+# ---- labels per pair (judge proxy) ----
+L = lab[lab.bucket.isin(["LINKED", "REJECTED_SAMPLE"])][["alert", "doc", "doc_type", "bucket", "audit_label",
+                                                          "audit_error_type", "link_score", "confidence_level",
+                                                          "impact_type"] + (["sample"] if "sample" in lab.columns else [])].copy()
+L["group"] = np.select(
+    [L.audit_label == "CONFIRMED", (L.audit_label == "DISPUTED") & (L.audit_error_type == "FALSE_LINK_THEMATIC"),
+     (L.audit_label == "DISPUTED") & (L.audit_error_type == "FALSE_LINK_WRONG_SCOPE"),
+     (L.audit_label == "DISPUTED") & (L.audit_error_type == "FALSE_LINK_UNSUPPORTED"), L.audit_label == "DISPUTED",
+     L.audit_label == "POSSIBLE_MISS", L.audit_label == "CORRECT_REJECTION"],
+    ["CONFIRMED", "DISPUTED_THEMATIC", "DISPUTED_SCOPE", "DISPUTED_UNSUPPORTED", "DISPUTED_OTHER",
+     "POSSIBLE_MISS", "CORRECT_REJECTION"], default="")
+L = L[L.group != ""]
+L["truth"] = L.group.isin(["CONFIRMED", "POSSIBLE_MISS"])               # judge says: real impact
+POP = L[L.bucket == "LINKED"].groupby(["doc_type", "group"]).size().to_dict()   # full-run LINKED counts by label
+# rejections: estimate the population from the RANDOM part of the rejected sample x all NOT_LINKED pairs
+for kind in ("policy", "procedure"):
+    n_rej = int(((PAIRS.DOC_TYPE == kind) & (PAIRS.final_decision != "LINKED")).sum())
+    rnd = L[(L.doc_type == kind) & (L.bucket == "REJECTED_SAMPLE") & (L.get("sample", "random") == "random")]
+    share = float((rnd.group == "POSSIBLE_MISS").mean()) if len(rnd) else 0.0
+    POP[(kind, "POSSIBLE_MISS")] = n_rej * share
+    POP[(kind, "CORRECT_REJECTION")] = n_rej * (1 - share)
+
+# ---- 1. error analysis on the full run ($0) ----
+LK = PAIRS[PAIRS.final_decision == "LINKED"].copy()
+LK["confirmed"] = LK.impact_label == "CONFIRMED"
+def _tab(by):
+    t = LK.groupby(["DOC_TYPE", by]).agg(links=("DOC_ID", "size"), confirmed_pct=("confirmed", lambda s: round(100 * s.mean(), 1)))
+    return t.reset_index()
+print("WHERE ARE THE FALSE LINKS? (confirmed % of LINKED, full run)")
+for by in ("link_score", "confidence_level", "impact_type", "section_grounded", "doc_scope"):
+    t = _tab(by)
+    print(f"\n by {by}:")
+    print(t.pivot(index=by, columns="DOC_TYPE", values=["links", "confirmed_pct"]).to_string())
+print("\n disputed error types:", LK[LK.impact_label == "DISPUTED"].audit_error_type.value_counts().to_dict())
+
+# what-if code rules on the CURRENT output (no new calls): precision / retention per rule
+rules = {
+    "current (score >= 5)": LK.link_score >= 5,
+    "score >= 6": LK.link_score >= 6,
+    "score >= 7": LK.link_score >= 7,
+    "score >= 8": LK.link_score >= 8,
+    "score >= 7, or 5-6 with confidence 5": (LK.link_score >= 7) | (LK.confidence_level >= 5),
+    "section_grounded only": LK.section_grounded.astype(str).str.lower().eq("true"),
+}
+rr = []
+for kind in ("policy", "procedure"):
+    k = LK[LK.DOC_TYPE == kind]; n_conf = int(k.confirmed.sum())
+    for name, m in rules.items():
+        kept = k[m.loc[k.index]]
+        rr.append(dict(doc_type=kind, rule=name, kept=len(kept), precision=round(100 * kept.confirmed.mean(), 1),
+                       retention=round(100 * kept.confirmed.sum() / max(n_conf, 1), 1)))
+RULES = pd.DataFrame(rr)
+print("\nWHAT-IF RULES on the current output (precision = confirmed share; retention = confirmed links kept)")
+print(RULES.to_string(index=False))
+
+# ---- 2. DEV / TEST split by alert, stratified samples ----
+alerts = sorted(PAIRS.RECORD_ID.unique())
+rng = np.random.default_rng(OPT_SEED)
+dev_alerts = set(rng.choice(alerts, size=len(alerts) // 2, replace=False))
+L["split"] = np.where(L.alert.isin(dev_alerts), "DEV", "TEST")
+
+def _sample(split):
+    parts = []
+    for kind in ("policy", "procedure"):
+        s = L[(L.split == split) & (L.doc_type == kind)]
+        parts.append(s[s.group == "CONFIRMED"].sample(min(PER_STRATUM["CONFIRMED"], (s.group == "CONFIRMED").sum()),
+                                                      random_state=OPT_SEED))
+        d = s[s.group.str.startswith("DISPUTED")]
+        n_d = min(PER_STRATUM["DISPUTED"], len(d))
+        alloc = (d.group.value_counts(normalize=True) * n_d).round().astype(int).clip(lower=1)   # every error type
+        parts += [d[d.group == g].sample(min(n, (d.group == g).sum()), random_state=OPT_SEED) for g, n in alloc.items()]
+        parts.append(s[s.group == "POSSIBLE_MISS"])                                                # all of them
+        cr = s[s.group == "CORRECT_REJECTION"]
+        parts.append(cr.sample(min(PER_STRATUM["CORRECT_REJECTION"], len(cr)), random_state=OPT_SEED))
+    return pd.concat(parts, ignore_index=True).assign(split=split)
+
+SETS = {sp: _sample(sp) for sp in ("DEV", "TEST")}
+for sp, d in SETS.items():
+    d.to_parquet(f"{OPT_DIR}/set_{sp.lower()}.parquet", index=False)
+    print(f"\n{sp}: {len(d)} pairs, {d.alert.nunique()} alerts | "
+          f"{d.groupby(['doc_type', 'group']).size().unstack(fill_value=0).to_dict('index')}")
+print(f"\n-> sets saved in {OPT_DIR}. Cost of one prompt run on DEV: ~{len(SETS['DEV'])} calls (~$1).")
+
+
+
+# ====== CELL 12: PROMPT VARIANTS (single call; house schema + 3 check fields at the end) =====
+# V1 = the current prompt (baseline). V2 = V1 + a SELF-CHECK block aimed at the three judge error types +
+# three check fields the code uses to decide. House fields stay first and in the same order.
+CHECKS_V2 = """
+SELF-CHECK BEFORE YOU DECIDE (single review - there is no second reviewer, so apply these yourself):
+Write "reasoning" as: perimeter + closest section (S-id) | CHECK 1 | CHECK 2 | CHECK 3 | conclusion.
+CHECK 1 - SPECIFIC REQUIREMENT, NOT A THEME. Name the sentence of the {label} that the alert would make the owner
+  change or review, and say what changes (deadline, scope, record, disclosure, approval, prohibition ...).
+  Same topic is not enough ("both are about complaints / AML / customers"). If you cannot name that sentence:
+  requirement_check = THEMATIC_ONLY and decision = NOT_LINKED.
+CHECK 2 - SAME PERIMETER. Compare regime / regulator, entity type (bank, broker-dealer, insurer, adviser ...),
+  product, customer segment and business. If the {label}'s stated perimeter excludes what the alert regulates:
+  scope_check = MISMATCH and decision = NOT_LINKED. If the {label} says nothing that excludes it: MATCH.
+CHECK 3 - EVIDENCE STATES THE REQUIREMENT. evidence_from_{label} must be the sentence that governs the changed
+  requirement, taken from a linked section - not a purpose statement or a generic "comply with laws" line
+  (a purpose / scope sentence is acceptable only when it clearly covers the alert's activity).
+  evidence_check = STATES_REQUIREMENT | CONTEXT_ONLY | NONE.
+RECALL GUARD: if a section governs the SAME activity for the SAME population, it is LINKED even when the alert
+  changes a detail the section does not yet mention (that is exactly a CHANGE_REQUIRED impact).
+"""
+EXTRA_FIELDS_V2 = (',\n"requirement_check": "SPECIFIC | THEMATIC_ONLY | NONE",'
+                   '\n"scope_check": "MATCH | MISMATCH | UNCLEAR",'
+                   '\n"evidence_check": "STATES_REQUIREMENT | CONTEXT_ONLY | NONE"\n}')
+
+def _fmt(kind, extra=False):
+    f = FORMAT_DOC.replace("{id_field}", ID_FIELD[kind]).replace("{evidence_field}", f"evidence_from_{kind}").rstrip()
+    if extra:
+        assert f.endswith("}")
+        f = f[:-1].rstrip() + EXTRA_FIELDS_V2          # house fields unchanged, 3 check fields appended
+    return f
+
+def _with_checks(base, kind):
+    cut = base.index("INSTRUCTIONS:")
+    return base[:cut] + CHECKS_V2.format(label=kind) + "\n" + base[cut:]
+
+VARIANTS = {
+    "V1": {k: PROMPTS[k] for k in ("policy", "procedure")},
+    "V2": {k: (_with_checks(b, k) + _fmt(k, extra=True)).replace("United States", COUNTRY_NAME)
+           for k, b in (("policy", PROMPT_POLICY), ("procedure", PROMPT_PROCEDURE))},
+}
+# code decision rule per variant (on top of: model LINKED + score >= 5 + both quotes verified)
+def rule_V1(r):
+    return True
+def rule_V2(r):
+    return (str(r.get("requirement_check", "")).upper().startswith("SPECIFIC")
+            and not str(r.get("scope_check", "")).upper().startswith("MISMATCH"))
+RULE = {"V1": rule_V1, "V2": rule_V2}
+for v, p in VARIANTS.items():
+    print(v, {k: len(t) for k, t in p.items()}, "chars")
+assert '"requirement_check"' in VARIANTS["V2"]["policy"] and VARIANTS["V2"]["policy"].rstrip().endswith("}")
+print("\n--- V2 format block (policy) ---\n" + VARIANTS["V2"]["policy"][VARIANTS["V2"]["policy"].index("FORMAT REQUIREMENTS"):])
+
+
+
+# ====== CELL 13: RUN VARIANTS ON DEV (checkpointed, interrupt-safe, ~$1 per variant) =====
+RUN_ON_DEV = ["V1", "V2"]             # V1 = noise baseline; add new variants here after each iteration
+
+async def run_variant(variant, split):
+    global CURRENT_STAGE
+    CURRENT_STAGE = f"opt_{variant}_{split}"
+    S = pd.read_parquet(f"{OPT_DIR}/set_{split.lower()}.parquet")
+    ckpt = f"{OPT_DIR}/run_{variant}_{split}.parquet"
+    rows = pd.read_parquet(ckpt).to_dict("records") if os.path.exists(ckpt) else []
+    rows = [r for r in rows if r.get("model_decision") != "ERROR"]
+    done = {(r["alert"], r["doc"]) for r in rows}
+    todo = [r for r in S.itertuples() if (r.alert, r.doc) not in done]
+    prog = Progress(CURRENT_STAGE, len(S), len(S) - len(todo), "documents read")
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def one(row):
+        async with sem:
+            a = await ask(VARIANTS[variant][row.doc_type], build_payload(row.alert, row.doc))
+        dec = str(a.get("decision", "ERROR")).upper().strip().replace(" ", "_") if a else "ERROR"
+        return {"alert": row.alert, "doc": row.doc, "doc_type": row.doc_type, "doc_scope": DOC_SCOPE.get(row.doc),
+                "search_rank": None,
+                "model_decision": dec if dec in ("LINKED", "NOT_LINKED", "INSUFFICIENT_EVIDENCE") else "ERROR",
+                "link_score": a.get("link_score"), "confidence_level": a.get("confidence_level"),
+                "linked_units": "; ".join(section_ids(row.doc, a.get("linked_sections"))),
+                "impact_type": a.get("impact_type"), "change_needed": a.get("change_needed"),
+                "evidence_from_alert": a.get("evidence_from_alert"),
+                "evidence_from_target": a.get(f"evidence_from_{row.doc_type}"), "reasoning": a.get("reasoning"),
+                "requirement_check": a.get("requirement_check"), "scope_check": a.get("scope_check"),
+                "evidence_check": a.get("evidence_check")}
+
+    tasks = [asyncio.create_task(one(r)) for r in todo]
+    try:
+        for i, fut in enumerate(tqdm(asyncio.as_completed(tasks), total=len(tasks), desc=CURRENT_STAGE), 1):
+            rows.append(await fut)
+            if i % 100 == 0:
+                save_safe(pd.DataFrame(rows), ckpt); prog.update(1, force=True, note="checkpoint saved")
+            else:
+                prog.update(1)
+    except BaseException:
+        cancel_pending(tasks, "document reads"); save_safe(pd.DataFrame(rows), ckpt); raise
+    save_safe(pd.DataFrame(rows), ckpt)
+    out = pd.DataFrame(rows)
+    for c in out.columns:
+        out[c] = out[c].map(lambda v: None if v is None or str(v) in ("None", "nan") else v)
+    for c in ("link_score", "confidence_level"):
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out = finalise(out)
+    out["pred_linked"] = (out.final_decision == "LINKED") & out.apply(lambda r: RULE[variant](r), axis=1)
+    out.to_parquet(f"{OPT_DIR}/result_{variant}_{split}.parquet", index=False)
+    cost_report(CURRENT_STAGE)
+    print(f"[{variant} {split}] predicted LINKED {int(out.pred_linked.sum())} of {len(out)} | "
+          f"ERROR {int((out.model_decision == 'ERROR').sum())} (re-run this cell to retry them)")
+    return out
+
+for _v in RUN_ON_DEV:
+    if not os.path.exists(f"{OPT_DIR}/result_{_v}_DEV.parquet"):
+        await run_variant(_v, "DEV")
+    else:
+        print(f"[{_v} DEV] already done - delete {OPT_DIR}/result_{_v}_DEV.parquet to re-run")
+
+
+
+# ====== CELL 14: COMPARE VARIANTS ON A SET ($0) ===============================
+def evaluate(variant, split, n_boot=1000, base=None):
+    S = pd.read_parquet(f"{OPT_DIR}/set_{split.lower()}.parquet")
+    R = pd.read_parquet(f"{OPT_DIR}/result_{variant}_{split}.parquet")[["alert", "doc", "pred_linked"]]
+    D = S.merge(R, on=["alert", "doc"], how="inner")
+    if base is not None:
+        B = pd.read_parquet(f"{OPT_DIR}/result_{base}_{split}.parquet")[["alert", "doc", "pred_linked"]] \
+              .rename(columns={"pred_linked": "base_linked"})
+        D = D.merge(B, on=["alert", "doc"], how="inner")
+    rows = []
+    for kind in ("policy", "procedure"):
+        d = D[D.doc_type == kind]
+        w = d.group.map(lambda g: POP.get((kind, g), 0)) / d.group.map(d.group.value_counts())  # population weight
+        def stats(dd, ww, col="pred_linked"):
+            lk = dd[col].astype(bool); tr = dd.truth.astype(bool)
+            tp, fp = float((ww * (lk & tr)).sum()), float((ww * (lk & ~tr)).sum())
+            pos = float((ww * tr).sum())
+            return 100 * tp / max(tp + fp, 1e-9), 100 * tp / max(pos, 1e-9)
+        p, r = stats(d, w)
+        boots, al = [], d.alert.unique()
+        g = np.random.default_rng(1)
+        for _ in range(n_boot):
+            pick = g.choice(al, size=len(al), replace=True)
+            idx = np.concatenate([np.where(d.alert.values == a)[0] for a in pick])
+            bp, br = stats(d.iloc[idx], w.iloc[idx])
+            if base is not None:
+                qp, qr = stats(d.iloc[idx], w.iloc[idx], "base_linked")
+                boots.append((bp - qp, br - qr))
+            else:
+                boots.append((bp, br))
+        boots = np.array(boots)
+        row = dict(doc_type=kind, variant=variant, split=split, pairs=len(d), precision=round(p, 1), retention=round(r, 1))
+        if base is not None:
+            bp, br = stats(d, w, "base_linked")
+            row.update(base=base, base_precision=round(bp, 1), base_retention=round(br, 1),
+                       d_precision=round(p - bp, 1), d_precision_ci=f"{np.percentile(boots[:, 0], 2.5):.1f} .. {np.percentile(boots[:, 0], 97.5):.1f}",
+                       d_retention=round(r - br, 1), d_retention_ci=f"{np.percentile(boots[:, 1], 2.5):.1f} .. {np.percentile(boots[:, 1], 97.5):.1f}")
+        else:
+            row.update(precision_ci=f"{np.percentile(boots[:, 0], 2.5):.1f} .. {np.percentile(boots[:, 0], 97.5):.1f}",
+                       retention_ci=f"{np.percentile(boots[:, 1], 2.5):.1f} .. {np.percentile(boots[:, 1], 97.5):.1f}")
+        for grp in ("DISPUTED_THEMATIC", "DISPUTED_SCOPE", "DISPUTED_UNSUPPORTED"):
+            x = d[d.group == grp]
+            row[f"rejects_{grp.split('_')[1].lower()}_%"] = round(100 * (~x.pred_linked.astype(bool)).mean(), 1) if len(x) else None
+        x = d[d.group == "POSSIBLE_MISS"]; row["misses_recovered"] = f"{int(x.pred_linked.sum())}/{len(x)}"
+        x = d[d.group == "CORRECT_REJECTION"]; row["new_false_links"] = f"{int(x.pred_linked.sum())}/{len(x)}"
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+done_runs = sorted({tuple(f[7:-8].split("_")) for f in os.listdir(OPT_DIR) if f.startswith("result_")})
+print("runs available:", done_runs)
+tables = []
+for v, sp in done_runs:
+    if sp != "DEV":
+        continue
+    base = "V1" if v != "V1" and ("V1", "DEV") in done_runs else None
+    tables.append(evaluate(v, sp, base=base))
+CMP = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+with pd.option_context("display.width", 260, "display.max_columns", 40):
+    print(CMP.to_string(index=False))
+print("\nRead: V1 on DEV vs the full-run labels = run-to-run noise (V1 retention below 100% is noise, not error).\n"
+      "A variant is worth a TEST run if d_precision CI is clearly above 0 and d_retention CI stays above about -5.")
+CMP.to_excel(f"{OPT_DIR}/compare_dev.xlsx", index=False)
+
+
+
+# ====== CELL 15: FINAL TEST (once) + VERDICT (~$2) ============================
+CHOSEN = "V2"                         # the variant that passed on DEV
+for v in ("V1", CHOSEN):
+    if not os.path.exists(f"{OPT_DIR}/result_{v}_TEST.parquet"):
+        await run_variant(v, "TEST")
+T = evaluate(CHOSEN, "TEST", base="V1")
+with pd.option_context("display.width", 260, "display.max_columns", 40):
+    print(T.to_string(index=False))
+ok = []
+for r in T.itertuples():
+    lo_ret = float(str(r.d_retention_ci).split("..")[0])
+    passed = (r.d_precision >= 10) and (lo_ret >= -5)
+    ok.append(passed)
+    print(f"{r.doc_type:9s}: precision {r.base_precision} -> {r.precision} ({r.d_precision:+}) | retention "
+          f"{r.base_retention} -> {r.retention} ({r.d_retention:+}, CI {r.d_retention_ci}) -> "
+          f"{'PASS' if passed else 'FAIL'}")
+print("\nVERDICT:", f"adopt {CHOSEN} for single-call production (confirm on the SME pack)" if all(ok)
+      else "keep iterating on DEV (do not re-tune on TEST)")
+T.to_excel(f"{OPT_DIR}/final_test.xlsx", index=False)
