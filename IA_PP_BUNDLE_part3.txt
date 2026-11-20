@@ -1,0 +1,1552 @@
+# IA policy / procedure package - text bundle part 3 of 4 (RCAI&A)
+# Unpack: put all parts in one folder and run tools/unpack_bundle.py or the unpack cell in README section 6.
+# Do not edit by hand: every file carries a sha256 check.
+#### FILE: ia_policy_procedure/ia_pp/pipeline.py | sha256=6f0719b834238ccf23a67bc15ad6e7453b14cc2083b629b8c9a3dd4797f6ae93 ####
+"""Stage orchestration.
+
+    validate    $0  environment, config, prompts, schemas, exceptions, sources, output folder, gateway check
+    prepare     $0  alerts, GPPS sections / sub-sections, document scope (global / local)
+    shortlist   ~$1 procedure search (query plans + embeddings + fusion), top-K per alert
+    test_gate   ~$0.03  10 pairs before the first full run: errors, quotes, projected cost
+    policies        every policy x every alert  (checkpointed, resumable)
+    procedures      shortlisted procedures x alert (checkpointed, resumable)
+    results     $0  rules, bands and result files
+
+validate and prepare always run (they cost nothing and every later stage needs them).
+"""
+import os
+import json
+import time
+import random
+import datetime
+
+import pandas as pd
+
+from . import __version__
+from .errors import IAError, EXIT_OK, EXIT_PARTIAL, exit_code_for
+from .io_utils import ensure_dir, read_table, write_parquet, write_json
+from .prompts import PromptStore
+from .gateway import Usage, make_gateway
+from .sources import build_context
+from .scope import compute_scope
+from .shortlist import build_procedure_shortlist
+from .runner import run_pairs, Budget
+from .rules import finalise, apply_impact_rules
+from .outputs import write_results
+
+STAGES = ["validate", "prepare", "shortlist", "test_gate", "policies", "procedures", "results"]
+RUNNABLE = ["shortlist", "test_gate", "policies", "procedures", "results"]
+
+
+def check_environment(s):
+    need = ["pandas", "numpy", "pyarrow", "sklearn", "yaml"]
+    if s.gateway["mode"] == "live":
+        need += ["openai", "httpx", "py_group_ai_tools"]
+    missing = []
+    for mod in need:
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(mod)
+    if missing:
+        raise IAError("E-ENV-001", ", ".join(missing))
+
+
+def _ledger(s):
+    path = os.path.join(s.output_dir, "spend_ledger.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return path, json.load(f)
+    except Exception:
+        return path, {"total_usd": 0.0, "sessions": []}
+
+
+def _pairs_frame(ctx, alerts, docs, kind, rank=None):
+    rows = [dict(alert=a, doc=d, doc_type=kind, search_rank=float("nan")) for a in alerts for d in docs]
+    df = pd.DataFrame(rows, columns=["alert", "doc", "doc_type", "search_rank"])
+    df["doc_scope"] = df.doc.map(ctx.doc_scope).fillna("GLOBAL")
+    return df
+
+
+async def run_pipeline(s, log, stages, stop):
+    """Returns the process exit code. Never raises IAError (they are logged and mapped to an exit code)."""
+    t0 = time.time()
+    usage = Usage(s.model["price_per_million_tokens"]["input"], s.model["price_per_million_tokens"]["output"])
+    summary = {"run_id": s.run_id, "version": __version__, "started": datetime.datetime.now().isoformat(timespec="seconds"),
+               "stages_requested": stages, "stages_done": [], "gateway_mode": s.gateway["mode"],
+               "output_dir": s.output_dir, "log_dir": log.dir}
+    ledger_path, ledger = None, None
+    exit_code = EXIT_OK
+    try:
+        # ---------------------------------------------------------------- validate
+        log.stage = "validate"
+        log.info(f"IA policy / procedure pipeline v{__version__} | run {s.run_id} | gateway {s.gateway['mode']} | "
+                 f"model {s.model['chat_model']} | stages {stages}")
+        log.write_yaml("config_used.yaml", s.masked())
+        check_environment(s)
+        ensure_dir(s.output_dir)
+        ledger_path, ledger = _ledger(s)
+        prompts = PromptStore(s)
+        log.info(f"  prompts and schemas OK: {len(prompts.text)} prompts")
+        gw = make_gateway(s, log, usage)
+        if s.gateway["mode"] == "live" and any(x in stages for x in ("gateway_check", "shortlist", "test_gate", "policies", "procedures")):
+            gw.stage = log.stage = "gateway_check"
+            r = await gw.chat("Reply with JSON only.", {"task": "return {\"ok\": true}"}, ref={"doc": "gateway_check"})
+            if not r.ok:
+                raise IAError(r.code if r.code == "E-GW-008" else "E-GW-011", f"{r.code}: {r.detail}")
+            log.info("  gateway check OK")
+        summary["stages_done"].append("validate")
+
+        # ---------------------------------------------------------------- prepare
+        log.stage = "prepare"
+        ctx = build_context(s, log)
+        ctx.atext_cache = ctx.atext
+        compute_scope(s, ctx, log)
+        alerts = list(ctx.alerts.alert)
+        summary["stages_done"].append("prepare")
+        summary["n_alerts"] = len(alerts)
+        budget = Budget(s.run["max_cost_usd"], usage, ledger.get("total_usd", 0.0))
+
+        pol_ckpt = os.path.join(s.output_dir, "policy_ckpt.jsonl")
+        proc_ckpt = os.path.join(s.output_dir, "procedure_ckpt.jsonl")
+        pol_cand = _pairs_frame(ctx, alerts, ctx.docs_of("policy"), "policy")
+
+        # ---------------------------------------------------------------- shortlist
+        proc_cand, deferred = None, None                    # deferred: a stage error that must not stop policies
+        if any(x in stages for x in ("shortlist", "test_gate", "procedures")):
+            log.stage = "shortlist"
+            try:
+                proc_cand = await build_procedure_shortlist(s, ctx, gw, prompts, log, stop)
+                proc_cand["doc_scope"] = proc_cand.doc.map(ctx.doc_scope).fillna("GLOBAL")
+                summary["stages_done"].append("shortlist")
+            except IAError as e:
+                if e.code in ("E-RUN-002", "E-RUN-001", "E-GW-008"):
+                    raise
+                log.event(e.code, e.detail + " | procedures are skipped in this session; policies continue")
+                deferred = e
+                stages = [x for x in stages if x != "procedures"]
+        summary["pairs"] = {"policy": len(pol_cand), "procedure": None if proc_cand is None else len(proc_cand)}
+        log.info(f"  pairs: policies {len(pol_cand):,} (all) | procedures "
+                 f"{'-' if proc_cand is None else f'{len(proc_cand):,}'} (top-{s.search['proc_top_k']})")
+
+        # ---------------------------------------------------------------- no-truncation proof + cost gate
+        reading = [c for c, st in ((pol_cand, "policies"), (proc_cand, "procedures")) if st in stages and c is not None]
+        if reading:
+            cand = pd.concat(reading, ignore_index=True)
+            short = [d for d in cand.doc.unique() if len(ctx.doc_text[d]) < ctx.doc_src_chars[d]]
+            if short:
+                raise IAError("E-RUN-006", f"{len(short)} document(s), e.g. {short[:5]}")
+            done = set()
+            for p in (pol_ckpt, proc_ckpt):
+                if os.path.exists(p):
+                    from .io_utils import JsonlCheckpoint
+                    done |= {(r["alert"], r["doc"]) for r in JsonlCheckpoint(p).load()}
+            left = cand[[(a, d) not in done for a, d in zip(cand.alert, cand.doc)]]
+            chars = sum(len(ctx.doc_text[d]) + len(ctx.atext_cache[a]) for a, d in zip(left.alert, left.doc)) \
+                + len(left) * (len(prompts.get("policy:BUSINESS")) + 600)
+            est = float(chars / 4 * usage.p_in + len(left) * 450 * usage.p_out)
+            log.info(f"COST GATE | pairs to read {len(left):,} | estimate ~${est:.2f} | already spent in this run "
+                     f"${budget.spent():.2f} | cap ${budget.cap:.2f} | no document truncated")
+            if budget.spent() + est > budget.cap:
+                raise IAError("E-RUN-001", f"estimate ${est:.2f} + spent ${budget.spent():.2f} > cap ${budget.cap:.2f}")
+
+        # ---------------------------------------------------------------- test gate
+        if "test_gate" in stages and s.run["test_gate"] and not (os.path.exists(pol_ckpt) or os.path.exists(proc_ckpt)):
+            log.stage = "test_gate"
+            rng = random.Random(int(s.model["seed"]))
+            a0 = alerts[0]
+            pol0 = [d for d in ctx.docs_of("policy") if d not in ctx.framework_docs]
+            fw0 = [d for d in ctx.framework_docs if d in ctx.doc_text and d not in ctx.skip_docs][:1]
+            test = pd.concat([_pairs_frame(ctx, [a0], rng.sample(pol0, min(4, len(pol0))) + fw0, "policy")]
+                             + ([proc_cand[proc_cand.alert == a0].head(5)] if proc_cand is not None else []),
+                             ignore_index=True)
+            c_before = usage.cost()
+            res = finalise(await run_pairs(s, ctx, gw, prompts, log, test, "test_gate", None, stop, budget), s, ctx)
+            n_err = int((res.model_decision == "ERROR").sum())
+            ml = res[res.model_decision == "LINKED"]
+            grounded = float((ml.grounding_flag == "GROUNDED").mean()) if len(ml) else 1.0
+            per_call = (usage.cost() - c_before) / max(len(res), 1)
+            total_pairs = len(pol_cand) + (len(proc_cand) if proc_cand is not None else 0)
+            proj = per_call * total_pairs * 1.05
+            log.info("TEST GATE\n" + res[["alert", "doc", "document_role", "doc_scope", "model_decision", "final_decision",
+                                          "link_score", "grounding_flag", "framework_change", "error_code"]]
+                     .to_string(index=False, max_colwidth=30))
+            log.info(f"TEST GATE | pairs {len(res)} | ERROR {n_err} | model-LINKED {len(ml)} | grounded {grounded:.0%} | "
+                     f"cost per call ${per_call:.4f} -> projected full run ~${proj:.2f} (cap ${budget.cap:.2f})")
+            if n_err > 1 or grounded < 0.7 or (s.gateway["mode"] == "live" and proj > budget.cap):
+                raise IAError("E-RUN-003", f"ERROR {n_err} (max 1) | grounded {grounded:.0%} (min 70%) | "
+                                           f"projected ${proj:.2f} (cap ${budget.cap:.2f})")
+            summary["stages_done"].append("test_gate")
+        elif "test_gate" in stages:
+            log.info("  test gate skipped (disabled, or the full run has already started)")
+
+        # ---------------------------------------------------------------- policies / procedures
+        for stage, cand, ckpt, out_name in (("policies", pol_cand, pol_ckpt, "policy_pairs.parquet"),
+                                            ("procedures", proc_cand, proc_ckpt, "procedure_pairs.parquet")):
+            if stage not in stages:
+                continue
+            res = await run_pairs(s, ctx, gw, prompts, log, cand, stage, ckpt, stop, budget)
+            res = finalise(res, s, ctx)
+            write_parquet(res, os.path.join(s.output_dir, out_name))
+            n_err = int((res.final_decision == "ERROR").sum())
+            log.info(f"  {stage}: {len(res):,} pairs | {res.final_decision.value_counts().to_dict()}")
+            if n_err:
+                codes = res[res.final_decision == "ERROR"].error_code.value_counts().to_dict()
+                log.event("W-RUN-001", f"{stage}: {n_err:,} pairs without answer {codes} - re-run to retry them")
+                exit_code = EXIT_PARTIAL
+            if stage == "procedures" and len(res):
+                lk = res[res.final_decision == "LINKED"]
+                k = s.search["proc_top_k"]
+                log.info(f"  LINKED procedures by search rank: top-{k // 4} {int((lk.search_rank <= k // 4).sum())} | "
+                         f"last quarter {int((lk.search_rank > 3 * k // 4).sum())} (many in the last quarter = top-K "
+                         f"may be too tight)")
+            summary["stages_done"].append(stage)
+
+        # ---------------------------------------------------------------- results
+        if "results" in stages:
+            log.stage = "results"
+            frames = []
+            for name in ("policy_pairs.parquet", "procedure_pairs.parquet"):
+                p = os.path.join(s.output_dir, name)
+                if os.path.exists(p):
+                    df = read_table(p)
+                    df["alert"] = df["alert"].astype(str)
+                    frames.append(df[df.alert.isin(alerts)])
+                else:
+                    log.info(f"  {name} not found - results without it")
+            if not frames:
+                raise IAError("E-OUT-002", "neither policy_pairs.parquet nor procedure_pairs.parquet exists")
+            res = pd.concat(frames, ignore_index=True)
+            for c in ("link_score", "confidence_level", "search_rank"):
+                res[c] = pd.to_numeric(res[c], errors="coerce")
+            res["section_grounded"] = res["section_grounded"].astype(str).eq("True")
+            res = apply_impact_rules(res, s)
+            write_results(s, ctx, res, prompts, log, usage.report())
+            if int((res.final_decision == "ERROR").sum()):
+                exit_code = EXIT_PARTIAL
+            summary["results"] = res.groupby(["doc_type", "impact_status"]).size().unstack(fill_value=0).to_dict("index")
+            summary["stages_done"].append("results")
+            log.info(f"  results written to {s.output_dir}")
+        if deferred is not None:
+            exit_code = max(exit_code, exit_code_for(deferred.code))
+            summary["stopped_by"] = {"code": deferred.code, "detail": deferred.detail, "note": "procedures skipped"}
+    except IAError as e:
+        log.event(e.code, e.detail)
+        exit_code = exit_code_for(e.code)
+        summary["stopped_by"] = {"code": e.code, "detail": e.detail}
+    except KeyboardInterrupt:
+        log.event("E-RUN-002", "interrupted - progress saved")
+        exit_code = exit_code_for("E-RUN-002")
+        summary["stopped_by"] = {"code": "E-RUN-002"}
+    except Exception as e:                                      # last line of defence: classify, log, exit cleanly
+        log.exception("E-RUN-005", e)
+        exit_code = exit_code_for("E-RUN-005")
+        summary["stopped_by"] = {"code": "E-RUN-005", "detail": f"{type(e).__name__}: {e}"}
+    finally:
+        session_cost = usage.cost()
+        if ledger_path and session_cost > 0:
+            try:
+                ledger["total_usd"] = round(float(ledger.get("total_usd", 0.0)) + session_cost, 4)
+                ledger.setdefault("sessions", []).append({"ended": datetime.datetime.now().isoformat(timespec="seconds"),
+                                                          "cost_usd": round(session_cost, 4), "log_dir": log.dir})
+                write_json(ledger, ledger_path)
+            except Exception as e:
+                log.info(f"could not update spend ledger: {e}")
+        summary.update(ended=datetime.datetime.now().isoformat(timespec="seconds"),
+                       duration_min=round((time.time() - t0) / 60, 1), usage=usage.report(),
+                       error_codes=dict(log.codes), exit_code=exit_code)
+        log.write_json("run_summary.json", summary)
+        log.info(f"EXIT {exit_code} | {summary['duration_min']} min | session cost ${session_cost:.2f} | "
+                 f"codes {dict(log.codes) or 'none'} | logs {log.dir}")
+    return exit_code
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/prompts.py | sha256=848a26d17cd3dc5f77b8cd2790ce27e2b3fe464c0767a1949966057bcf4652f4 ####
+"""Prompts (prompts/*.md, one file per prompt) and response schemas (schemas/*.schema.json, one per prompt).
+
+A prompt file is sent to the model VERBATIM as the system message, after one substitution: {{COUNTRY_NAME}}.
+A schema file is the JSON Schema of that prompt's answer. Fields in 'required' must be valid (else the answer is
+retried, E-LLM-003); any other invalid field is logged (W-LLM-001) and set to null, the answer is kept.
+"""
+import os
+import re
+import json
+
+from .errors import IAError
+
+PROMPTS = {                       # key -> (prompt file, schema file)
+    "query_plan": ("query_plan.md", "query_plan.schema.json"),
+    "policy:BUSINESS": ("policy_business.md", "policy_business.schema.json"),
+    "policy:FRAMEWORK": ("policy_framework.md", "policy_framework.schema.json"),
+    "procedure:BUSINESS": ("procedure_business.md", "procedure_business.schema.json"),
+    "procedure:FRAMEWORK": ("procedure_framework.md", "procedure_framework.schema.json"),
+}
+PLACEHOLDERS = {"COUNTRY_NAME"}
+_LEFTOVER = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+
+
+class PromptStore:
+    def __init__(self, s):
+        pdir, sdir = s.path(s.paths["prompts_dir"]), s.path(s.paths["schemas_dir"])
+        values = {"COUNTRY_NAME": str(s.country["name"])}
+        self.text, self.schema, self.files = {}, {}, {}
+        for key, (pf, sf) in PROMPTS.items():
+            ppath, spath = os.path.join(pdir, pf), os.path.join(sdir, sf)
+            try:
+                with open(ppath, encoding="utf-8") as f:
+                    raw = f.read()
+            except OSError as e:
+                raise IAError("E-PRM-001", f"{ppath}: {e}")
+            if not raw.strip():
+                raise IAError("E-PRM-001", f"{ppath} is empty")
+            for name in set(_LEFTOVER.findall(raw)) - PLACEHOLDERS:
+                raise IAError("E-PRM-002", f"{ppath}: {{{{{name}}}}} is not a supported placeholder")
+            for name, v in values.items():
+                raw = re.sub(r"\{\{\s*" + name + r"\s*\}\}", v, raw)
+            if _LEFTOVER.search(raw):
+                raise IAError("E-PRM-002", f"{ppath}: unresolved placeholder")
+            try:
+                with open(spath, encoding="utf-8") as f:
+                    sch = json.load(f)
+                assert isinstance(sch.get("properties"), dict)
+            except Exception as e:
+                raise IAError("E-SCH-001", f"{spath}: {type(e).__name__}: {e}")
+            self.text[key], self.schema[key], self.files[key] = raw, sch, (ppath, spath)
+
+    def get(self, key):
+        return self.text[key]
+
+    def validate(self, key, answer):
+        """-> (clean answer, error or None, [warnings]). Lenient coercion: '8' -> 8, 'linked' -> 'LINKED'."""
+        sch = self.schema[key]
+        if not isinstance(answer, dict) or not answer:
+            return None, "answer is empty or not a JSON object", []
+        out, warns = dict(answer), []
+        required = set(sch.get("required", []))
+        for name, spec in sch["properties"].items():
+            if name not in out or out[name] is None:
+                if name in required:
+                    return None, f"required field '{name}' missing", warns
+                continue
+            ok, value = _coerce(out[name], spec)
+            if ok:
+                out[name] = value
+            elif name in required:
+                return None, f"required field '{name}' invalid: {str(out[name])[:80]!r}", warns
+            else:
+                warns.append(f"{name}={str(out[name])[:60]!r}")
+                out[name] = None
+        return out, None, warns
+
+
+def _coerce(v, spec):
+    types = spec.get("type")
+    types = types if isinstance(types, list) else [types]
+    if v is None:
+        return ("null" in types), None
+    if "enum" in spec:
+        t = str(v).upper().strip().replace(" ", "_")
+        t = next((e for e in spec["enum"] if t == e or t.startswith(e)), None)
+        return (t is not None), t
+    if "integer" in types:
+        try:
+            n = int(round(float(str(v).strip())))
+        except (TypeError, ValueError):
+            return False, None
+        lo, hi = spec.get("minimum"), spec.get("maximum")
+        if (lo is not None and n < lo) or (hi is not None and n > hi):
+            return False, None
+        return True, n
+    if "array" in types:
+        if isinstance(v, list):
+            return True, [str(i).strip() for i in v if i is not None and str(i).strip()]
+        if isinstance(v, str):
+            return True, [x.strip() for x in re.split(r"[;\n]", v) if x.strip()]
+        return False, None
+    if "string" in types:
+        return True, str(v)
+    return True, v
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/rules.py | sha256=e78796a038628e1f7d3db1e342b1ba1c8ce0521c1c33884e31542b6cd5b56fea ####
+"""Decision rules applied by code after the model call (identical to the validated notebook).
+
+1. LINKED        = model LINKED + link_score >= rules.link_threshold + BOTH verbatim quotes found in the texts.
+2. JURISDICTION  = a link to another country's LOCAL document -> SCOPE_REVIEW (never IMPACTED).
+3. FRAMEWORK     = a framework / process document (exceptions/framework_documents.csv) also needs framework_change=YES.
+4. BANDS         = IMPACTED (link_score >= rules.headline_min_score) / POSSIBLE_IMPACT (below) / NOT_IMPACTED.
+"""
+import re
+
+import numpy as np
+import pandas as pd
+
+
+def clean_words(s):
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+
+def quote_found(quote, text):
+    """Verbatim (case / punctuation-insensitive); long quotes may match on their first or last 8 words."""
+    q = clean_words(quote)
+    if len(q) < 12 or q in ("null", "none"):
+        return False
+    t = clean_words(text)
+    if q in t:
+        return True
+    w = q.split()
+    return len(w) >= 6 and (" ".join(w[:8]) in t or " ".join(w[-8:]) in t)
+
+
+def finalise(df, s, ctx):
+    """Adds grounding_flag, section_grounded, decision_prob, final_decision (rule 1)."""
+    o = df.copy()
+    for c in ("link_score", "confidence_level", "search_rank"):
+        if c in o.columns:
+            o[c] = pd.to_numeric(o[c], errors="coerce")
+    for c in ("evidence_from_alert", "evidence_from_target", "linked_units", "framework_change", "error_code",
+              "error_detail", "impact_type", "change_needed", "reasoning"):
+        if c not in o.columns:
+            o[c] = None
+    atext = ctx.atext_cache
+    a_ok = np.array([quote_found(q, atext.get(a, "")) for q, a in zip(o["evidence_from_alert"], o["alert"])], dtype=bool)
+    t_ok = np.array([quote_found(q, ctx.doc_text.get(d, "")) for q, d in zip(o["evidence_from_target"], o["doc"])], dtype=bool)
+    s_ok = np.array([bool(u) and quote_found(q, " ".join(ctx.unit_info[x]["text"] for x in str(u).split("; ")
+                                                         if x in ctx.unit_info))
+                     for q, u in zip(o["evidence_from_target"], o["linked_units"].fillna(""))], dtype=bool)
+    o["grounding_flag"] = np.select([a_ok & t_ok, a_ok | t_ok], ["GROUNDED", "PARTIAL"], default="UNGROUNDED")
+    o["section_grounded"] = s_ok
+    o["decision_prob"] = (o["link_score"] / 10).round(2)
+    lk = (o["model_decision"] == "LINKED") & (o["link_score"].fillna(0) >= s.rules["link_threshold"])
+    o["final_decision"] = np.select(
+        [o["model_decision"] == "ERROR", lk & (o["grounding_flag"] == "GROUNDED"), lk,
+         o["model_decision"] == "INSUFFICIENT_EVIDENCE"],
+        ["ERROR", "LINKED", "INSUFFICIENT_EVIDENCE", "INSUFFICIENT_EVIDENCE"], default="NOT_LINKED")
+    return o
+
+
+def apply_impact_rules(res, s):
+    """Adds impact_status and confidence_tier (rules 2-4)."""
+    r = res.copy()
+    linked = (r.final_decision == "LINKED") & ((r.document_role != "FRAMEWORK") |
+                                                r.framework_change.astype(str).str.upper().str.startswith("YES"))
+    other_country = r.doc_scope.eq("LOCAL_OTHER")
+    r["impact_status"] = np.select([linked & other_country, linked & (r.link_score >= s.rules["headline_min_score"]), linked],
+                                   ["SCOPE_REVIEW", "IMPACTED", "POSSIBLE_IMPACT"], default="NOT_IMPACTED")
+    r["confidence_tier"] = np.select([linked & ((r.link_score >= 9) | (r.confidence_level >= 5)),
+                                      linked & (r.link_score >= 8), linked], ["HIGH", "MEDIUM", "LOW"], default="")
+    return r
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/runner.py | sha256=ad59b95a939c71e311a759f28b3199aa6993c190d9f1675e4714012a6fac535a ####
+"""Runs the (alert, document) reads: ONE model call per pair, a fixed pool of workers, checkpoint, progress, guard rails.
+
+Guard rails
+  * a failed pair never stops the run: it is saved as ERROR with its error_code and retried on the next run
+  * every answer is checked against its response schema (retried if a required field is missing)
+  * cost cap: the stage stops cleanly when the measured spend reaches run.max_cost_usd (E-RUN-001)
+  * circuit breaker: N consecutive failed pairs stop the stage (E-GW-010); a wrong model / url stops it at once
+  * stop signal (Ctrl+C / SIGTERM): workers finish the call in hand, the checkpoint is flushed, the run exits
+"""
+import re
+import time
+import asyncio
+import traceback
+
+import pandas as pd
+
+from .errors import IAError
+from .io_utils import JsonlCheckpoint
+
+ID_FIELD = {"policy": "policy_id", "procedure": "procedure_id"}
+EVIDENCE_FIELD = {"policy": "evidence_from_policy", "procedure": "evidence_from_procedure"}
+SCOPE_LABEL = {"GLOBAL": "GLOBAL (applies to all countries, including {c})", "LOCAL_COUNTRY": "LOCAL - {c}",
+               "LOCAL_OTHER": "LOCAL - another country (not {c})"}
+APPLIC_NOTE = {"APPLIES": "GPPS lists {c} legal entities among the applicable entities",
+               "OTHER_COUNTRIES_ONLY": "GPPS lists only other countries' legal entities as applicable (none in {c})",
+               "NOT_LISTED": "GPPS lists no applicable legal entities"}
+
+
+class Progress:
+    """Done / total, %, elapsed, time left, calls per minute, cost - every progress_every_sec and at checkpoints."""
+
+    def __init__(self, log, stage, total, already, what, every_sec, usage):
+        self.log, self.stage, self.total, self.already, self.what = log, stage, total, already, what
+        self.every, self.usage = every_sec, usage
+        self.done, self.failed, self.t0, self.last = 0, 0, time.time(), 0.0
+        self.c0 = usage.cost(stage) if usage else 0.0
+        log.info(f"[{stage}] {total:,} {what} in total | {already:,} done earlier (checkpoint) | {total - already:,} to do now")
+
+    def update(self, n=1, failed=0, force=False, note=""):
+        self.done += n
+        self.failed += failed
+        now = time.time()
+        if not force and now - self.last < self.every and self.already + self.done < self.total:
+            return
+        self.last = now
+        el = now - self.t0
+        fin = self.already + self.done
+        rate = self.done / el if el > 0 else 0
+        left = (self.total - fin) / rate if rate > 0 else float("nan")
+        cost = (self.usage.cost(self.stage) - self.c0) if self.usage else 0.0
+        fmt = lambda sec: "-" if sec != sec else (f"{int(sec // 3600)}h{int(sec % 3600 // 60):02d}m" if sec >= 3600
+                                                  else f"{int(sec // 60)}m{int(sec % 60):02d}s")
+        self.log.info(f"  [{self.stage}] {fin:,}/{self.total:,} {self.what} ({100 * fin / max(self.total, 1):.1f}%) | "
+                      f"elapsed {fmt(el)} | left ~{fmt(left)} | {rate * 60:.0f}/min | cost ${cost:.2f} | "
+                      f"no answer {self.failed:,}" + (f" | {note}" if note else ""))
+
+
+def doc_role(ctx, doc):
+    return "FRAMEWORK" if doc in ctx.framework_docs else "BUSINESS"
+
+
+def build_payload(s, ctx, alert, doc):
+    """The model input for one (alert, document): alert text + metadata, document id / title / scope, FULL text."""
+    c = s.country["name"]
+    kind = ctx.doc_type[doc]
+    applic = ctx.doc_applic.get(doc, "")
+    p = {"alert_id": alert, "alert_text": ctx.atext_cache[alert], "alert_metadata": ctx.meta.get(alert, {}),
+         ID_FIELD[kind]: doc, "document_title": ctx.doc_title[doc],
+         "document_scope": SCOPE_LABEL.get(ctx.doc_scope.get(doc, ""), "unknown").format(c=c)
+         + (f" | {APPLIC_NOTE[applic].format(c=c)}" if applic in APPLIC_NOTE else ""),
+         "document_text": ctx.doc_text[doc]}
+    if doc_role(ctx, doc) == "FRAMEWORK":
+        p["document_role"] = "FRAMEWORK"
+    return p
+
+
+def section_ids(ctx, doc, s_ids, log=None, ref=None):
+    """['S4', 'S7'] -> unit ids of that document; unknown ids are ignored (W-LLM-002)."""
+    ids, out, bad = ctx.doc_units[doc], [], []
+    raw = " ".join(map(str, s_ids)) if isinstance(s_ids, (list, tuple)) else str(s_ids or "")
+    for n in re.findall(r"S\s*(\d+)", raw, flags=re.I) or re.findall(r"\d+", raw):
+        if 1 <= int(n) <= len(ids):
+            if ids[int(n) - 1] not in out:
+                out.append(ids[int(n) - 1])
+        else:
+            bad.append(n)
+    if bad and log:
+        log.event("W-LLM-002", f"S-ids {bad} not in {doc} ({len(ids)} sections)", echo=False, **(ref or {}))
+    return out
+
+
+def error_row(row, role, code, detail, attempts=0):
+    return {"alert": row.alert, "doc": row.doc, "doc_type": row.doc_type, "doc_scope": row.doc_scope,
+            "document_role": role, "search_rank": row.search_rank, "model_decision": "ERROR",
+            "error_code": code, "error_detail": str(detail)[:500], "attempts": attempts}
+
+
+async def read_one(s, ctx, gw, prompts, log, row):
+    """One pair -> result row. Never raises (except cancellation): any problem becomes an ERROR row with a code."""
+    role = doc_role(ctx, row.doc)
+    key = f"{row.doc_type}:{role}"
+    ref = {"alert": row.alert, "doc": row.doc}
+    try:
+        payload = build_payload(s, ctx, row.alert, row.doc)
+        system = prompts.get(key)
+        code, detail, attempts = None, "", 0
+        for _ in range(s.execution["answer_retries"]):
+            r = await gw.chat(system, payload, ref=ref)
+            attempts += r.attempts
+            if not r.ok:
+                code, detail = r.code, r.detail
+                if code in ("E-GW-008", "E-GW-009"):            # retrying cannot help
+                    break
+                continue
+            a, err, warns = prompts.validate(key, r.data)
+            if err:
+                code, detail = "E-LLM-003", err
+                continue
+            if warns:
+                log.event("W-LLM-001", "; ".join(warns), echo=False, **ref)
+            return {"alert": row.alert, "doc": row.doc, "doc_type": row.doc_type, "doc_scope": row.doc_scope,
+                    "document_role": role, "search_rank": row.search_rank, "model_decision": a["decision"],
+                    "link_score": a.get("link_score"), "confidence_level": a.get("confidence_level"),
+                    "linked_units": "; ".join(section_ids(ctx, row.doc, a.get("linked_sections"), log, ref)),
+                    "impact_type": a.get("impact_type"), "change_needed": a.get("change_needed"),
+                    "evidence_from_alert": a.get("evidence_from_alert"),
+                    "evidence_from_target": a.get(EVIDENCE_FIELD[row.doc_type]), "reasoning": a.get("reasoning"),
+                    "framework_change": ((a.get("framework_change") or "NO") if role == "FRAMEWORK" else "NOT_APPLICABLE"),
+                    "error_code": None, "error_detail": None, "attempts": attempts}
+        log.event(code or "E-GW-012", detail, echo=False, **ref)
+        return error_row(row, role, code or "E-GW-012", detail, attempts)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:                                       # a bug or an odd document: isolate it to this pair
+        log.event("E-RUN-004", f"{type(e).__name__}: {e}", echo=False, **ref)
+        log.debug(traceback.format_exc())
+        return error_row(row, role, "E-RUN-004", f"{type(e).__name__}: {e}")
+
+
+async def run_pairs(s, ctx, gw, prompts, log, cand, stage, ckpt_path, stop, budget):
+    """Read every pair in cand (columns alert, doc, doc_type, doc_scope, search_rank). Returns all rows of the stage
+    (earlier checkpointed rows + this session). ckpt_path=None -> no checkpoint (test gate)."""
+    gw.stage = log.stage = stage
+    ckpt = JsonlCheckpoint(ckpt_path, log=log) if ckpt_path else None
+    rows = ckpt.load() if ckpt else []
+    wanted = set(zip(cand.alert, cand.doc))
+    rows = [r for r in rows if (r["alert"], r["doc"]) in wanted]
+    done = {(r["alert"], r["doc"]) for r in rows}
+    todo = [r for r in cand.itertuples(index=False) if (r.alert, r.doc) not in done]
+    ex = s.execution
+    prog = Progress(log, stage, len(cand), len(cand) - len(todo), "documents read", ex["progress_every_sec"], gw.usage)
+    if not todo:
+        return pd.DataFrame(rows)
+
+    queue = asyncio.Queue()
+    for r in todo:
+        queue.put_nowait(r)
+    state = {"consecutive_fail": 0, "route_fail": 0, "ok": 0, "since_flush": 0, "last_flush": time.time(),
+             "abort": None}
+
+    def flush(note=None):
+        if ckpt:
+            ckpt.flush()
+            state["since_flush"], state["last_flush"] = 0, time.time()
+            if note:
+                prog.update(0, force=True, note=note)
+
+    async def worker():
+        while not stop.is_set() and state["abort"] is None:
+            try:
+                row = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            res = await read_one(s, ctx, gw, prompts, log, row)
+            rows.append(res)
+            if ckpt:
+                ckpt.add(res)
+            failed = res["model_decision"] == "ERROR"
+            if failed:
+                state["consecutive_fail"] += 1
+                if res.get("error_code") == "E-GW-008":
+                    state["route_fail"] += 1
+            else:
+                state["consecutive_fail"] = 0
+                state["ok"] += 1
+            state["since_flush"] += 1
+            prog.update(1, failed=int(failed))
+            if state["since_flush"] >= ex["save_every"] or time.time() - state["last_flush"] > 60:
+                flush("checkpoint saved")
+            if state["route_fail"] >= 5 and state["ok"] == 0:
+                state["abort"] = IAError("E-GW-008", f"model '{s.model['chat_model']}' not routed at this base url")
+            elif state["consecutive_fail"] >= ex["circuit_breaker_failures"]:
+                state["abort"] = IAError("E-GW-010", f"{state['consecutive_fail']} consecutive pairs failed; "
+                                                     f"last: {res.get('error_code')} {res.get('error_detail')}")
+            elif budget is not None and budget.exceeded():
+                state["abort"] = IAError("E-RUN-001", budget.describe())
+
+    workers = [asyncio.create_task(worker()) for _ in range(min(ex["concurrency"], len(todo)))]
+    try:
+        await asyncio.gather(*workers)
+    except BaseException:
+        for w in workers:
+            if not w.done():
+                w.cancel()
+        flush()
+        raise
+    flush()
+    prog.update(0, force=True, note="stage finished" if not (stop.is_set() or state["abort"]) else "stopped")
+    if state["abort"] is not None:
+        raise state["abort"]
+    if stop.is_set():
+        raise IAError("E-RUN-002", f"stage {stage}: progress saved")
+    return pd.DataFrame(rows)
+
+
+class Budget:
+    """Measured spend of this process + the spend recorded by earlier sessions of the same run, against the cap."""
+
+    def __init__(self, cap_usd, usage, spent_before=0.0):
+        self.cap, self.usage, self.before = float(cap_usd), usage, float(spent_before)
+
+    def spent(self):
+        return self.before + self.usage.cost()
+
+    def exceeded(self):
+        return self.spent() >= self.cap
+
+    def describe(self):
+        return f"spent ${self.spent():.2f} (this session ${self.usage.cost():.2f}) >= cap ${self.cap:.2f}"
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/scope.py | sha256=55d26e5289df914a7c5a7bdee6cef94c57befcd8b1c61a0ccc516c00950225e9 ####
+"""Document scope: GLOBAL / LOCAL_COUNTRY (this country) / LOCAL_OTHER (another country), from the raw GPPS JSON.
+
+LEVEL : GPPS level field (country.plcyLglEntyCde / procLglEntyCde / region) = GLOBAL -> GLOBAL. Otherwise the
+        applicable legal entities / countries decide; no usable field -> the source file decides (W-SCP-001).
+APPLICABILITY (GLOBAL documents, context only): do the applicable legal entities include this country?
+Entity NAMES never decide GLOBAL (e.g. "HSBC Global Asset Management (USA)" is a US entity).
+"""
+import os
+import re
+
+import pandas as pd
+
+from .io_utils import read_table, write_parquet
+from .gpps import N, NA, load_json
+
+SCOPE_KEY = re.compile(r"cntry|country|jurs|juris|lvl|level|scope|glbl|global|regn|region|locl|local|geo|"
+                       r"applic|entity|lgl|legal", re.I)
+OTHER_COUNTRIES = ["united kingdom", "uk", "england", "hong kong", "china", "india", "singapore", "mexico", "canada",
+                   "france", "germany", "united arab emirates", "uae", "saudi", "australia", "malaysia", "indonesia", "japan",
+                   "korea", "taiwan", "vietnam", "philippines", "thailand", "egypt", "turkey", "turkiye", "switzerland",
+                   "luxembourg", "ireland", "bermuda", "jersey", "guernsey", "isle of man", "channel islands", "malta", "qatar",
+                   "bahrain", "oman", "kuwait", "sri lanka", "bangladesh", "mauritius", "argentina", "brazil", "chile",
+                   "new zealand", "macau", "netherlands", "spain", "italy", "poland", "sweden", "belgium", "greece", "armenia",
+                   "algeria", "uruguay", "colombia", "peru", "united states", "usa", "u.s."]
+OTHER_CODES = {"GB", "UK", "HK", "CN", "IN", "SG", "MX", "CA", "FR", "DE", "AE", "SA", "AU", "MY", "ID", "JP", "KR", "TW",
+               "VN", "PH", "TH", "EG", "TR", "CH", "LU", "IE", "BM", "JE", "GG", "IM", "MT", "QA", "BH", "OM", "KW", "LK",
+               "BD", "MU", "AR", "BR", "CL", "NZ", "MO", "NL", "ES", "IT", "PL", "SE", "BE", "GR", "US", "USA"}
+
+
+def _walk(o, path=""):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield from _walk(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(o, list):
+        for v in o:
+            yield from _walk(v, path + "[]")
+    else:
+        yield path, o
+
+
+def _has(term, text):
+    return re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", text) is not None
+
+
+def compute_scope(s, ctx, log):
+    home_terms = [t.lower() for t in s.country["terms"]]
+    home_codes = {str(c).upper() for c in s.country["codes"]}
+    entity_codes = {str(c).upper() for c in s.country["entity_codes"]}
+    others = [t for t in OTHER_COUNTRIES if t not in home_terms]
+    other_codes = OTHER_CODES - home_codes
+    rows = []
+    for kind, keys, idcands, prefix in (("policy", ("policy_local", "policy_global"), ("policy_core_id", "policy_id"), "POL-"),
+                                        ("procedure", ("procedure",), ("procedure_core_id", "procedure_id"), "PROC-")):
+        known = {d for d in ctx.doc_text if ctx.doc_type[d] == kind}
+        for key in keys:
+            df = read_table(ctx.sources_used[key])
+            idc = next((c for c in idcands if c in df.columns), None)
+            if idc is None or "json_data" not in df.columns:
+                log.info(f"  scope: {key} has no id / json_data column - source file decides")
+                continue
+            if "version_num" in df.columns:
+                df = df.assign(_v=pd.to_numeric(df["version_num"], errors="coerce")).sort_values("_v", ascending=False)
+            df = df.drop_duplicates(idc)
+            for _, r in df.iterrows():
+                doc = prefix + N(r[idc])
+                if doc not in known:
+                    continue
+                try:
+                    vals = []
+                    for p, v in _walk(load_json(r["json_data"])):
+                        leaf = re.sub(r"\[\]", "", p).split(".")[-1]
+                        if v is None or isinstance(v, (dict, list)) or not SCOPE_KEY.search(leaf) or "sgmnt" in p.lower():
+                            continue
+                        sv = str(v).strip()
+                        if not sv or len(sv) > 200 or sv.lower() in NA:
+                            continue
+                        vals.append((leaf.lower(), sv, p.lower()))
+                    lvl = [sv.upper() for k, sv, _ in vals if k in ("plcylglentycde", "proclglentycde", "region")
+                           or "lvl" in k or "level" in k]
+                    appl = [(k, sv) for k, sv, pth in vals if ("apblctry" in pth or "apblenty" in pth or "legalenty" in k
+                            or "cntry" in k or "country" in k) and "appendix" not in pth
+                            and k not in ("plcylglentycde", "proclglentycde")]
+                    low = [sv.lower() for _, sv in appl]
+                    home = any(_has(t, x) for t in home_terms for x in low) or \
+                        any(sv.upper() in home_codes | entity_codes for _, sv in appl)
+                    found = sorted({t for t in others for x in low if _has(t, x)} |
+                                   {sv.upper() for k, sv in appl if re.search("cntry|country", k) and sv.upper() in other_codes})
+                except Exception as e:
+                    log.debug(f"scope parse error {doc}: {e}")
+                    vals, lvl, home, found = [], [], False, []
+                if "GLOBAL" in lvl:
+                    scope, how = "GLOBAL", "GPPS level field"
+                elif home:
+                    scope, how = "LOCAL_COUNTRY", "GPPS applicable entities"
+                elif found:
+                    scope, how = "LOCAL_OTHER", "GPPS applicable entities"
+                else:
+                    scope, how = ("LOCAL_COUNTRY" if key == "policy_local" else "GLOBAL"), "source file"
+                applic = ("APPLIES" if home else "OTHER_COUNTRIES_ONLY" if found else "NOT_LISTED") if scope == "GLOBAL" else ""
+                rows.append(dict(doc_id=doc, doc_type=kind, title=ctx.doc_title[doc], source_file=key, scope=scope,
+                                 applicability=applic, decided_by=how,
+                                 countries_found=", ".join(found + ([s.country_code] if home else [])),
+                                 evidence=" | ".join(f"{k}={sv}" for k, sv, _ in vals)[:300]))
+    scope = pd.DataFrame(rows, columns=["doc_id", "doc_type", "title", "source_file", "scope", "applicability",
+                                        "decided_by", "countries_found", "evidence"]).drop_duplicates("doc_id")
+    missing = [d for d in ctx.doc_text if d not in set(scope.doc_id)]
+    if missing:
+        scope = pd.concat([scope, pd.DataFrame([dict(
+            doc_id=d, doc_type=ctx.doc_type[d], title=ctx.doc_title[d], source_file="-",
+            scope="LOCAL_COUNTRY" if ctx.doc_file_scope[d] == "local" else "GLOBAL", applicability="",
+            decided_by="source file", countries_found="", evidence="") for d in missing])], ignore_index=True)
+    n_file = int((scope.decided_by == "source file").sum())
+    if n_file:
+        log.event("W-SCP-001", f"{n_file} document(s) scoped by their source file (no GPPS level field)", echo=False)
+    ctx.scope = scope
+    ctx.doc_scope = dict(zip(scope.doc_id, scope.scope))
+    ctx.doc_applic = dict(zip(scope.doc_id, scope.applicability))
+    write_parquet(scope, os.path.join(s.output_dir, "document_scope.parquet"))
+    tab = scope.groupby(["doc_type", "scope"]).size().to_dict()
+    log.info(f"  document scope: {tab}")
+    return scope
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/shortlist.py | sha256=d8ea62a6895c5919dfa1f77fff5a4774e371de30eb0c0f88a9781609bb1d6f0f ####
+"""Procedure shortlist (search method F): top-K procedures per alert. Policies are not searched (all are read).
+
+1. Query plan per alert (model call; checkpointed in query_plans.parquet).
+2. Embeddings of every procedure section, every alert and every query (cached in emb_*.npz, md5 of text -> vector).
+3. Three rankings fused by rank (RRF): A alert-text embedding, B best query-plan embedding, D TF-IDF on the expanded
+   query. Document score = its best section. The shortlist is frozen in procedure_shortlist_top<K>.parquet.
+The cache files have the same layout as the validated notebook, so run.reuse_search_from can point at a notebook run.
+"""
+import os
+import json
+import asyncio
+import hashlib
+
+import numpy as np
+import pandas as pd
+
+from .errors import IAError
+from .io_utils import write_parquet
+from .runner import Progress
+
+
+def _md5(t):
+    return hashlib.md5(t.encode("utf-8")).hexdigest()
+
+
+def _clean_emb(t, max_chars):
+    t = str(t) if t is not None else ""
+    return (t if t.strip() else " ")[:max_chars]
+
+
+def unit_doc_text(u):
+    return u.doc_title + " | " + u.section_title + " | " + u.subsection_title.fillna("") + " | " + u.text
+
+
+def _load_npz(path, log):
+    if not os.path.exists(path):
+        return {}
+    try:
+        z = np.load(path, allow_pickle=False)
+        return dict(zip(z["h"].tolist(), z["X"]))
+    except Exception as e:
+        log.event("W-EMB-001", f"{os.path.basename(path)}: {e}")
+        return {}
+
+
+def _save_npz(path, cache):
+    if cache:
+        tmp = path + ".tmp.npz"
+        np.savez(tmp, h=np.array(list(cache.keys())), X=np.vstack(list(cache.values())))
+        os.replace(tmp, path)
+
+
+def _as_list(x):
+    if isinstance(x, list):
+        return [str(i).strip() for i in x if str(i).strip()]
+    return [p.strip() for p in str(x or "").replace("\n", ";").split(";") if p.strip()]
+
+
+async def make_query_plans(s, ctx, gw, prompts, log, stop):
+    path = os.path.join(s.output_dir, "query_plans.parquet")
+    plans = {}
+    if os.path.exists(path):
+        try:
+            p = pd.read_parquet(path)
+            plans = {str(a): json.loads(j) for a, j in zip(p.alert, p.plan) if j and j != "{}"}
+        except Exception as e:
+            log.info(f"  query plan cache unreadable ({e}) - rebuilt")
+    atext = ctx.atext
+    todo = [a for a in ctx.alerts.alert if a not in plans]
+    gw.stage = log.stage = "query_plan"
+    if todo:
+        prog = Progress(log, "query_plan", len(ctx.alerts), len(ctx.alerts) - len(todo), "query plans",
+                        s.execution["progress_every_sec"], gw.usage)
+        sem = asyncio.Semaphore(s.execution["query_plan_concurrency"])
+        system = prompts.get("query_plan")
+
+        def save():
+            write_parquet(pd.DataFrame({"alert": list(plans), "plan": [json.dumps(plans[a], ensure_ascii=False)
+                                                                       for a in plans]}), path)
+
+        async def one(a):
+            async with sem:
+                if stop.is_set():
+                    return a, None
+                for _ in range(s.execution["answer_retries"]):
+                    r = await gw.chat(system, {"alert_id": a, "alert_text": atext[a], "alert_metadata": ctx.meta.get(a, {})},
+                                      ref={"alert": a, "doc": "query_plan"})
+                    if r.ok:
+                        clean, err, _ = prompts.validate("query_plan", r.data)
+                        if clean:
+                            return a, clean
+                        log.event("E-LLM-003", err, echo=False, alert=a)
+                    else:
+                        log.event(r.code, r.detail, echo=False, alert=a)
+                return a, None
+
+        tasks = [asyncio.create_task(one(a)) for a in todo]
+        try:
+            for i, fut in enumerate(asyncio.as_completed(tasks), 1):
+                a, r = await fut
+                if r:
+                    plans[a] = {k: (_as_list(r.get(k)) if k != "core_mandate" else str(r.get(k) or ""))
+                                for k in ("core_mandate", "requirements", "affected_activities", "policy_language",
+                                          "procedure_language", "keywords")}
+                prog.update(1)
+                if i % 20 == 0:
+                    save()
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            save()
+    missing = [a for a in ctx.alerts.alert if a not in plans]
+    if missing:
+        raise IAError("E-SHL-001", f"{len(missing)} alert(s) without a query plan, e.g. {missing[:5]} - re-run")
+    log.info(f"  query plans {len(plans):,} for {len(ctx.alerts):,} alerts (made now: {len(todo):,})")
+    return plans
+
+
+async def embed_missing(s, texts, cache, path, gw, log, stop):
+    need = list(dict.fromkeys(t for t in texts if _md5(t) not in cache))
+    if not need:
+        return 0
+    bs = s.model["embedding_batch_size"]
+    sem = asyncio.Semaphore(s.execution["embedding_concurrency"])
+    gw.stage = log.stage = "embeddings"
+    prog = Progress(log, "embeddings", len(need), 0, "texts embedded", s.execution["progress_every_sec"], gw.usage)
+    dim = len(next(iter(cache.values()))) if cache else None
+
+    async def one(batch):
+        async with sem:
+            if stop.is_set():
+                return batch, None
+            return batch, await gw.embed(batch)
+
+    tasks = [asyncio.create_task(one(need[i:i + bs])) for i in range(0, len(need), bs)]
+    since = 0
+    try:
+        for fut in asyncio.as_completed(tasks):
+            batch, X = await fut
+            if X is not None:
+                if dim is None:
+                    dim = X.shape[1]
+                if X.shape[1] != dim:
+                    raise IAError("E-EMB-002", f"cache has dimension {dim}, model returned {X.shape[1]}")
+                for t, x in zip(batch, X):
+                    cache[_md5(t)] = x
+                since += len(batch)
+            prog.update(len(batch))
+            if since >= 2000:
+                _save_npz(path, cache)
+                since = 0
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        _save_npz(path, cache)
+    if stop.is_set():
+        raise IAError("E-RUN-002", "stopped during embeddings (finished ones are cached)")
+    return len(need)
+
+
+async def build_procedure_shortlist(s, ctx, gw, prompts, log, stop):
+    """-> DataFrame alert, doc, doc_type='procedure', search_rank (1 = best)."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    k = s.search["proc_top_k"]
+    path = os.path.join(s.output_dir, f"procedure_shortlist_top{k}.parquet")
+    alerts = list(ctx.alerts.alert)
+    saved = None
+    if os.path.exists(path):
+        try:
+            saved = pd.read_parquet(path)
+            saved["alert"] = saved["alert"].astype(str)
+        except Exception as e:
+            log.info(f"  saved shortlist unreadable ({e}) - rebuilt")
+    if saved is not None and set(alerts) <= set(saved.alert):
+        out = saved[saved.alert.isin(alerts)].reset_index(drop=True)
+        log.info(f"  procedure shortlist from saved file: {len(out):,} pairs")
+        return _drop_skipped(out, ctx, log)
+    todo = [a for a in alerts if saved is None or a not in set(saved.alert)]
+    if saved is not None:
+        log.event("W-SHL-001", f"{len(todo)} alert(s) not in the saved shortlist - built fresh for those")
+
+    plans = await make_query_plans(s, ctx, gw, prompts, log, stop)
+    atext = ctx.atext
+
+    def queries(a):
+        p = plans.get(a, {})
+        q = [atext[a][:6000]] + ([p["core_mandate"]] if p.get("core_mandate") else [])
+        q += p.get("requirements", []) + p.get("affected_activities", []) + p.get("procedure_language", [])
+        return [x for x in dict.fromkeys(q) if x.strip()]
+
+    mc = s.model["embedding_max_chars"]
+    pv = ctx.units[ctx.units.doc_type == "procedure"].reset_index(drop=True)
+    if pv.empty:
+        raise IAError("E-SRC-005", "no visible procedure sections")
+    eu_path, eq_path = os.path.join(s.output_dir, "emb_units_alerts.npz"), os.path.join(s.output_dir, "emb_queries.npz")
+    EU, EQ = _load_npz(eu_path, log), _load_npz(eq_path, log)
+    u_txt = [_clean_emb(t, mc) for t in unit_doc_text(pv).tolist()]
+    a_txt = [_clean_emb(atext[a], mc) for a in todo]
+    n1 = await embed_missing(s, u_txt + a_txt, EU, eu_path, gw, log, stop)
+    n2 = await embed_missing(s, [q for a in todo for q in queries(a)], EQ, eq_path, gw, log, stop)
+    log.info(f"  embeddings: new units/alerts {n1:,} | new queries {n2:,} (0 = all from cache)")
+    missing = [t for t in u_txt + a_txt if _md5(t) not in EU]
+    if missing:
+        raise IAError("E-EMB-001", f"{len(missing)} texts still without an embedding - re-run")
+
+    norm = lambda X: X / np.clip(np.linalg.norm(X, axis=1, keepdims=True), 1e-9, None)
+    UE = norm(np.vstack([EU[_md5(t)] for t in u_txt]))
+    QA = norm(np.vstack([EU[_md5(t)] for t in a_txt]))
+    S_a = QA @ UE.T
+    S_b = np.zeros_like(S_a)
+    for i, a in enumerate(todo):
+        Q = norm(np.vstack([EQ[_md5(q)] for q in queries(a) if _md5(q) in EQ] or [QA[i]]))
+        S_b[i] = (Q @ UE.T).max(axis=0)
+    sr = s.search
+    vec = TfidfVectorizer(stop_words="english", ngram_range=(1, sr["tfidf_ngram_max"]), min_df=sr["tfidf_min_df"],
+                          max_df=sr["tfidf_max_df"], sublinear_tf=True)
+    try:
+        U_kw = vec.fit_transform(unit_doc_text(pv))
+    except ValueError:                                       # tiny corpora (tests): relax the document-frequency cut
+        vec = TfidfVectorizer(stop_words="english", ngram_range=(1, sr["tfidf_ngram_max"]), sublinear_tf=True)
+        U_kw = vec.fit_transform(unit_doc_text(pv))
+    S_d = (vec.transform([" ".join([atext[a]] + queries(a)[1:] + plans.get(a, {}).get("keywords", []))
+                          for a in todo]) @ U_kw.T).toarray()
+
+    def rrf(*mats):
+        out = np.zeros_like(mats[0], dtype=np.float32)
+        for M in mats:
+            out += 1.0 / (sr["rrf_k"] + np.argsort(np.argsort(-M, axis=1), axis=1) + 1)
+        return out
+
+    S_f = rrf(S_a, S_b, S_d)
+    pdocs = pd.unique(pv.doc_id)
+    D_f = pd.DataFrame(S_f.T).groupby(pv.doc_id.values).max().reindex(pdocs).values.T
+    rows = []
+    for i, a in enumerate(todo):
+        order = np.argsort(-D_f[i], kind="stable")[:k]
+        rows += [dict(alert=a, doc=pdocs[j], doc_type="procedure", search_rank=r + 1) for r, j in enumerate(order)]
+    fresh = pd.DataFrame(rows)
+    full = pd.concat([saved, fresh], ignore_index=True) if saved is not None else fresh
+    write_parquet(full, path)
+    out = full[full.alert.isin(alerts)].reset_index(drop=True)
+    return _drop_skipped(out, ctx, log)
+
+
+def _drop_skipped(df, ctx, log):
+    n = int(df.doc.isin(ctx.skip_docs).sum())
+    if n:
+        log.info(f"  {n:,} shortlisted pairs dropped (documents in exceptions/skip_documents.csv)")
+    return df[~df.doc.isin(ctx.skip_docs)].reset_index(drop=True)
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/sources.py | sha256=3b01b7add616d8f0bae7183800a152ed33ffee5762b93b29c9b7b1e07b1387a5 ####
+"""Load alerts, GPPS documents and the exception lists into one Context object (everything later stages need)."""
+import os
+import json
+import math
+import shutil
+from dataclasses import dataclass, field
+
+import pandas as pd
+
+from .errors import IAError
+from .io_utils import resolve_source, read_table, write_parquet, write_json
+from .gpps import N, clean, pick, load_docs, build_units
+
+
+@dataclass
+class Context:
+    alerts: pd.DataFrame                       # alert, title, text
+    meta: dict                                 # alert -> {jurisdiction, regulator, taxonomy}
+    units: pd.DataFrame                        # visible sections / sub-sections
+    doc_text: dict = field(default_factory=dict)       # doc -> full text with [S<n> | ...] labels (sent to the model)
+    doc_units: dict = field(default_factory=dict)      # doc -> [unit_id of S1, S2, ...]
+    doc_title: dict = field(default_factory=dict)
+    doc_type: dict = field(default_factory=dict)
+    doc_src_chars: dict = field(default_factory=dict)
+    doc_file_scope: dict = field(default_factory=dict)
+    unit_info: dict = field(default_factory=dict)
+    framework_docs: dict = field(default_factory=dict)  # doc -> title (read with the framework rule)
+    skip_docs: dict = field(default_factory=dict)       # doc -> reason (never read)
+    sources_used: dict = field(default_factory=dict)
+    # filled by scope.py
+    scope: pd.DataFrame = None
+    doc_scope: dict = field(default_factory=dict)
+    doc_applic: dict = field(default_factory=dict)
+
+    @property
+    def atext(self):
+        return dict(zip(self.alerts.alert, self.alerts.text))
+
+    def docs_of(self, kind):
+        return [d for d in self.doc_text if self.doc_type[d] == kind and d not in self.skip_docs]
+
+
+def resolve_sources(s, log):
+    used, missing = {}, []
+    for k, v in s.sources.items():
+        r = resolve_source(s.path(v))
+        log.info(f"  source {k:14s} {r or 'NOT FOUND: ' + s.path(v)}")
+        if r:
+            used[k] = r
+        else:
+            missing.append(f"{k} = {s.path(v)}")
+    if missing:
+        raise IAError("E-SRC-001", "; ".join(missing))
+    return used
+
+
+def load_exceptions(s, log):
+    """exceptions/framework_documents.csv and exceptions/skip_documents.csv (doc_id,title,reason; # = comment)."""
+    out = {}
+    for name in ("framework_documents", "skip_documents"):
+        path = os.path.join(s.path(s.paths["exceptions_dir"]), f"{name}.csv")
+        if not os.path.exists(path):
+            raise IAError("E-EXC-001", f"{path} not found (keep the file, even with only its header)")
+        try:
+            df = pd.read_csv(path, comment="#", dtype=str, skipinitialspace=True).fillna("")
+        except Exception as e:
+            raise IAError("E-EXC-001", f"{path}: {e}")
+        if "doc_id" not in df.columns:
+            raise IAError("E-EXC-001", f"{path}: header must be doc_id,title,reason")
+        df["doc_id"] = df["doc_id"].str.strip().str.upper()
+        df = df[df.doc_id != ""]
+        col = "title" if name == "framework_documents" else "reason"
+        out[name] = {r.doc_id: (getattr(r, col, "") if col in df.columns else "") for r in df.itertuples()}
+        log.info(f"  exceptions {name}: {len(out[name])} document(s)")
+    return out["framework_documents"], out["skip_documents"]
+
+
+def copy_reused_caches(s, log):
+    src = s.path(s.run["reuse_search_from"]) if s.run["reuse_search_from"] else None
+    if not src:
+        return
+    if not os.path.isdir(src):
+        log.info(f"  reuse_search_from not found, ignored: {src}")
+        return
+    k = s.search["proc_top_k"]
+    for f in ("query_plans.parquet", "emb_units_alerts.npz", "emb_queries.npz", f"procedure_shortlist_top{k}.parquet"):
+        a, b = os.path.join(src, f), os.path.join(s.output_dir, f)
+        if os.path.exists(a) and not os.path.exists(b):
+            shutil.copy2(a, b)
+            log.info(f"  reused from {src}: {f}")
+
+
+def load_alerts(s, used, log):
+    r2 = read_table(used["rapid2"])
+    scope_df = read_table(used["alert_scope"])
+    for col in ("RECORD_ID", "TITLE"):
+        if col not in r2.columns:
+            raise IAError("E-SRC-003", f"rapid2 file: column {col} missing")
+    sc = pick(scope_df, "RECORD_ID", "RID")
+    if not sc:
+        raise IAError("E-SRC-003", "alert_scope file: column RECORD_ID missing")
+    scope_ids = set(scope_df[sc].map(N))
+    r2 = r2[r2["RECORD_ID"].map(N).isin(scope_ids)].drop_duplicates("RECORD_ID")
+    alerts = pd.DataFrame({
+        "alert": r2["RECORD_ID"].map(N).values,
+        "title": r2["TITLE"].map(clean).values,
+        "text": r2.apply(lambda r: " ".join(x for x in (clean(r.get("TITLE")), clean(r.get("SUMM_CONTENT")),
+                                                        clean(r.get("SUMM_UPDATE")), clean(r.get("INTRO_TEXT"))) if x),
+                         axis=1).values if len(r2) else []})
+    g = lambda r, c: clean(r.get(c)) if c in r2.columns else ""
+    meta = {N(r["RECORD_ID"]): {"jurisdiction": g(r, "RECORD_JURISDICTION_NAME"), "regulator": g(r, "REGULATOR_CODE"),
+                                "taxonomy": " > ".join(x for x in (g(r, "LEVEL_1_RISK_TAXONOMY"), g(r, "LEVEL_2_RISK_TAXONOMY"),
+                                                                   g(r, "LEVEL_3_RISK_TAXONOMY")) if x)}
+            for _, r in r2.iterrows()}
+    want = [N(a) for a in s.run["alert_ids"]]
+    if want:
+        missing = [a for a in want if a not in set(alerts.alert)]
+        if missing:
+            log.event("W-SRC-002", f"{len(missing)} id(s) not in scope: {missing[:20]}")
+        alerts = alerts[alerts.alert.isin(want)]
+    elif s.run["alerts_limit"]:
+        alerts = alerts.head(int(s.run["alerts_limit"]))
+    alerts = alerts[alerts.text.str.strip() != ""].reset_index(drop=True)
+    if alerts.empty:
+        raise IAError("E-SRC-004", f"{len(scope_ids):,} ids in scope, {len(r2):,} found in Rapid2, "
+                                   f"{len(want)} requested")
+    return alerts, meta
+
+
+def load_units(s, used, log):
+    path = os.path.join(s.output_dir, "units.parquet")
+    if os.path.exists(path):
+        try:
+            u = pd.read_parquet(path)
+            log.info(f"  sections / sub-sections from cache: {len(u):,} ({path})")
+            return u
+        except Exception as e:
+            log.info(f"  units cache unreadable ({e}) - rebuilding")
+    log.info("  parsing GPPS ...")
+    pub = bool(s.rules["published_only"])
+    pol = pd.concat([load_docs(used["policy_local"], "policy", "local", pub, log),
+                     load_docs(used["policy_global"], "policy", "global", pub, log)], ignore_index=True)
+    if len(pol):
+        pol = pol.drop_duplicates("doc_id")
+    proc = load_docs(used["procedure"], "procedure", "global", pub, log)
+    docs = pd.concat([pol, proc], ignore_index=True)
+    if docs.empty:
+        raise IAError("E-SRC-005", "no published GPPS documents found in the three GPPS files")
+    u = build_units(docs)
+    write_parquet(u, path)
+    return u
+
+
+def build_context(s, log):
+    used = resolve_sources(s, log)
+    write_json(used, os.path.join(s.output_dir, "sources_used.json"))
+    copy_reused_caches(s, log)
+    framework, skip = load_exceptions(s, log)
+    alerts, meta = load_alerts(s, used, log)
+    units_all = load_units(s, used, log)
+    for c in ("doc_title", "section_no", "section_title", "subsection_no", "subsection_title", "text"):
+        units_all[c] = units_all[c].map(lambda v: "" if v is None or (isinstance(v, float) and math.isnan(v)) else str(v))
+    units = units_all[~units_all.hidden.astype(str).str.lower().isin(["true", "1"])].reset_index(drop=True)
+
+    ctx = Context(alerts=alerts, meta=meta, units=units, framework_docs=framework, skip_docs=skip, sources_used=used)
+    for doc_id, g in units.groupby("doc_id", sort=False):
+        parts, ids = [], []
+        for i, r in enumerate(g.itertuples(), start=1):
+            sec = f"{(str(r.section_no) + ' ') if r.section_no else ''}{r.section_title}"
+            sub = f" > {r.subsection_no} {r.subsection_title}" if r.subsection_no else ""
+            parts.append(f"[S{i} | {sec}{sub}]\n{r.text}")
+            ids.append(r.unit_id)
+            ctx.unit_info[r.unit_id] = dict(
+                section_no=str(r.section_no or ""), section_title=r.section_title,
+                subsection_no=str(r.subsection_no or ""), subsection_title=r.subsection_title or "",
+                gpps_label=(f"Section {r.section_no} {r.section_title}" if r.section_no else r.section_title)
+                + (f" > {r.subsection_no} {r.subsection_title}" if r.subsection_no else ""), text=r.text)
+        ctx.doc_text[doc_id], ctx.doc_units[doc_id] = "\n\n".join(parts), ids
+        ctx.doc_title[doc_id], ctx.doc_src_chars[doc_id] = g.doc_title.iloc[0], int(pd.to_numeric(g.chars).sum())
+        ctx.doc_type[doc_id], ctx.doc_file_scope[doc_id] = g.doc_type.iloc[0], g.scope.iloc[0]
+    hidden_only = set(units_all.doc_id) - set(ctx.doc_text)
+    if hidden_only:
+        log.event("W-SRC-003", f"{len(hidden_only)} document(s) have no visible text: {sorted(hidden_only)[:10]}")
+    for d in list(framework) + list(skip):
+        if d not in ctx.doc_text:
+            log.event("W-EXC-001", f"{d} is listed in exceptions/ but not found in GPPS")
+    # hand-off files (texts exactly as sent to the model) - used by the audit notebook
+    write_parquet(pd.DataFrame({"alert": alerts.alert, "title": alerts.title, "text": alerts.text,
+                                "meta": [json.dumps(meta.get(a, {}), ensure_ascii=False) for a in alerts.alert]}),
+                  os.path.join(s.output_dir, "alerts.parquet"))
+    log.info(f"  alerts {len(alerts):,} | policies {len(ctx.docs_of('policy')):,} | procedures "
+             f"{len(ctx.docs_of('procedure')):,} | skipped by exceptions {len([d for d in skip if d in ctx.doc_text])} | "
+             f"visible sections / sub-sections {len(units):,}")
+    return ctx
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/tools/make_fake_data.py | sha256=71fbfb8e9de9314463c0ff6ade53fd60489aa1328bd110dfc5f3446b3e46c939 ####
+"""Synthetic test data for an OFFLINE smoke test (no bank data, no gateway, no cost).
+
+    python tools/make_fake_data.py                 # writes ../ia_pp_smoke/data + config/config.smoke.yaml
+    python -m ia_pp run --config config/config.smoke.yaml
+
+The fake GPPS files have the real json_data layout (segments, sub-section headings, hidden segments, scope fields),
+include the framework document ids, and one LOCAL document of another country, so every rule is exercised.
+"""
+import os
+import sys
+import json
+import argparse
+
+import numpy as np
+import pandas as pd
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJECT = os.path.dirname(HERE)
+WORDS = ["customer", "complaint", "escheat", "dormant", "license", "training", "sanctions", "records", "fee",
+         "disclosure", "report", "privacy", "notice", "deadline", "account", "retention", "vulnerable", "lending"]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=os.path.join(os.path.dirname(PROJECT), "ia_pp_smoke"))
+    ap.add_argument("--alerts", type=int, default=12)
+    a = ap.parse_args(argv)
+    rng = np.random.default_rng(0)
+    txt = lambda n=40: " ".join(rng.choice(WORDS, n))
+    data = os.path.join(a.root, "data")
+    os.makedirs(os.path.join(data, "GPPS"), exist_ok=True)
+
+    def pol(core, extra):
+        segs = [{"sgmntTitlText": f"Section {s}", "dispSortOrdrNum": str(s), "sgmntDispInd": "N" if s == 3 else "Y",
+                 "sgmntText": f"<p>{txt()}</p>" + (f"<p><b>{s}.1 First part</b></p><p>{txt()}</p>"
+                                                   f"<p><b>{s}.2 Second part</b></p><p>{txt()}</p>" if s % 2 else "")}
+                for s in range(1, 5)]
+        d = {"plcyCoreId": core, "policyTitle": f"Policy {core}", "policyText": {"sgmntText": txt(20)},
+             "policyApplication": {"segment": segs}, "versn": {"versStatCde": "PUBLISHED"}}
+        d.update(extra)
+        return d
+
+    def proc(core, extra):
+        segs = [{"procSgmntTitlText": f"Step {s}", "procSgmntText": f"<p>{txt()}</p>", "procSgmntDispInd": "Y",
+                 "procDispSortOrdrNum": str(s)} for s in range(1, 4)]
+        d = {"procCoreId": core, "procedureTitle": f"Procedure {core}", "procedureApplication": {"segment": segs},
+             "versn": {"procVersnStatCde": "PUBLISHED"}}
+        d.update(extra)
+        return d
+
+    us_ent = {"apblCtry": [{"apblEnty": [{"legalEntyCde": "HBUS", "legalEntyName": "HSBC Bank USA, National Association"}]}]}
+    glob = {"country": {"plcyLglEntyCde": "GLOBAL"}, "region": "GLOBAL"}
+    local = [{"policy_core_id": str(i), "version_num": 1, "json_data": json.dumps(pol(str(i), us_ent))} for i in range(1, 9)]
+    local.append({"policy_core_id": "9", "version_num": 1, "json_data": json.dumps(pol("9", {
+        "apblCtry": [{"apblEnty": [{"legalEntyCde": "HBUK", "legalEntyName": "HSBC UK Bank plc"}], "cntryNm": "United Kingdom"}]}))})
+    local.append({"policy_core_id": "10", "version_num": 1, "json_data": "not json"})          # -> W-SRC-001
+    pd.DataFrame(local).to_parquet(os.path.join(data, "GPPS", "us_policy.parquet"))
+    gl = [{"policy_core_id": str(i), "version_num": 2, "json_data": json.dumps(pol(str(i), {**glob, **us_ent}))}
+          for i in (40, 42, 79, 83, 100, 101, 102, 103, 104, 105)]
+    pd.DataFrame(gl).to_parquet(os.path.join(data, "GPPS", "global_policy.parquet"))
+    pr = [{"procedure_core_id": str(i), "version_num": 1,
+           "json_data": json.dumps(proc(str(i), {"country": {"procLglEntyCde": "GLOBAL"}}))} for i in list(range(500, 530)) + [1633]]
+    pd.DataFrame(pr).to_parquet(os.path.join(data, "GPPS", "global_procedure.parquet"))
+    ids = [str(150000 + i) for i in range(a.alerts)]
+    pd.DataFrame({"RECORD_ID": ids, "TITLE": [f"Regulator amends {rng.choice(WORDS)} rule {i}" for i in ids],
+                  "SUMM_CONTENT": [txt(35) for _ in ids], "SUMM_UPDATE": "", "INTRO_TEXT": "",
+                  "RECORD_JURISDICTION_NAME": "United States", "REGULATOR_CODE": "CFPB",
+                  "LEVEL_1_RISK_TAXONOMY": "Regulatory Compliance"}).to_parquet(os.path.join(data, "rapid2.parquet"))
+    pd.DataFrame({"RECORD_ID": ids, "RSM_ID": "x"}).to_parquet(os.path.join(data, "rsm_linkage_pairs_2026.parquet"))
+
+    import yaml
+    with open(os.path.join(PROJECT, "config", "config.yaml"), encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    root = os.path.abspath(a.root)
+    cfg["run"].update(run_id="IA-PP-{country}-SMOKE", output_dir=os.path.join(root, "output"),
+                      log_dir=os.path.join(root, "logs"), max_cost_usd=5)
+    cfg["sources"] = {"rapid2": os.path.join(data, "rapid2.parquet"),
+                      "alert_scope": os.path.join(data, "rsm_linkage_pairs_*.parquet"),
+                      "policy_local": os.path.join(data, "GPPS", "us_policy.parquet"),
+                      "policy_global": os.path.join(data, "GPPS", "global_policy.parquet"),
+                      "procedure": os.path.join(data, "GPPS", "global_procedure.parquet")}
+    cfg["gateway"]["mode"] = "mock"
+    cfg["search"]["proc_top_k"] = 10
+    cfg["execution"]["concurrency"] = 8
+    cfg["execution"]["progress_every_sec"] = 5
+    out = os.path.join(PROJECT, "config", "config.smoke.yaml")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write("# OFFLINE SMOKE TEST CONFIG - generated by tools/make_fake_data.py (mock gateway, fake data)\n")
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+    print(f"fake data: {data}\nconfig   : {out}\nnext     : python -m ia_pp run --config config/config.smoke.yaml")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/tools/unpack_bundle.py | sha256=0af0b9d7b90a4c55aaddb4f5d4ac7a1e128949ae5e15991e2be7e31a83f20218 ####
+"""Re-create the project folder from the text bundle part(s) (the bank git / file transfer accepts text only).
+
+    python unpack_bundle.py IA_PP_BUNDLE_part1.txt IA_PP_BUNDLE_part2.txt [...] --dest .
+
+Each file in a bundle sits between '#### FILE: <path> | sha256=<hash> ####' and '#### END FILE ####'.
+The hash of every unpacked file is checked; a mismatch (damaged copy) is reported and the run stops.
+"""
+import os
+import re
+import sys
+import hashlib
+import argparse
+
+HEAD = re.compile(r"^#### FILE: (.+?) \| sha256=([0-9a-f]{64}) ####$")
+
+
+def unpack(parts, dest):
+    files, cur, buf, digest = {}, None, [], None
+    for part in parts:
+        with open(part, encoding="utf-8", newline="") as f:
+            for line in f.read().split("\n"):
+                m = HEAD.match(line)
+                if m:
+                    cur, digest, buf = m.group(1), m.group(2), []
+                elif line == "#### END FILE ####" and cur:
+                    files[cur] = ("\n".join(buf), digest)
+                    cur = None
+                elif cur is not None:
+                    buf.append(line)
+    bad = []
+    for path, (text, digest) in sorted(files.items()):
+        if ".." in path.split("/") or path.startswith("/"):
+            bad.append(path)
+            continue
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != digest:
+            bad.append(path)
+            continue
+        full = os.path.join(dest, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+    print(f"unpacked {len(files) - len(bad)} file(s) into {os.path.abspath(dest)}")
+    if bad:
+        print(f"DAMAGED or unsafe, not written: {bad}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("parts", nargs="+")
+    ap.add_argument("--dest", default=".")
+    a = ap.parse_args()
+    unpack(a.parts, a.dest)
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/tests/test_offline.py | sha256=5bd83b3b400d459946eab2129f5d2be7c27efab04d718f01ac2ce37b3f218329 ####
+"""Offline self-tests (no bank data, no gateway, no cost). Run from the project folder:
+
+    python tests/test_offline.py
+
+1. live-gateway code path with a stub client: request parameters, retries, error classification, JSON parsing
+2. prompt rendering is exactly the validated notebook prompt (for country 'United States')
+3. answer validation / coercion rules
+4. quote check and decision rules
+"""
+import os
+import sys
+import json
+import types
+import asyncio
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJECT = os.path.dirname(HERE)
+sys.path.insert(0, PROJECT)
+
+from ia_pp.config import load_settings                       # noqa: E402
+from ia_pp.logs import RunLog                                 # noqa: E402
+from ia_pp.gateway import LiveGateway, Usage, classify, parse_json_answer   # noqa: E402
+from ia_pp.prompts import PromptStore                         # noqa: E402
+from ia_pp.rules import quote_found                           # noqa: E402
+
+FAILS = []
+
+
+def check(name, cond):
+    print(("PASS " if cond else "FAIL ") + name)
+    if not cond:
+        FAILS.append(name)
+
+
+class APIErr(Exception):
+    def __init__(self, status, msg="err"):
+        super().__init__(msg)
+        self.status_code = status
+
+
+class StubCompletions:
+    def __init__(self, script):
+        self.script, self.calls = list(script), []
+
+    async def create(self, extra_headers=None, **kw):
+        self.calls.append((extra_headers, kw))
+        step = self.script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        msg = types.SimpleNamespace(content=step)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg, finish_reason="stop")],
+                                     usage=types.SimpleNamespace(prompt_tokens=1000, completion_tokens=200))
+
+
+def settings():
+    cfg = os.path.join(PROJECT, "config", "config.yaml")
+    os.environ.setdefault("IA_GATEWAY_BASE_URL", "https://example.invalid")
+    os.environ.setdefault("IA_STAFF_ID", "test")
+    os.environ.setdefault("IA_USE_CASE", "UC-test")
+    return load_settings(cfg, {"sources.alert_scope": "/tmp/x.parquet", "execution.backoff_max_sec": 1})
+
+
+def test_live_stub():
+    s = settings()
+    log = RunLog(tempfile.mkdtemp(), "test")
+    good = json.dumps({"policy_id": "POL-1", "decision": "LINKED", "link_score": 8})
+    comp = StubCompletions([APIErr(429), APIErr(503), "```json\n" + good + "\n```"])
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=comp))
+    gw = LiveGateway(s, log, Usage(0.2, 1.2), client=client, token_fn=lambda: "TOKEN")
+    r = asyncio.run(gw.chat("system", {"a": 1}, ref={"alert": "1", "doc": "POL-1"}))
+    check("live: retries 429 + 503 then succeeds", r.ok and r.attempts == 3 and r.data["decision"] == "LINKED")
+    hdr, kw = comp.calls[-1]
+    check("live: bearer token sent", hdr == {"Authorization": "Bearer TOKEN"})
+    check("live: gpt family sends max_completion_tokens from config",
+          kw.get("max_completion_tokens") == s.model["max_tokens"] and "temperature" not in kw)
+    check("live: model and use case from config", kw["model"] == s.model["chat_model"] and kw["user"] == "UC-test")
+
+    comp2 = StubCompletions([APIErr(404, "no Route matched")])
+    gw2 = LiveGateway(s, log, Usage(0.2, 1.2), client=types.SimpleNamespace(chat=types.SimpleNamespace(completions=comp2)),
+                      token_fn=lambda: "T")
+    r2 = asyncio.run(gw2.chat("system", {}, ref={}))
+    check("live: 404 is not retried and coded E-GW-008", (not r2.ok) and r2.code == "E-GW-008" and len(comp2.calls) == 1)
+
+    s.model["family"] = "gemini"
+    gw3 = LiveGateway(s, log, Usage(0.2, 1.2), client=client, token_fn=lambda: "T")
+    kw3 = gw3._kwargs("sys", {})
+    check("live: gemini family sends temperature, seed, reasoning_effort, max_tokens",
+          kw3["temperature"] == s.model["temperature"] and kw3["seed"] == s.model["seed"]
+          and kw3["reasoning_effort"] == s.model["reasoning_effort"] and kw3["max_tokens"] == s.model["max_tokens"])
+    comp4 = StubCompletions(["not json at all", "still not", "no", "nope"])
+    gw4 = LiveGateway(settings(), log, Usage(0.2, 1.2),
+                      client=types.SimpleNamespace(chat=types.SimpleNamespace(completions=comp4)), token_fn=lambda: "T")
+    r4 = asyncio.run(gw4.chat("system", {}, ref={}))
+    check("live: invalid JSON retried then coded E-LLM-002", (not r4.ok) and r4.code == "E-LLM-002" and len(comp4.calls) == 4)
+    log.close()
+
+
+def test_classify_and_parse():
+    check("classify 401", classify(APIErr(401)) == "E-GW-003")
+    check("classify 429", classify(APIErr(429)) == "E-GW-004")
+    check("classify 500", classify(APIErr(502)) == "E-GW-005")
+    check("classify 400", classify(APIErr(400)) == "E-GW-009")
+    check("classify timeout", classify(type("ReadTimeout", (Exception,), {})("x")) == "E-GW-006")
+    check("parse items wrapper", parse_json_answer('{"items":[{"decision":"LINKED"}]}') == {"decision": "LINKED"})
+    check("parse text around json", parse_json_answer('Here: {"a": 1} done')["a"] == 1)
+
+
+def test_prompts_identical_to_notebook():
+    ref = os.path.join(HERE, "us_prompts_reference.json")
+    if not os.path.exists(ref):
+        print("SKIP prompt identity (tests/us_prompts_reference.json not shipped)")
+        return
+    s = settings()
+    p = PromptStore(s)
+    r = json.load(open(ref, encoding="utf-8"))
+    mapping = {"qp": "query_plan", "pb": "policy:BUSINESS", "qb": "procedure:BUSINESS", "pf": "policy:FRAMEWORK",
+               "qf": "procedure:FRAMEWORK"}
+    for k, key in mapping.items():
+        check(f"prompt {key} identical to the validated notebook prompt", p.get(key) == r[k])
+
+
+def test_validation():
+    s = settings()
+    p = PromptStore(s)
+    a, err, w = p.validate("policy:BUSINESS", {"decision": "linked", "link_score": "8", "impact_type": "maybe"})
+    check("validate: coerces decision / score, nulls bad optional field",
+          err is None and a["decision"] == "LINKED" and a["link_score"] == 8 and a["impact_type"] is None and w)
+    a, err, w = p.validate("policy:BUSINESS", {"link_score": 9})
+    check("validate: missing decision is an error", err is not None)
+    a, err, w = p.validate("policy:FRAMEWORK", {"decision": "NOT_LINKED", "framework_change": "yes - process"})
+    check("validate: framework_change coerced", err is None and a["framework_change"] == "YES")
+
+
+def test_quotes():
+    check("quote verbatim", quote_found("Licensed staff must complete 24 hours", "x. Licensed staff must complete 24 hours of CE"))
+    check("quote too short rejected", not quote_found("short", "short text"))
+    check("quote absent", not quote_found("this sentence is not in the text at all", "something else entirely here"))
+
+
+if __name__ == "__main__":
+    test_classify_and_parse()
+    test_live_stub()
+    test_prompts_identical_to_notebook()
+    test_validation()
+    test_quotes()
+    print(f"\n{'ALL PASSED' if not FAILS else f'{len(FAILS)} FAILED: {FAILS}'}")
+    sys.exit(1 if FAILS else 0)
+
+#### END FILE ####

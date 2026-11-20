@@ -1,0 +1,1504 @@
+# IA policy / procedure package - text bundle part 2 of 4 (RCAI&A)
+# Unpack: put all parts in one folder and run tools/unpack_bundle.py or the unpack cell in README section 6.
+# Do not edit by hand: every file carries a sha256 check.
+#### FILE: ia_policy_procedure/ia_pp/compare.py | sha256=58561fcf343a8e735ef553f21efb5fce634dca737e4432058a526fc251fef448 ####
+"""Compare two runs (e.g. the validated notebook run and this package on the same 10 alerts).
+
+python -m ia_pp compare --run-a <notebook output folder> --run-b <package output folder> [--alert-ids 1,2,3]
+
+Writes compare_report.xlsx (or CSVs if openpyxl is missing) in run B's folder and prints the agreement.
+Expect small differences: the model does not answer identically twice (about 10% of links flip between two runs
+of the same prompt), and procedures differ if the shortlist was rebuilt (use run.reuse_search_from to share it).
+"""
+import os
+
+import pandas as pd
+
+KEYS = ["RECORD_ID", "DOC_ID"]
+LINKISH = ["IMPACTED", "POSSIBLE_IMPACT", "SCOPE_REVIEW"]
+
+
+def _load(folder):
+    p = os.path.join(folder, "ia_pp_pairs.parquet")
+    if not os.path.exists(p):
+        raise FileNotFoundError(f"{p} not found - run the results stage there first")
+    df = pd.read_parquet(p)
+    df["RECORD_ID"] = df["RECORD_ID"].astype(str)
+    return df
+
+
+def compare(run_a, run_b, alert_ids=None, out_dir=None):
+    A, B = _load(run_a), _load(run_b)
+    common = sorted(set(A.RECORD_ID) & set(B.RECORD_ID))
+    if alert_ids:
+        common = [a for a in common if a in {str(x) for x in alert_ids}]
+    if not common:
+        raise ValueError("no alert in common between the two runs")
+    A, B = A[A.RECORD_ID.isin(common)], B[B.RECORD_ID.isin(common)]
+    cols = ["DOC_TYPE", "impact_status", "link_score", "final_decision", "linked_sections"]
+    m = A[KEYS + cols].merge(B[KEYS + cols], on=KEYS, how="outer", suffixes=("_a", "_b"), indicator=True)
+    m["DOC_TYPE"] = m.DOC_TYPE_a.fillna(m.DOC_TYPE_b)
+    both = m[m._merge == "both"].copy()
+    both["same_status"] = both.impact_status_a == both.impact_status_b
+    both["linked_a"] = both.impact_status_a.isin(LINKISH)
+    both["linked_b"] = both.impact_status_b.isin(LINKISH)
+    rows = []
+    for t, g in both.groupby("DOC_TYPE"):
+        la, lb = int(g.linked_a.sum()), int(g.linked_b.sum())
+        inter = int((g.linked_a & g.linked_b).sum())
+        rows.append(dict(doc_type=t, pairs_in_both=len(g), same_status_pct=round(100 * g.same_status.mean(), 1),
+                         linked_a=la, linked_b=lb, linked_in_both=inter,
+                         link_overlap_pct=round(100 * inter / max(la + lb - inter, 1), 1),
+                         impacted_a=int((g.impact_status_a == "IMPACTED").sum()),
+                         impacted_b=int((g.impact_status_b == "IMPACTED").sum()),
+                         only_in_a=int(((m._merge == "left_only") & (m.DOC_TYPE == t)).sum()),
+                         only_in_b=int(((m._merge == "right_only") & (m.DOC_TYPE == t)).sum())))
+    summary = pd.DataFrame(rows)
+    per_alert = both.groupby(["RECORD_ID", "DOC_TYPE"]).agg(linked_a=("linked_a", "sum"), linked_b=("linked_b", "sum"),
+                                                           same_status_pct=("same_status", "mean")).reset_index()
+    per_alert["same_status_pct"] = (100 * per_alert.same_status_pct).round(1)
+    diffs = both[~both.same_status].sort_values(["RECORD_ID", "DOC_TYPE", "DOC_ID"])
+    out_dir = out_dir or run_b
+    try:
+        with pd.ExcelWriter(os.path.join(out_dir, "compare_report.xlsx")) as xl:
+            pd.DataFrame({"How to read": [
+                f"Run A: {run_a}", f"Run B: {run_b}", f"Alerts compared: {len(common)}",
+                "same_status_pct: share of pairs with the same impact_status in both runs.",
+                "link_overlap_pct: links (impacted / possible / scope review) found by both, over links found by either.",
+                "only_in_a / only_in_b: pairs read in one run only (procedure shortlist differences)."]}
+            ).to_excel(xl, sheet_name="How to read", index=False)
+            summary.to_excel(xl, sheet_name="summary", index=False)
+            per_alert.to_excel(xl, sheet_name="per alert", index=False)
+            diffs.drop(columns=["_merge"]).to_excel(xl, sheet_name="different status", index=False)
+        report = os.path.join(out_dir, "compare_report.xlsx")
+    except Exception:
+        summary.to_csv(os.path.join(out_dir, "compare_summary.csv"), index=False)
+        diffs.to_csv(os.path.join(out_dir, "compare_differences.csv"), index=False)
+        report = os.path.join(out_dir, "compare_summary.csv")
+    return summary, per_alert, diffs, report
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/config.py | sha256=1f7fdf5b65f9cb8eb0cd5a50185ffd21e9049c177be04876415a20a5a772c630 ####
+"""Load, check and resolve config/config.yaml into a Settings object. No execution parameter is hard-coded elsewhere."""
+import os
+import re
+import copy
+from pathlib import Path
+
+from .errors import IAError
+
+REQUIRED = {
+    "run": ["run_id", "output_dir", "log_dir", "alert_ids", "alerts_limit", "max_cost_usd", "test_gate", "reuse_search_from"],
+    "country": ["code", "name", "terms", "codes", "entity_codes"],
+    "sources": ["rapid2", "alert_scope", "policy_local", "policy_global", "procedure"],
+    "gateway": ["mode", "base_url", "base_url_env", "staff_id", "staff_id_env", "use_case", "use_case_env",
+                "quota_project", "quota_project_env", "token_lifetime_sec", "relogin_min_interval_sec",
+                "http_timeout_sec", "max_connections", "mock_failure_rate"],
+    "model": ["chat_model", "family", "max_tokens", "temperature", "seed", "reasoning_effort",
+              "price_per_million_tokens", "embedding_model", "embedding_batch_size", "embedding_max_chars"],
+    "execution": ["concurrency", "query_plan_concurrency", "embedding_concurrency", "transport_retries",
+                  "answer_retries", "backoff_max_sec", "circuit_breaker_failures", "save_every", "progress_every_sec"],
+    "search": ["proc_top_k", "rrf_k", "tfidf_ngram_max", "tfidf_min_df", "tfidf_max_df"],
+    "rules": ["published_only", "link_threshold", "headline_min_score"],
+    "logging": ["level", "log_llm_calls", "log_payloads"],
+    "paths": ["prompts_dir", "schemas_dir", "exceptions_dir"],
+}
+PLACEHOLDER = re.compile(r"^<.*>$|<your |<EXECUTION_OUTPUT_DIR>")
+
+
+class Settings:
+    """Attribute access to the config sections: s.run["output_dir"], s.model["max_tokens"], ... plus resolved paths."""
+
+    def __init__(self, raw, config_path):
+        self.raw = raw
+        self.config_path = Path(config_path).resolve()
+        self.project_dir = self.config_path.parent.parent      # config/ sits in the project folder
+        for section in REQUIRED:
+            setattr(self, section, raw[section])
+        self.country_code = str(raw["country"]["code"])
+
+    # -- paths -------------------------------------------------------------------------------------------
+    def path(self, value):
+        """Resolve a path from the config: {country} filled, relative paths taken from the project folder."""
+        if value is None:
+            return None
+        p = str(value).replace("{country}", self.country_code)
+        p = os.path.expandvars(os.path.expanduser(p))
+        return str(p if os.path.isabs(p) else (self.project_dir / p))
+
+    @property
+    def run_id(self):
+        return str(self.run["run_id"]).replace("{country}", self.country_code)
+
+    @property
+    def output_dir(self):
+        return self.path(self.run["output_dir"])
+
+    @property
+    def log_dir(self):
+        return self.path(self.run["log_dir"])
+
+    def secret(self, name):
+        """Gateway setting: environment variable first, then the config value."""
+        env_name = self.gateway.get(f"{name}_env")
+        value = os.environ.get(env_name) if env_name else None
+        return value if value else self.gateway.get(name)
+
+    def masked(self):
+        """Copy of the config safe to write to the logs (gateway secrets masked)."""
+        r = copy.deepcopy(self.raw)
+        for k in ("base_url", "staff_id", "use_case", "quota_project"):
+            v = self.secret(k)
+            r["gateway"][k] = (str(v)[:4] + "***") if v and not PLACEHOLDER.search(str(v)) else v
+        return r
+
+
+def _num(cfg, sec, key, kind, lo=None, hi=None):
+    v = cfg[sec][key]
+    try:
+        v = kind(v)
+    except (TypeError, ValueError):
+        raise IAError("E-CFG-004", f"{sec}.{key} = {cfg[sec][key]!r} is not a {kind.__name__}")
+    if (lo is not None and v < lo) or (hi is not None and v > hi):
+        raise IAError("E-CFG-004", f"{sec}.{key} = {v} must be between {lo} and {hi}")
+    cfg[sec][key] = v
+
+
+def load_settings(config_path, overrides=None):
+    """Read and validate the YAML config. overrides: dict of 'section.key' -> value (from the command line)."""
+    try:
+        import yaml
+    except ImportError:
+        raise IAError("E-ENV-001", "PyYAML (package 'pyyaml') is needed to read config.yaml")
+    if not config_path or not os.path.isfile(config_path):
+        raise IAError("E-CFG-001", f"config file not found: {config_path}")
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise IAError("E-CFG-002", f"{config_path}: {e}")
+    if not isinstance(raw, dict):
+        raise IAError("E-CFG-002", f"{config_path}: the file is empty or not a mapping")
+
+    for sec, keys in REQUIRED.items():
+        if not isinstance(raw.get(sec), dict):
+            raise IAError("E-CFG-003", f"section '{sec}' missing")
+        for k in keys:
+            if k not in raw[sec]:
+                raise IAError("E-CFG-003", f"'{sec}.{k}' missing")
+
+    for dotted, value in (overrides or {}).items():
+        sec, key = dotted.split(".", 1)
+        raw[sec][key] = value
+
+    # types and ranges
+    _num(raw, "run", "max_cost_usd", float, 0)
+    _num(raw, "model", "max_tokens", int, 256, 128000)
+    _num(raw, "model", "temperature", float, 0, 2)
+    _num(raw, "model", "seed", int, 0)
+    _num(raw, "model", "embedding_batch_size", int, 1, 250)
+    _num(raw, "model", "embedding_max_chars", int, 100)
+    for k, lo, hi in (("concurrency", 1, 500), ("query_plan_concurrency", 1, 200), ("embedding_concurrency", 1, 100),
+                      ("transport_retries", 1, 10), ("answer_retries", 1, 10), ("backoff_max_sec", 1, 300),
+                      ("circuit_breaker_failures", 10, 100000), ("save_every", 1, 100000), ("progress_every_sec", 1, 3600)):
+        _num(raw, "execution", k, int, lo, hi)
+    _num(raw, "search", "proc_top_k", int, 1, 100000)
+    _num(raw, "search", "rrf_k", int, 1, 10000)
+    _num(raw, "search", "tfidf_ngram_max", int, 1, 3)
+    _num(raw, "rules", "link_threshold", int, 0, 10)
+    _num(raw, "rules", "headline_min_score", int, 0, 10)
+    _num(raw, "gateway", "token_lifetime_sec", int, 30, 3600)
+    _num(raw, "gateway", "relogin_min_interval_sec", int, 0, 86400)
+    _num(raw, "gateway", "http_timeout_sec", float, 5, 3600)
+    _num(raw, "gateway", "max_connections", int, 1, 2000)
+    _num(raw, "gateway", "mock_failure_rate", float, 0, 1)
+    if raw["rules"]["headline_min_score"] < raw["rules"]["link_threshold"]:
+        raise IAError("E-CFG-004", "rules.headline_min_score must be >= rules.link_threshold")
+    if raw["gateway"]["mode"] not in ("live", "mock"):
+        raise IAError("E-CFG-004", "gateway.mode must be 'live' or 'mock'")
+    if str(raw["model"]["family"]).lower() not in ("auto", "gpt", "gemini"):
+        raise IAError("E-CFG-004", "model.family must be auto, gpt or gemini")
+    price = raw["model"]["price_per_million_tokens"]
+    if not isinstance(price, dict) or "input" not in price or "output" not in price:
+        raise IAError("E-CFG-004", "model.price_per_million_tokens needs 'input' and 'output'")
+    for k in ("terms", "codes", "entity_codes"):
+        if not isinstance(raw["country"][k], list):
+            raise IAError("E-CFG-004", f"country.{k} must be a list")
+    if not isinstance(raw["run"]["alert_ids"], list):
+        raise IAError("E-CFG-004", "run.alert_ids must be a list (use [] for all alerts)")
+    if raw["run"]["alerts_limit"] is not None:
+        _num(raw, "run", "alerts_limit", int, 1)
+    if raw["logging"]["level"] not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+        raise IAError("E-CFG-004", "logging.level must be DEBUG, INFO, WARNING or ERROR")
+
+    s = Settings(raw, config_path)
+    for k, v in raw["sources"].items():
+        if PLACEHOLDER.search(str(v)):
+            raise IAError("E-CFG-005", f"sources.{k} still holds a placeholder: {v}")
+    if raw["gateway"]["mode"] == "live":
+        for k in ("base_url", "staff_id", "use_case"):
+            v = s.secret(k)
+            if not v or PLACEHOLDER.search(str(v)):
+                raise IAError("E-CFG-005", f"gateway {k}: set environment variable {raw['gateway'][k + '_env']} "
+                                           f"or gateway.{k} in the config")
+    return s
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/errors.py | sha256=ba9562c426249ca4058017e17f6ccc562a56ea54648cc6266d08f9a06356794b ####
+"""Error dictionary for the alert -> policy / procedure impact-assessment pipeline.
+
+Every problem the pipeline can meet has a code. The code appears in the console, in logs/<run>/run.log, in
+logs/<run>/errors.jsonl and, for a failed (alert, document) pair, in the error_code column of the results.
+
+Code format:  <severity>-<area>-<number>
+  severity : E = error (the item or the run could not be completed), W = warning (completed, but check)
+  area     : ENV environment | CFG config | PRM prompts | SCH schemas | EXC exceptions | SRC sources |
+             SCP scope | GW gateway | LLM model answer | EMB embeddings | SHL shortlist | RUN run control |
+             CKP checkpoints | OUT outputs
+
+Look up a code:   python -m ia_pp explain E-GW-004
+List all codes:   python -m ia_pp errors          (the same table as docs/ERROR_CODES.md)
+"""
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ErrorInfo:
+    code: str
+    title: str
+    scope: str          # what it stops: RUN (whole run), STAGE, PAIR (one alert x document), NONE (warning)
+    likely_cause: str
+    action: str
+
+
+# Process exit codes (what a scheduler sees)
+EXIT_OK = 0                 # completed, every pair answered
+EXIT_PARTIAL = 1            # completed, but some pairs have no answer (re-run the same command to retry them)
+EXIT_CONFIG = 2             # config / environment / prompt / schema / source problem (nothing was spent)
+EXIT_GATEWAY = 3            # gateway unusable (auth, route, circuit breaker)
+EXIT_COST_CAP = 4           # cost cap reached - stopped safely, progress saved
+EXIT_TEST_GATE = 5          # pre-run test gate failed - nothing big was spent
+EXIT_INTERNAL = 6           # unexpected internal error - see run.log traceback
+EXIT_INTERRUPTED = 130      # stopped by Ctrl+C / SIGTERM - progress saved
+
+_E = [
+    # ---------------------------------------------------------------- environment
+    ErrorInfo("E-ENV-001", "Required Python package missing", "RUN",
+              "A package in requirements.txt is not installed in this environment.",
+              "Install it (pip install -r requirements.txt) or ask the platform team. The message names the package."),
+    ErrorInfo("E-ENV-002", "Python version too old", "RUN",
+              "The pipeline needs Python 3.9 or newer.", "Run with a newer Python interpreter."),
+    # ---------------------------------------------------------------- config
+    ErrorInfo("E-CFG-001", "Config file not found", "RUN",
+              "Wrong --config path.", "Pass the right path, e.g. --config config/config.yaml."),
+    ErrorInfo("E-CFG-002", "Config file cannot be parsed", "RUN",
+              "YAML syntax error (indentation, a missing colon, a tab character).",
+              "Open the file, fix the line named in the message. YAML uses spaces, never tabs."),
+    ErrorInfo("E-CFG-003", "Required config setting missing", "RUN",
+              "A key was deleted or misspelt.", "Add the key named in the message (see the shipped config.yaml)."),
+    ErrorInfo("E-CFG-004", "Invalid config value", "RUN",
+              "Wrong type or out of range (e.g. concurrency 0, headline score below link threshold).",
+              "Fix the value named in the message."),
+    ErrorInfo("E-CFG-005", "Placeholder or secret not filled", "RUN",
+              "A value still looks like '<your ...>', or the environment variable for a gateway secret is not set.",
+              "Set the environment variable named in the message (preferred in production) or fill the config value."),
+    # ---------------------------------------------------------------- prompts / schemas / exceptions
+    ErrorInfo("E-PRM-001", "Prompt file missing or unreadable", "RUN",
+              "A file in prompts/ was renamed, moved or deleted.", "Restore it; the five file names are fixed."),
+    ErrorInfo("E-PRM-002", "Unresolved placeholder in a prompt", "RUN",
+              "A prompt contains {{...}} that the code does not fill (only {{COUNTRY_NAME}} is supported).",
+              "Remove or correct the placeholder in the prompt file."),
+    ErrorInfo("E-SCH-001", "Response schema missing or invalid", "RUN",
+              "A file in schemas/ is missing or is not valid JSON.", "Restore the schema file / fix its JSON."),
+    ErrorInfo("E-EXC-001", "Exceptions file malformed", "RUN",
+              "A CSV in exceptions/ lacks the doc_id column or cannot be read.",
+              "Keep the header 'doc_id,title,reason'. Lines starting with # are comments."),
+    ErrorInfo("W-EXC-001", "Exception document not found in GPPS", "NONE",
+              "An id in exceptions/ does not exist in the loaded GPPS files (typo, or retired document).",
+              "Check the id. The run continues; the entry has no effect."),
+    # ---------------------------------------------------------------- sources
+    ErrorInfo("E-SRC-001", "Source file not found", "RUN",
+              "Wrong path or glob in config 'sources', or the file has not been delivered yet.",
+              "Fix the path. A glob such as .../rsm_linkage_pairs_*.parquet takes the newest match."),
+    ErrorInfo("E-SRC-002", "Source file unreadable", "RUN",
+              "Corrupt file, unsupported format, or a parquet written by an incompatible library version.",
+              "Re-export the file as parquet, csv or xlsx."),
+    ErrorInfo("E-SRC-003", "Required column missing in a source file", "RUN",
+              "The extract layout changed (e.g. RECORD_ID, TITLE, json_data, policy_core_id).",
+              "Ask the data owner for the expected layout, or map the column in the source."),
+    ErrorInfo("E-SRC-004", "No alerts to assess", "RUN",
+              "The alert-scope file has no RECORD_IDs found in Rapid2, or none of --alert-ids is in scope.",
+              "Check both files / the ids you passed."),
+    ErrorInfo("E-SRC-005", "No GPPS documents after parsing", "RUN",
+              "Wrong GPPS files, json_data unparseable, or no published version.",
+              "Check the files; see W-SRC-001 counts in the log."),
+    ErrorInfo("W-SRC-001", "Some GPPS rows could not be parsed", "NONE",
+              "json_data is empty or not valid JSON for some rows.", "Those documents are skipped; report the count to the GPPS team if large."),
+    ErrorInfo("W-SRC-002", "Requested alert ids not in scope", "NONE",
+              "Some ids passed with --alert-ids / run.alert_ids are not in the alert-scope file.", "They are ignored. Check the ids."),
+    ErrorInfo("W-SRC-003", "Document without visible text", "NONE",
+              "All segments are hidden or empty.", "The document cannot be assessed and is left out."),
+    ErrorInfo("W-SCP-001", "Document scope decided by its source file", "NONE",
+              "GPPS has no level / country field for the document.", "Scope = LOCAL if it came from the local file, else GLOBAL. Check if unexpected."),
+    # ---------------------------------------------------------------- gateway
+    ErrorInfo("E-GW-001", "Gateway client could not be created", "RUN",
+              "py_group_ai_tools / openai / httpx / truststore missing or misconfigured; wrong staff id.",
+              "Check the packages and gateway settings; run: python -m ia_pp check-gateway --config ..."),
+    ErrorInfo("E-GW-002", "Gateway token could not be obtained", "RUN",
+              "No token method on GroupAIClient, or the login service is down.",
+              "Check the staff id / use case; retry later."),
+    ErrorInfo("E-GW-003", "Authentication rejected (401/403)", "PAIR",
+              "Login expired (about 1 h) or the use case lacks access. The code re-logs in automatically.",
+              "If it persists: check staff id / use case access, then re-run (finished pairs are kept)."),
+    ErrorInfo("E-GW-004", "Rate limited (429)", "PAIR",
+              "Too many parallel calls for the shared gateway.", "Retried automatically. If frequent, lower execution.concurrency."),
+    ErrorInfo("E-GW-005", "Gateway server error (5xx)", "PAIR",
+              "Temporary gateway / model problem.", "Retried automatically; re-run later for the remaining pairs."),
+    ErrorInfo("E-GW-006", "Gateway timeout", "PAIR",
+              "Slow model or network; very long documents.", "Retried automatically. Raise gateway.http_timeout_sec if frequent."),
+    ErrorInfo("E-GW-007", "Connection / TLS error", "PAIR",
+              "Network, proxy or certificate problem.", "Check network access to the base URL; retried automatically."),
+    ErrorInfo("E-GW-008", "No route (404): wrong model or base URL", "RUN",
+              "The model name is not routed for this use case / URL.",
+              "Fix model.chat_model or gateway.base_url. The run stops early to avoid wasted calls."),
+    ErrorInfo("E-GW-009", "Bad request (400/413/422)", "PAIR",
+              "Input too long for the model, or a parameter the model does not accept.",
+              "See error_detail. Not retried. If 'context length': the document is too long for the model."),
+    ErrorInfo("E-GW-010", "Circuit breaker: too many consecutive failures", "STAGE",
+              "The gateway is down or rejecting every call.",
+              "The stage stops and saves progress. Fix the cause (see the codes before it in errors.jsonl), then re-run."),
+    ErrorInfo("E-GW-011", "Gateway check failed at start", "RUN",
+              "The one-call connectivity check before the run failed.", "See the detail; usually E-GW-003 / 008 / 007."),
+    ErrorInfo("E-GW-012", "Unknown gateway error", "PAIR",
+              "An error type the code does not classify.", "See error_detail and run.log; retried automatically."),
+    # ---------------------------------------------------------------- model answers
+    ErrorInfo("E-LLM-001", "Empty answer", "PAIR",
+              "The model returned no content (often the answer budget was spent on thinking).", "Retried. If frequent, raise model.max_tokens."),
+    ErrorInfo("E-LLM-002", "Answer is not valid JSON", "PAIR",
+              "The model wrote text around the JSON or broke the format.", "Retried automatically."),
+    ErrorInfo("E-LLM-003", "Answer misses a required field", "PAIR",
+              "e.g. 'decision' missing or not LINKED / NOT_LINKED / INSUFFICIENT_EVIDENCE.", "Retried automatically."),
+    ErrorInfo("E-LLM-004", "Answer cut off (max tokens reached)", "PAIR",
+              "model.max_tokens too low for this answer.", "Raise model.max_tokens (8000 covered 3x the longest US answer)."),
+    ErrorInfo("W-LLM-001", "Optional answer field invalid", "NONE",
+              "e.g. link_score 'eight', impact_type misspelt.", "Value set to null (or coerced); the answer is kept."),
+    ErrorInfo("W-LLM-002", "Cited section ids not in the document", "NONE",
+              "The model cited S-ids that do not exist.", "Those ids are ignored; the link is still checked by its quotes."),
+    # ---------------------------------------------------------------- embeddings / shortlist
+    ErrorInfo("E-EMB-001", "Embedding batch failed after retries", "STAGE",
+              "Gateway problem on the embedding model.", "Re-run: finished embeddings are cached and not paid again."),
+    ErrorInfo("E-EMB-002", "Embedding size mismatch", "STAGE",
+              "The cache was built with another embedding model.", "Delete the emb_*.npz files in the output folder, or restore the model."),
+    ErrorInfo("W-EMB-001", "Embedding cache unreadable - rebuilt", "NONE",
+              "Corrupt .npz file (e.g. disk full during a save).", "Rebuilt automatically (costs under $1)."),
+    ErrorInfo("E-SHL-001", "Query plans missing after retries", "STAGE",
+              "The model failed for some alerts.", "Re-run: finished plans are kept."),
+    ErrorInfo("W-SHL-001", "Saved shortlist does not match the current alerts", "NONE",
+              "New alerts, new query plans or a different top-K.", "Alerts already in the saved shortlist keep it; missing alerts get a fresh shortlist."),
+    # ---------------------------------------------------------------- run control
+    ErrorInfo("E-RUN-001", "Cost cap reached", "RUN",
+              "Estimated or measured spend reached run.max_cost_usd.",
+              "Progress is saved. Raise the cap if the spend is expected, then re-run the same command."),
+    ErrorInfo("E-RUN-002", "Interrupted", "RUN",
+              "Ctrl+C, Kernel > Interrupt or SIGTERM from the scheduler.", "Progress is saved; re-run the same command to continue."),
+    ErrorInfo("E-RUN-003", "Test gate failed", "RUN",
+              "The 10-pair test before the full run had errors, unverifiable quotes or a cost above the cap.",
+              "Read the test table in run.log; fix the cause before the full run."),
+    ErrorInfo("E-RUN-004", "Unexpected error on one pair", "PAIR",
+              "A bug or an unusual document. The traceback is in run.log.", "The pair is marked ERROR and retried on the next run. Report the traceback."),
+    ErrorInfo("E-RUN-005", "Unexpected error in a stage", "RUN",
+              "A bug or an unusual input. The traceback is in run.log.", "Report run.log and errors.jsonl to RCAI&A."),
+    ErrorInfo("E-RUN-006", "Document text shorter than its source", "RUN",
+              "The no-truncation check failed: a document would not be sent in full.", "Report to RCAI&A; nothing was spent."),
+    ErrorInfo("W-RUN-001", "Pairs without an answer at the end of a stage", "NONE",
+              "Their calls failed every retry (see their error_code).", "Re-run the same command: only those pairs are retried."),
+    # ---------------------------------------------------------------- checkpoints / outputs
+    ErrorInfo("W-CKP-001", "Damaged checkpoint lines skipped", "NONE",
+              "The process was killed while writing the last line.", "Those pairs are simply read again."),
+    ErrorInfo("E-CKP-001", "Checkpoint unreadable", "STAGE",
+              "The checkpoint file is damaged beyond line level.", "Rename it (to keep a copy) and re-run; the stage restarts."),
+    ErrorInfo("E-OUT-001", "Cannot write output", "RUN",
+              "Folder not writable, disk full, or a file open in another program.", "Free space / fix permissions; re-run."),
+    ErrorInfo("W-OUT-001", "Excel summary not written", "NONE",
+              "openpyxl missing or the file is open elsewhere.", "Parquet, CSV and JSONL outputs are still written."),
+    ErrorInfo("E-OUT-002", "No pair results to report", "RUN",
+              "The results stage ran before the policy / procedure stages.", "Run --stage policies and procedures first (or --stage all)."),
+]
+
+ERRORS = {e.code: e for e in _E}
+
+
+class IAError(Exception):
+    """An expected, classified failure. `code` is a key of ERRORS; `detail` says what exactly happened."""
+
+    def __init__(self, code, detail="", **context):
+        self.code = code if code in ERRORS else "E-RUN-005"
+        self.detail = str(detail)
+        self.context = context
+        info = ERRORS[self.code]
+        super().__init__(f"[{self.code}] {info.title}: {self.detail}")
+
+
+EXIT_FOR_CODE = {
+    "ENV": EXIT_CONFIG, "CFG": EXIT_CONFIG, "PRM": EXIT_CONFIG, "SCH": EXIT_CONFIG, "EXC": EXIT_CONFIG,
+    "SRC": EXIT_CONFIG, "GW": EXIT_GATEWAY, "OUT": EXIT_INTERNAL, "CKP": EXIT_INTERNAL, "EMB": EXIT_GATEWAY,
+    "SHL": EXIT_GATEWAY,
+}
+
+
+def exit_code_for(code):
+    if code == "E-RUN-001":
+        return EXIT_COST_CAP
+    if code == "E-RUN-002":
+        return EXIT_INTERRUPTED
+    if code == "E-RUN-003":
+        return EXIT_TEST_GATE
+    if code in ("E-RUN-006",):
+        return EXIT_CONFIG
+    area = code.split("-")[1] if code.count("-") >= 2 else ""
+    return EXIT_FOR_CODE.get(area, EXIT_INTERNAL)
+
+
+def explain(code):
+    e = ERRORS.get(code.strip().upper())
+    if not e:
+        return f"Unknown code {code!r}. List all codes with: python -m ia_pp errors"
+    return (f"{e.code}  {e.title}\n  stops      : {e.scope}\n  likely cause: {e.likely_cause}\n"
+            f"  what to do : {e.action}")
+
+
+def as_markdown():
+    lines = ["# Error codes", "", "Generated from `ia_pp/errors.py` (`python -m ia_pp errors`).", "",
+             "| Code | Title | Stops | Likely cause | What to do |", "|---|---|---|---|---|"]
+    for e in _E:
+        lines.append(f"| {e.code} | {e.title} | {e.scope} | {e.likely_cause} | {e.action} |")
+    lines += ["", "## Exit codes", "", "| Exit code | Meaning |", "|---|---|",
+              f"| {EXIT_OK} | Completed, every pair answered |",
+              f"| {EXIT_PARTIAL} | Completed, some pairs without answer: re-run the same command to retry only those |",
+              f"| {EXIT_CONFIG} | Config / environment / prompt / schema / source problem (nothing spent) |",
+              f"| {EXIT_GATEWAY} | Gateway unusable (authentication, route, circuit breaker) |",
+              f"| {EXIT_COST_CAP} | Cost cap reached, progress saved |",
+              f"| {EXIT_TEST_GATE} | Pre-run test gate failed |",
+              f"| {EXIT_INTERNAL} | Unexpected internal error (see run.log) |",
+              f"| {EXIT_INTERRUPTED} | Interrupted, progress saved |"]
+    return "\n".join(lines) + "\n"
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/gateway.py | sha256=3fcd1ac43945353a75e88038738a19f237930a17f654819beeda9bd4c18cc792 ####
+"""Bank AI gateway (live) and an offline simulator (mock) behind one interface.
+
+    result = await gw.chat(system_prompt, payload_dict, ref={...})  -> ChatResult(ok, data, code, detail, ...)
+    vectors = await gw.embed(list_of_texts)                          -> numpy array (raises IAError on failure)
+
+Every call is logged to llm_calls.jsonl (ids, timing, tokens, status, error code - never the text unless
+logging.log_payloads). Errors are classified into E-GW-* / E-LLM-* codes (see errors.py).
+"""
+import os
+import ssl
+import json
+import time
+import uuid
+import random
+import asyncio
+import hashlib
+from dataclasses import dataclass
+
+import numpy as np
+
+from .errors import IAError
+
+RETRYABLE = {"E-GW-003", "E-GW-004", "E-GW-005", "E-GW-006", "E-GW-007", "E-GW-012",
+             "E-LLM-001", "E-LLM-002", "E-LLM-004"}
+GATEWAY_FATAL = {"E-GW-008"}          # wrong model / url: retrying cannot help
+
+
+@dataclass
+class ChatResult:
+    ok: bool
+    data: dict = None
+    code: str = None
+    detail: str = ""
+    tokens_in: int = 0
+    tokens_out: int = 0
+    attempts: int = 0
+    finish_reason: str = None
+
+
+class Usage:
+    """Token and cost counters, per stage and total."""
+
+    def __init__(self, price_in_per_m, price_out_per_m):
+        self.p_in, self.p_out = float(price_in_per_m) / 1e6, float(price_out_per_m) / 1e6
+        self.stages = {}
+
+    def add(self, stage, tin, tout, ok=True):
+        st = self.stages.setdefault(stage, {"calls": 0, "failed_calls": 0, "in": 0, "out": 0})
+        st["calls" if ok else "failed_calls"] += 1
+        st["in"] += int(tin or 0)
+        st["out"] += int(tout or 0)
+
+    def cost(self, stage=None):
+        sts = [self.stages.get(stage, {})] if stage else list(self.stages.values())
+        return float(sum(x.get("in", 0) * self.p_in + x.get("out", 0) * self.p_out for x in sts))
+
+    def report(self):
+        return {k: {**v, "cost_usd": round(self.cost(k), 4)} for k, v in self.stages.items()} | \
+            {"_total_cost_usd": round(self.cost(), 4)}
+
+
+def classify(exc):
+    """Exception from the openai / httpx client -> error code."""
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    name, msg = type(exc).__name__.lower(), str(exc).lower()
+    if status in (401, 403) or "unauthor" in msg or "forbidden" in msg:
+        return "E-GW-003"
+    if status == 404 or "no route" in msg:
+        return "E-GW-008"
+    if status == 429 or "rate limit" in msg:
+        return "E-GW-004"
+    if status in (400, 413, 422):
+        return "E-GW-009"
+    if status is not None and 500 <= int(status) < 600:
+        return "E-GW-005"
+    if "timeout" in name or "timed out" in msg:
+        return "E-GW-006"
+    if "connect" in name or "ssl" in msg or "certificate" in msg or "connection" in msg:
+        return "E-GW-007"
+    return "E-GW-012"
+
+
+def parse_json_answer(text):
+    """Model text -> dict. Tolerates ```json fences and text around the JSON object."""
+    t = (text or "").replace("```json", "").replace("```", "").strip()
+    if not t:
+        raise ValueError("empty")
+    a, b = t.find("{"), t.rfind("}")
+    if a < 0 or b <= a:
+        raise ValueError("no JSON object in the answer")
+    d = json.loads(t[a:b + 1])
+    if isinstance(d, dict) and isinstance(d.get("items"), list) and d["items"] and isinstance(d["items"][0], dict):
+        d = d["items"][0]                                    # some models wrap the object in {"items": [...]}
+    if not isinstance(d, dict):
+        raise ValueError("JSON is not an object")
+    return d
+
+
+class _Base:
+    def __init__(self, s, log, usage):
+        self.s, self.log, self.usage = s, log, usage
+        self.stage = "setup"
+        ex = s.execution
+        self.transport_retries, self.backoff_max = ex["transport_retries"], ex["backoff_max_sec"]
+
+    async def _sleep(self, attempt, code):
+        base = min(2 ** attempt, self.backoff_max)
+        if code == "E-GW-004":                               # rate limited: back off harder
+            base = min(base * 3, self.backoff_max * 3)
+        await asyncio.sleep(base * (0.5 + random.random()))
+
+    def _log_call(self, ref, attempt, status, code, t0, tin=0, tout=0, finish=None):
+        self.log.llm_call(alert=ref.get("alert"), doc=ref.get("doc"), attempt=attempt, status=status, code=code,
+                          ms=int((time.time() - t0) * 1000), tokens_in=tin, tokens_out=tout, finish=finish)
+
+
+class LiveGateway(_Base):
+    """OpenAI-compatible bank gateway with a Bearer token from py_group_ai_tools."""
+
+    def __init__(self, s, log, usage, client=None, token_fn=None):
+        super().__init__(s, log, usage)
+        g, m = s.gateway, s.model
+        self.model = m["chat_model"]
+        fam = str(m["family"]).lower()
+        self.family = ("gemini" if "gemini" in self.model.lower() else "gpt") if fam == "auto" else fam
+        self.use_case = s.secret("use_case")
+        self.token_lifetime, self.relogin_gap = g["token_lifetime_sec"], g["relogin_min_interval_sec"]
+        self._token, self._token_exp, self._lock = None, 0.0, None
+        self._last_relogin = 0.0
+        self._group_client = None
+        if client is not None:                               # injected (tests)
+            self.client, self._token_fn = client, token_fn
+            return
+        try:
+            import httpx
+            import openai
+        except ImportError as e:
+            raise IAError("E-ENV-001", f"{e.name} (needed for the live gateway)")
+        qp = s.secret("quota_project")
+        if qp and not str(qp).startswith("<"):
+            os.environ.setdefault("GOOGLE_CLOUD_QUOTA_PROJECT", str(qp))
+        try:
+            try:
+                import truststore
+                verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            except ImportError:
+                verify = True
+            http = httpx.AsyncClient(http2=self._has_h2(), verify=verify, timeout=httpx.Timeout(g["http_timeout_sec"]),
+                                     limits=httpx.Limits(max_connections=g["max_connections"],
+                                                         max_keepalive_connections=min(200, g["max_connections"])))
+            self.client = openai.AsyncOpenAI(
+                api_key="N/A", http_client=http, base_url=s.secret("base_url"),
+                default_headers={"Content-Type": "application/json", "x-correlation-id": str(uuid.uuid4()),
+                                 "x-usersession-id": str(uuid.uuid4())})
+        except Exception as e:
+            raise IAError("E-GW-001", f"{type(e).__name__}: {e}")
+        self._token_fn = self._login()
+
+    @staticmethod
+    def _has_h2():
+        try:
+            import h2  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def _login(self):
+        try:
+            from py_group_ai_tools import GroupAIClient
+        except ImportError:
+            raise IAError("E-ENV-001", "py_group_ai_tools (bank gateway client)")
+        try:
+            gc = GroupAIClient.init(staff_id=self.s.secret("staff_id"))
+        except Exception as e:
+            raise IAError("E-GW-001", f"GroupAIClient.init failed: {type(e).__name__}: {e}")
+        names = ["get_dsp_token", "get_dap_token", "get_token", "get_access_token", "get_bearer_token"]
+        names += sorted(n for n in dir(gc) if "token" in n.lower() and not n.startswith("_"))
+        method = next((n for n in names if callable(getattr(gc, n, None))), None)
+        if not method:
+            raise IAError("E-GW-002", "no token method found on GroupAIClient")
+        self._group_client = gc
+        self.log.debug(f"gateway token method: {method}")
+        return getattr(gc, method)
+
+    async def _get_token(self):
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        now = time.time()
+        if self._token and now < self._token_exp - 5:
+            return self._token
+        async with self._lock:
+            now = time.time()
+            if self._token and now < self._token_exp - 5:
+                return self._token
+            try:
+                self._token = await asyncio.to_thread(self._token_fn)
+            except Exception as e:
+                raise IAError("E-GW-002", f"{type(e).__name__}: {e}")
+            self._token_exp = now + self.token_lifetime
+            return self._token
+
+    async def _on_auth_error(self):
+        self._token, self._token_exp = None, 0.0
+        if self._group_client is None or time.time() - self._last_relogin < self.relogin_gap:
+            return
+        self._last_relogin = time.time()
+        try:
+            self._token_fn = await asyncio.to_thread(self._login)
+            self.log.info("  gateway: logged in again after an authentication error")
+        except Exception as e:
+            self.log.event("E-GW-002", f"re-login failed: {e}")
+
+    def _kwargs(self, system, payload):
+        m = self.s.model
+        kw = {"model": self.model, "user": self.use_case,
+              "messages": [{"role": "system", "content": system},
+                           {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]}
+        if self.family == "gemini":
+            kw.update(temperature=m["temperature"], seed=m["seed"], reasoning_effort=m["reasoning_effort"],
+                      max_tokens=m["max_tokens"])
+        else:
+            kw.update(max_completion_tokens=m["max_tokens"])
+        return kw
+
+    async def chat(self, system, payload, ref=None):
+        ref = ref or {}
+        kw = self._kwargs(system, payload)
+        code, detail, tin, tout, finish = None, "", 0, 0, None
+        for attempt in range(1, self.transport_retries + 1):
+            t0 = time.time()
+            try:
+                token = await self._get_token()
+                r = await self.client.chat.completions.create(extra_headers={"Authorization": f"Bearer {token}"}, **kw)
+            except IAError as e:
+                code, detail = e.code, e.detail
+                self._log_call(ref, attempt, "error", code, t0)
+                await self._sleep(attempt, code)
+                continue
+            except Exception as e:
+                code, detail = classify(e), f"{type(e).__name__}: {str(e)[:300]}"
+                self._log_call(ref, attempt, "error", code, t0)
+                self.usage.add(self.stage, 0, 0, ok=False)
+                if code == "E-GW-003":
+                    await self._on_auth_error()
+                if code not in RETRYABLE:
+                    break
+                await self._sleep(attempt, code)
+                continue
+            u = getattr(r, "usage", None)
+            tin, tout = getattr(u, "prompt_tokens", 0) or 0, getattr(u, "completion_tokens", 0) or 0
+            self.usage.add(self.stage, tin, tout, ok=True)
+            try:
+                choice = r.choices[0]
+                finish = getattr(choice, "finish_reason", None)
+                text = choice.message.content or ""
+            except Exception:
+                text = ""
+            self.log.payload(alert=ref.get("alert"), doc=ref.get("doc"), attempt=attempt, payload=payload, answer=text)
+            if not text.strip():
+                code, detail = ("E-LLM-004" if finish == "length" else "E-LLM-001"), f"finish_reason={finish}"
+                self._log_call(ref, attempt, "error", code, t0, tin, tout, finish)
+                await self._sleep(attempt, code)
+                continue
+            try:
+                data = parse_json_answer(text)
+            except Exception as e:
+                code = "E-LLM-004" if finish == "length" else "E-LLM-002"
+                detail = f"{e}; finish_reason={finish}; starts: {text[:120]!r}"
+                self._log_call(ref, attempt, "error", code, t0, tin, tout, finish)
+                await self._sleep(attempt, code)
+                continue
+            self._log_call(ref, attempt, "ok", None, t0, tin, tout, finish)
+            return ChatResult(True, data, None, "", tin, tout, attempt, finish)
+        return ChatResult(False, None, code or "E-GW-012", detail, tin, tout, self.transport_retries, finish)
+
+    async def embed(self, texts):
+        last = None
+        for attempt in range(1, 7):
+            t0 = time.time()
+            try:
+                token = await self._get_token()
+                r = await self.client.embeddings.create(model=self.s.model["embedding_model"], input=texts,
+                                                        user=self.use_case,
+                                                        extra_headers={"Authorization": f"Bearer {token}"})
+                self.log.llm_call(alert=None, doc=f"embed x{len(texts)}", attempt=attempt, status="ok", code=None,
+                                  ms=int((time.time() - t0) * 1000))
+                return np.asarray([d.embedding for d in r.data], dtype=np.float32)
+            except Exception as e:
+                code = e.code if isinstance(e, IAError) else classify(e)
+                last = f"{code} {type(e).__name__}: {str(e)[:200]}"
+                self.log.llm_call(alert=None, doc=f"embed x{len(texts)}", attempt=attempt, status="error", code=code,
+                                  ms=int((time.time() - t0) * 1000))
+                if code == "E-GW-003":
+                    await self._on_auth_error()
+                if code in GATEWAY_FATAL:
+                    break
+                await self._sleep(attempt, code)
+        raise IAError("E-EMB-001", last or "unknown")
+
+
+class MockGateway(_Base):
+    """Offline simulator: no network, no cost. Deterministic answers built from the real texts, so every downstream
+    rule (quote check, sections, bands, framework rule, outputs) runs exactly as in production.
+    gateway.mock_failure_rate injects failures to exercise retries, ERROR rows and the re-run path."""
+
+    def __init__(self, s, log, usage):
+        super().__init__(s, log, usage)
+        self.fail_rate = float(s.gateway["mock_failure_rate"])
+        self.latency = float(s.gateway.get("mock_latency_sec", 0) or 0)
+        self.rng = random.Random(int(s.model["seed"]))
+
+    @staticmethod
+    def _h(*parts):
+        return int(hashlib.md5("|".join(map(str, parts)).encode()).hexdigest(), 16)
+
+    async def chat(self, system, payload, ref=None):
+        ref = ref or {}
+        await asyncio.sleep(self.latency * (0.5 + self.rng.random()) if self.latency else 0)
+        for attempt in range(1, self.transport_retries + 1):
+            t0 = time.time()
+            if self.rng.random() < self.fail_rate:
+                code = self.rng.choice(["E-GW-004", "E-GW-005", "E-GW-006", "E-LLM-002"])
+                self._log_call(ref, attempt, "error", code, t0)
+                self.usage.add(self.stage, 0, 0, ok=False)
+                continue
+            data = self._answer(system, payload)
+            tin = (len(system) + len(json.dumps(payload))) // 4
+            self.usage.add(self.stage, tin, 400, ok=True)
+            self._log_call(ref, attempt, "ok", None, t0, tin, 400, "stop")
+            return ChatResult(True, data, None, "", tin, 400, attempt, "stop")
+        return ChatResult(False, None, "E-GW-005", "mock: injected failures on every attempt", 0, 0,
+                          self.transport_retries)
+
+    def _answer(self, system, p):
+        if "SEARCH QUERIES" in system:
+            words = p.get("alert_text", "").split()
+            return {"alert_id": p.get("alert_id"), "core_mandate": " ".join(words[:12]),
+                    "requirements": [" ".join(words[i:i + 8]) for i in range(0, min(len(words), 24), 8)] or ["n/a"],
+                    "affected_activities": words[3:6], "policy_language": [" ".join(words[:10])],
+                    "procedure_language": [" ".join(words[2:12])], "keywords": words[:8]}
+        kind = "policy" if "policy_id" in p else "procedure"
+        doc = p.get(f"{kind}_id")
+        h = self._h(p.get("alert_id"), doc)
+        linked = h % 4 == 0
+        score = 5 + h % 6 if linked else h % 5
+        sections = [b.split("|")[0].strip("[ ") for b in p.get("document_text", "").split("\n") if b.startswith("[S")]
+        first_line = next((ln for ln in p.get("document_text", "").split("\n") if ln and not ln.startswith("[S")), "")
+        ans = {f"{kind}_id": doc,
+               "reasoning": f"Mock reasoning for {doc}.",
+               "decision": "LINKED" if linked else "NOT_LINKED", "link_score": score,
+               "confidence_level": 3 + h % 3,
+               "evidence_from_alert": p.get("alert_text", "")[:90] if linked else None,
+               f"evidence_from_{kind}": first_line[:90] if linked else None,
+               "linked_sections": sections[:1] if linked else [],
+               "impact_type": ("CHANGE_REQUIRED" if h % 3 == 0 else "REVIEW_REQUIRED") if linked else "NONE",
+               "change_needed": "Mock: review the cited section." if linked else None}
+        if p.get("document_role") == "FRAMEWORK":
+            ans["framework_change"] = "YES" if linked and h % 2 == 0 else "NO"
+        return ans
+
+    async def embed(self, texts):
+        await asyncio.sleep(0)
+        out = []
+        for t in texts:
+            v = np.random.default_rng(self._h(t) % (2 ** 32)).random(32).astype(np.float32)
+            out.append(v)
+        self.log.llm_call(alert=None, doc=f"embed x{len(texts)}", attempt=1, status="ok", code=None, ms=0)
+        return np.vstack(out)
+
+
+def make_gateway(s, log, usage):
+    return MockGateway(s, log, usage) if s.gateway["mode"] == "mock" else LiveGateway(s, log, usage)
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/gpps.py | sha256=462b058ff508669f7abd5b0f20ac3853078c734b91c5ebe849b74f59fbb75715 ####
+"""GPPS JSON -> documents -> sections -> sub-sections (GPPS UI numbering). Same parsing as the validated notebook."""
+import re
+import json
+import html
+import hashlib
+
+import pandas as pd
+
+from .errors import IAError
+from .io_utils import read_table
+
+NA = {"", "n/a", "na", "-", "--", "none", "nan", "null"}
+
+
+def N(x):
+    """Normalised id: upper case, '123.0' -> '123'."""
+    s = str(x).strip().upper()
+    return s[:-2] if re.fullmatch(r"\d+\.0", s) else s
+
+
+def clean(x):
+    return "" if x is None or str(x).strip().lower() in NA else str(x).strip()
+
+
+def as_str(x):
+    if x is None:
+        return ""
+    if isinstance(x, list):
+        return " | ".join(str(i).strip() for i in x if i is not None and str(i).strip())
+    return str(x).strip()
+
+
+def as_dict(x):
+    if isinstance(x, list):
+        x = next((i for i in x if isinstance(i, dict)), {})
+    return x if isinstance(x, dict) else {}
+
+
+def as_list(x):
+    return [i for i in x if isinstance(i, dict)] if isinstance(x, list) else []
+
+
+def first(d, keys):
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, "", []):
+            return v
+    return None
+
+
+def strip_html(s):
+    if not isinstance(s, str) or not s:
+        return ""
+    s = re.sub(r"(?is)<!doctype.*?>|<head.*?>.*?</head>", " ", s)
+    s = re.sub(r"(?s)<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", html.unescape(s)).strip()
+
+
+def load_json(raw):
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def pick(df, *cands):
+    return next((c for c in cands if c in df.columns), None)
+
+
+HEADING = re.compile(r"^\s*([A-Z]?\.?\d+(?:\.\d+){1,3})\.?\s+(.{3,150}?)\s*$")   # "2.2. Model Inputs" / "B.2.7.4 Use of"
+MARK = "␞SUBHEAD␞"
+
+
+def split_subsections(raw_html, section_no, strict_prefix):
+    """Numbered bold / underlined headings inside a segment's HTML become sub-sections."""
+    if not isinstance(raw_html, str) or not raw_html.strip():
+        return []
+    found = []
+
+    def mark(m):
+        inner = strip_html(m.group(0))
+        h = HEADING.match(inner)
+        top = re.sub(r"^[A-Z]\.?", "", h.group(1)).split(".")[0] if h else ""
+        if h and (not strict_prefix or not section_no or top == str(section_no).split(".")[0]):
+            found.append((h.group(1), h.group(2).strip(" :")))
+            return f" {MARK}{len(found) - 1}{MARK} "
+        return m.group(0)
+
+    marked = re.sub(r"(?is)<(strong|b|u)\b[^>]*>.*?</\1>|<span[^>]*underline[^>]*>.*?</span>", mark, raw_html)
+    parts = re.split(rf"{MARK}(\d+){MARK}", strip_html(marked))
+    subs, seen = [], set()
+    if parts[0].strip():
+        subs.append({"sub_no": f"{section_no}.0" if section_no else "", "sub_title": "(section introduction)",
+                     "text": parts[0].strip()})
+    for i in range(1, len(parts), 2):
+        num, title = found[int(parts[i])]
+        body = parts[i + 1].strip() if i + 1 < len(parts) else ""
+        if (num, body[:200]) in seen:
+            continue                                                  # GPPS sometimes repeats a block
+        seen.add((num, body[:200]))
+        subs.append({"sub_no": num, "sub_title": title, "text": body})
+    return subs
+
+
+KEYS = {
+    "policy": dict(app="policyApplication", core=["plcyCoreId"], title=["policyTitle"],
+                   status=("versn", ["versStatCde"]), top=[("policyText", "Policy Statement"), ("policyPurpose", "Purpose")],
+                   seg_text=["sgmntText"], seg_title=["sgmntTitlText"], seg_disp=["sgmntDispInd"],
+                   seg_no=["dispSortOrdrNum", "sortOrdrNum"], seg_reason=["sgmntReasonText"], strict=True),
+    "procedure": dict(app="procedureApplication", core=["procCoreId"], title=["procedureTitle"],
+                      status=("versn", ["procVersnStatCde", "versStatCde"]), top=[("procedureText", "Procedure Statement")],
+                      seg_text=["procSgmntText", "sgmntText"], seg_title=["procSgmntTitlText", "sgmntTitlText"],
+                      seg_disp=["procSgmntDispInd", "sgmntDispInd"],
+                      seg_no=["procDispSortOrdrNum", "procSortOrdrNum", "dispSortOrdrNum", "sortOrdrNum"],
+                      seg_reason=["procSgmntReasonText", "sgmntReasonText"], strict=False),
+}
+ID_COLUMNS = ("policy_core_id", "procedure_core_id", "policy_id", "procedure_id")
+
+
+def parse_doc(raw, kind):
+    K = KEYS[kind]
+    d = load_json(raw)
+    if not d:
+        return None
+    app = as_dict(d.get(K["app"]))
+    secs = []
+    for key, label in K["top"]:
+        o = as_dict(d.get(key))
+        secs.append(dict(section_no="", title=strip_html(as_str(o.get("sgmntTitlText") or label)),
+                         html=o.get("sgmntText") or "", displayed="Y", reason="", kind="top"))
+    for s in as_list(app.get("segment")):
+        secs.append(dict(section_no=clean(as_str(first(s, K["seg_no"]))),
+                         title=strip_html(as_str(first(s, K["seg_title"]) or "Section")),
+                         html=first(s, K["seg_text"]) or "",
+                         displayed=(clean(as_str(first(s, K["seg_disp"]))).upper() or "Y"),
+                         reason=strip_html(as_str(first(s, K["seg_reason"]))), kind="segment"))
+    out, seen = [], set()
+    for s in secs:
+        text = strip_html(s["html"])
+        if not text:
+            continue
+        h = hashlib.md5(text.encode()).hexdigest()
+        if h in seen:
+            continue                                                  # duplicate segment text
+        seen.add(h)
+        subs = split_subsections(s["html"], s["section_no"], K["strict"]) if s["kind"] == "segment" else []
+        out.append({**{k: v for k, v in s.items() if k != "html"}, "text": text,
+                    "subsections": subs or [{"sub_no": "", "sub_title": "", "text": text}]})
+    ver = as_dict(d.get(K["status"][0]))
+    return dict(core_id=N(first(d, K["core"]) or ""), title=clean(as_str(first(d, K["title"]))),
+                status=clean(as_str(first(ver, K["status"][1]))), sections=out)
+
+
+def load_docs(path, kind, scope, published_only, log):
+    df = read_table(path)
+    if "json_data" not in df.columns:
+        raise IAError("E-SRC-003", f"{path}: column 'json_data' missing (columns: {list(df.columns)[:15]})")
+    idc = pick(df, *ID_COLUMNS)
+    recs, bad = [], 0
+    for _, r in df.iterrows():
+        try:
+            p = parse_doc(r["json_data"], kind)
+        except Exception as e:                                        # one odd document never stops the run
+            log.debug(f"parse error in {path}: {type(e).__name__}: {e}")
+            p = None
+        if p is None:
+            bad += 1
+            continue
+        p.update(doc_id=N(r[idc]) if idc else p["core_id"], version=r.get("version_num"), scope=scope, kind=kind)
+        recs.append(p)
+    if bad:
+        log.event("W-SRC-001", f"{bad:,} of {len(df):,} rows in {path} not parseable - skipped")
+    out = pd.DataFrame(recs)
+    n_all = len(out)
+    if not len(out):
+        return out
+    if published_only:
+        out = out[out.status.astype(str).str.upper().str.startswith("PUBL")]
+    out = out.assign(_v=pd.to_numeric(out.version, errors="coerce").fillna(-1))
+    out = out.sort_values("_v", ascending=False).drop_duplicates("doc_id").drop(columns="_v").reset_index(drop=True)
+    log.info(f"  {kind:9s} {scope:6s}: {n_all:,} rows -> {len(out):,} documents (published, latest version)")
+    return out
+
+
+def build_units(docs):
+    """Assessment unit = a visible numbered SUB-SECTION; a visible section without numbered sub-sections is one
+    unit. Hidden segments (shown 'N' in the GPPS UI) are flagged hidden=True and excluded later."""
+    rows = []
+    for d in docs.itertuples():
+        prefix = "POL" if d.kind == "policy" else "PROC"
+        for s in d.sections:
+            for sub in s["subsections"]:
+                rows.append(dict(
+                    unit_id=f"{prefix}-{d.doc_id}|{s['section_no'] or s['title'][:20]}|{sub['sub_no'] or '-'}",
+                    doc_type=d.kind, doc_id=f"{prefix}-{d.doc_id}", doc_title=d.title, scope=d.scope,
+                    section_no=s["section_no"], section_title=s["title"], subsection_no=sub["sub_no"],
+                    subsection_title=sub["sub_title"], hidden=s["displayed"] == "N", hidden_reason=s["reason"],
+                    level="sub-section" if sub["sub_no"] else "section", text=sub["text"], chars=len(sub["text"])))
+    return pd.DataFrame(rows)
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/io_utils.py | sha256=faf848f4a32ab417aafe6dfc38d9ca0290d9c63534e72c298a9211db62d35c18 ####
+"""File helpers: tolerant readers, atomic writers, append-only checkpoints."""
+import os
+import glob
+import json
+
+import pandas as pd
+
+from .errors import IAError
+
+
+def resolve_source(pattern):
+    """A path, or a glob (newest match). Returns None if nothing exists."""
+    p = str(pattern)
+    if any(ch in p for ch in "*?["):
+        hits = sorted(glob.glob(p, recursive=True), key=os.path.getmtime)
+        return hits[-1] if hits else None
+    return p if os.path.exists(p) else None
+
+
+def read_table(path):
+    """parquet / csv / xlsx -> DataFrame, with a fallback for parquet files that carry odd metadata."""
+    p = str(path)
+    try:
+        if p.lower().endswith((".xlsx", ".xls")):
+            return pd.read_excel(p)
+        if p.lower().endswith(".csv"):
+            return pd.read_csv(p)
+        try:
+            return pd.read_parquet(p)
+        except Exception:
+            import pyarrow.parquet as pq
+            return pq.read_table(p).replace_schema_metadata(None).to_pandas(date_as_object=True)
+    except FileNotFoundError:
+        raise IAError("E-SRC-001", p)
+    except Exception as e:
+        raise IAError("E-SRC-002", f"{p}: {type(e).__name__}: {e}")
+
+
+def ensure_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, ".write_test")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+    except OSError as e:
+        raise IAError("E-OUT-001", f"folder not writable: {path} ({e})")
+
+
+def _stringify_objects(df):
+    out = df.copy()
+    for c in out.columns:
+        if out[c].dtype == object:
+            out[c] = out[c].map(lambda v: None if v is None or (isinstance(v, float) and v != v) else str(v))
+    return out
+
+
+def write_parquet(df, path):
+    """Atomic: written to a temporary file, then renamed (a crash never leaves half a file)."""
+    tmp = path + ".tmp"
+    try:
+        _stringify_objects(df).to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+    except Exception as e:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise IAError("E-OUT-001", f"{path}: {type(e).__name__}: {e}")
+
+
+def write_text(text, path):
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception as e:
+        raise IAError("E-OUT-001", f"{path}: {type(e).__name__}: {e}")
+
+
+def write_json(obj, path):
+    write_text(json.dumps(obj, indent=2, ensure_ascii=False, default=str), path)
+
+
+class JsonlCheckpoint:
+    """Append-only checkpoint, one JSON line per finished (alert, document) pair.
+
+    Appending never rewrites earlier work, so a crash loses at most the lines not yet flushed. On load the last
+    line per key wins, ERROR rows are dropped (so they are retried) and damaged lines are skipped (W-CKP-001)."""
+
+    def __init__(self, path, key=("alert", "doc"), log=None):
+        self.path, self.key, self.log = path, key, log
+        self._buf = []
+
+    def load(self):
+        if not os.path.exists(self.path):
+            return []
+        rows, bad = {}, 0
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                        rows[tuple(r[k] for k in self.key)] = r
+                    except Exception:
+                        bad += 1
+        except OSError as e:
+            raise IAError("E-CKP-001", f"{self.path}: {e}")
+        if bad and self.log:
+            self.log.event("W-CKP-001", f"{bad} damaged line(s) in {os.path.basename(self.path)} skipped")
+        return [r for r in rows.values() if r.get("model_decision") != "ERROR"]
+
+    def add(self, row):
+        self._buf.append(row)
+
+    def flush(self):
+        if not self._buf:
+            return
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                for r in self._buf:
+                    f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            self._buf = []
+        except OSError as e:
+            raise IAError("E-OUT-001", f"checkpoint {self.path}: {e}")
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/logs.py | sha256=42fc6c3cdcb88166f8cfdf48da28457dd91016cd4e73c4cca7b435bd512b3b06 ####
+"""Run logging. One folder per run: <log_dir>/<run_id>/<YYYYmmdd_HHMMSS>/
+
+  run.log            everything (console lines + DEBUG detail + tracebacks)
+  errors.jsonl       one JSON line per warning / error: time, code, stage, alert, doc, attempt, detail
+  llm_calls.jsonl    one JSON line per gateway call: time, stage, alert, doc, attempt, status, code, ms, tokens
+  payloads.jsonl     (only if logging.log_payloads) full model input and answer text - sensitive, debug only
+  config_used.yaml   the effective config, gateway secrets masked
+  run_summary.json   written at the end: stages, counts, cost, error-code counts, exit code
+"""
+import os
+import sys
+import json
+import time
+import logging
+import datetime
+from collections import Counter
+
+from .errors import ERRORS
+
+
+class RunLog:
+    def __init__(self, log_dir, run_id, level="INFO", log_llm_calls=True, log_payloads=False):
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.dir = os.path.join(log_dir, run_id, stamp)
+        try:
+            os.makedirs(self.dir, exist_ok=True)
+        except OSError:
+            # last resort: a writable folder, so that a bad log path never stops the diagnosis
+            self.dir = os.path.join(os.getcwd(), "ia_pp_logs", run_id, stamp)
+            os.makedirs(self.dir, exist_ok=True)
+        self.logger = logging.getLogger(f"ia_pp.{run_id}.{stamp}")
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.propagate = False
+        fh = logging.FileHandler(os.path.join(self.dir, "run.log"), encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(getattr(logging, level, logging.INFO))
+        ch.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%H:%M:%S"))
+        self.logger.addHandler(fh)
+        self.logger.addHandler(ch)
+        self._err = open(os.path.join(self.dir, "errors.jsonl"), "a", encoding="utf-8")
+        self._calls = open(os.path.join(self.dir, "llm_calls.jsonl"), "a", encoding="utf-8") if log_llm_calls else None
+        self._payloads = open(os.path.join(self.dir, "payloads.jsonl"), "a", encoding="utf-8") if log_payloads else None
+        self.codes = Counter()
+        self.stage = "setup"
+        self.t0 = time.time()
+
+    # ---- plain lines --------------------------------------------------------------------------------------
+    def info(self, msg):
+        self.logger.info(msg)
+
+    def debug(self, msg):
+        self.logger.debug(msg)
+
+    # ---- classified events --------------------------------------------------------------------------------
+    def event(self, code, detail="", echo=True, **ctx):
+        """Record a warning / error with its code. echo=False keeps per-pair noise out of the console."""
+        self.codes[code] += 1
+        rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "code": code,
+               "title": ERRORS[code].title if code in ERRORS else "", "stage": self.stage,
+               "detail": str(detail)[:2000], **{k: _safe(v) for k, v in ctx.items()}}
+        try:
+            self._err.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            self._err.flush()
+        except Exception:
+            pass
+        line = f"[{code}] {rec['title']}: {str(detail)[:500]}" + (f" | {ctx}" if ctx and echo else "")
+        if echo:
+            (self.logger.warning if code.startswith("W") else self.logger.error)(line)
+        else:
+            self.logger.debug(line)
+
+    def exception(self, code, exc, **ctx):
+        """Unexpected exception: classified event + full traceback in run.log."""
+        self.event(code, f"{type(exc).__name__}: {exc}", **ctx)
+        self.logger.debug("traceback", exc_info=exc)
+
+    def llm_call(self, **rec):
+        if self._calls is None:
+            return
+        try:
+            rec = {"ts": round(time.time(), 3), "stage": self.stage, **{k: _safe(v) for k, v in rec.items()}}
+            self._calls.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def payload(self, **rec):
+        if self._payloads is None:
+            return
+        try:
+            self._payloads.write(json.dumps({k: _safe(v, 10 ** 7) for k, v in rec.items()}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def write_json(self, name, obj):
+        try:
+            with open(os.path.join(self.dir, name), "w", encoding="utf-8") as f:
+                json.dump(obj, f, indent=2, ensure_ascii=False, default=str)
+        except Exception as e:
+            self.logger.error(f"could not write {name}: {e}")
+
+    def write_yaml(self, name, obj):
+        try:
+            import yaml
+            with open(os.path.join(self.dir, name), "w", encoding="utf-8") as f:
+                yaml.safe_dump(obj, f, sort_keys=False, allow_unicode=True)
+        except Exception as e:
+            self.logger.error(f"could not write {name}: {e}")
+
+    def close(self):
+        for f in (self._err, self._calls, self._payloads):
+            try:
+                if f:
+                    f.flush()
+                    f.close()
+            except Exception:
+                pass
+        for h in list(self.logger.handlers):
+            try:
+                h.flush()
+                h.close()
+            except Exception:
+                pass
+            self.logger.removeHandler(h)
+
+
+def _safe(v, limit=2000):
+    if v is None or isinstance(v, (bool, int, float)):
+        return v
+    s = str(v)
+    return s if len(s) <= limit else s[:limit] + "..."
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/ia_pp/outputs.py | sha256=7a39eeb198c94c2258c33bbfa9ac836e65b6da0b0372ccc076b34f3f2cb6641c ####
+"""Result files (same content and column names as the validated notebook):
+
+  ia_pp_pairs.parquet              every (alert, document) read, with decision, status, score, sections, quotes
+  ia_pp_impacted_sections.parquet  one row per impacted section / sub-section
+  ia_pp_alert_impacts.jsonl        one JSON per alert (impacted / possible / scope review, with sections)
+  ia_pp_results_summary.xlsx       How to read | summary | per alert | by scope | framework documents | document scope
+  production/                      the exact prompts, schemas and settings used (run record)
+"""
+import os
+import json
+import math
+import shutil
+
+import numpy as np
+import pandas as pd
+
+from .io_utils import write_parquet, write_text, write_json
+from .rules import quote_found
+
+SHOWN = ["IMPACTED", "POSSIBLE_IMPACT", "SCOPE_REVIEW"]
+PAIR_COLUMNS = ["RECORD_ID", "alert_title", "DOC_TYPE", "DOC_ID", "doc_title", "doc_scope", "doc_applicability",
+                "document_role", "search_rank", "model_decision", "final_decision", "impact_status", "confidence_tier",
+                "link_score", "decision_prob", "confidence_level", "impact_type", "change_needed", "linked_sections",
+                "linked_units", "reasoning", "evidence_from_alert", "evidence_from_target", "grounding_flag",
+                "section_grounded", "framework_change", "error_code", "error_detail", "run_id"]
+
+
+def _j(v):
+    return None if v is None or (isinstance(v, float) and math.isnan(v)) else v
+
+
+def write_results(s, ctx, res, prompts, log, usage_report):
+    out = s.output_dir
+    titles = dict(zip(ctx.alerts.alert, ctx.alerts.title))
+    r = res.copy()
+    r["doc_applicability"] = r.doc.map(ctx.doc_applic).fillna("")
+    r["doc_title"] = r.doc.map(ctx.doc_title)
+    r["alert_title"] = r.alert.map(titles)
+    r["linked_sections"] = r.linked_units.fillna("").map(
+        lambda u: " | ".join(ctx.unit_info[x]["gpps_label"] for x in str(u).split("; ") if x in ctx.unit_info))
+    r["run_id"] = s.run_id
+    pairs = r.rename(columns={"alert": "RECORD_ID", "doc": "DOC_ID", "doc_type": "DOC_TYPE"})
+    for c in PAIR_COLUMNS:
+        if c not in pairs.columns:
+            pairs[c] = None
+    pairs = pairs[PAIR_COLUMNS]
+    write_parquet(pairs, os.path.join(out, "ia_pp_pairs.parquet"))
+
+    srows = []
+    for p in pairs[pairs.impact_status.isin(SHOWN)].itertuples():
+        for u in str(p.linked_units or "").split("; "):
+            if u in ctx.unit_info:
+                I = ctx.unit_info[u]
+                srows.append(dict(RECORD_ID=p.RECORD_ID, DOC_TYPE=p.DOC_TYPE, DOC_ID=p.DOC_ID, doc_title=p.doc_title,
+                                  doc_scope=p.doc_scope, impact_status=p.impact_status, unit_id=u,
+                                  section_no=I["section_no"], section_title=I["section_title"],
+                                  subsection_no=I["subsection_no"], subsection_title=I["subsection_title"],
+                                  gpps_label=I["gpps_label"], quote_in_this_section=quote_found(p.evidence_from_target, I["text"]),
+                                  impact_type=p.impact_type, link_score=p.link_score, change_needed=p.change_needed))
+    write_parquet(pd.DataFrame(srows, columns=["RECORD_ID", "DOC_TYPE", "DOC_ID", "doc_title", "doc_scope", "impact_status",
+                                               "unit_id", "section_no", "section_title", "subsection_no", "subsection_title",
+                                               "gpps_label", "quote_in_this_section", "impact_type", "link_score",
+                                               "change_needed"]),
+                  os.path.join(out, "ia_pp_impacted_sections.parquet"))
+
+    def items(g):
+        return [{"doc_id": x.DOC_ID, "title": x.doc_title, "scope": x.doc_scope, "role": x.document_role,
+                 "impact_status": x.impact_status, "confidence_tier": x.confidence_tier,
+                 "link_score": None if pd.isna(x.link_score) else int(x.link_score),
+                 "impact_type": _j(x.impact_type), "change_needed": _j(x.change_needed),
+                 "sections": [{k: ctx.unit_info[u][k] for k in ("section_no", "section_title", "subsection_no",
+                                                                "subsection_title", "gpps_label")}
+                              for u in str(x.linked_units or "").split("; ") if u in ctx.unit_info],
+                 "section_grounded": bool(x.section_grounded) if x.section_grounded is not None else False,
+                 "evidence_from_alert": _j(x.evidence_from_alert), "evidence_from_target": _j(x.evidence_from_target),
+                 "reasoning": _j(x.reasoning)}
+                for x in g.sort_values("link_score", ascending=False).itertuples()]
+
+    shown = pairs[pairs.impact_status.isin(SHOWN)]
+    lines = []
+    for a in ctx.alerts.alert:
+        g = shown[shown.RECORD_ID == a]
+        sel = lambda st, t: g[(g.impact_status == st) & (g.DOC_TYPE == t)]
+        lines.append(json.dumps({
+            "record_id": a, "alert_title": titles.get(a), "run_id": s.run_id,
+            "counts": {st.lower(): {t: int(((g.impact_status == st) & (g.DOC_TYPE == t)).sum())
+                                    for t in ("policy", "procedure")} for st in SHOWN},
+            "impacted": {"policies": items(sel("IMPACTED", "policy")), "procedures": items(sel("IMPACTED", "procedure"))},
+            "possible_impact": {"policies": items(sel("POSSIBLE_IMPACT", "policy")),
+                                "procedures": items(sel("POSSIBLE_IMPACT", "procedure"))},
+            "scope_review": items(g[g.impact_status == "SCOPE_REVIEW"])}, ensure_ascii=False, default=str))
+    write_text("\n".join(lines) + "\n", os.path.join(out, "ia_pp_alert_impacts.jsonl"))
+
+    n_alerts = len(ctx.alerts)
+    summary = []
+    for kind in ("policy", "procedure"):
+        pk = pairs[pairs.DOC_TYPE == kind]
+        imp, pos = pk[pk.impact_status == "IMPACTED"], pk[pk.impact_status == "POSSIBLE_IMPACT"]
+        both = pk[pk.impact_status.isin(["IMPACTED", "POSSIBLE_IMPACT"])]
+        summary.append(dict(doc_type=kind, pairs_read=len(pk), no_answer=int((pk.final_decision == "ERROR").sum()),
+                            impacted=len(imp), impacted_per_alert=round(len(imp) / max(n_alerts, 1), 1),
+                            alerts_with_impacted=imp.RECORD_ID.nunique(), possible_impact=len(pos),
+                            possible_per_alert=round(len(pos) / max(n_alerts, 1), 1),
+                            alerts_with_any=both.RECORD_ID.nunique(),
+                            scope_review=int((pk.impact_status == "SCOPE_REVIEW").sum()),
+                            framework_links=int((both.document_role == "FRAMEWORK").sum()),
+                            change_required_pct=round(100 * both.impact_type.astype(str).eq("CHANGE_REQUIRED").mean(), 1)
+                            if len(both) else np.nan,
+                            section_grounded_pct=round(100 * both.section_grounded.astype(str).eq("True").mean(), 1)
+                            if len(both) else np.nan))
+    summary = pd.DataFrame(summary)
+    log.info("RESULTS " + s.run_id + f" | {n_alerts} alerts | IMPACTED = link_score >= {s.rules['headline_min_score']} | "
+             f"POSSIBLE_IMPACT = {s.rules['link_threshold']}-{s.rules['headline_min_score'] - 1}\n"
+             + summary.to_string(index=False))
+
+    try:
+        by_scope = shown.groupby(["DOC_TYPE", "doc_scope", "impact_status"]).size().unstack(fill_value=0).reset_index()
+        per_alert = shown.pivot_table(index="RECORD_ID", columns=["DOC_TYPE", "impact_status"], values="DOC_ID",
+                                      aggfunc="count", fill_value=0) if len(shown) else pd.DataFrame()
+        if len(per_alert):
+            per_alert.columns = [f"{a}_{b.lower()}" for a, b in per_alert.columns]
+        per_alert = per_alert.reindex(ctx.alerts.alert, fill_value=0).rename_axis("RECORD_ID").reset_index()
+        per_alert.insert(1, "alert_title", per_alert.RECORD_ID.map(titles))
+        fw = pairs[pairs.document_role == "FRAMEWORK"].groupby(["DOC_ID", "doc_title"]).agg(
+            pairs_read=("RECORD_ID", "size"), model_linked=("model_decision", lambda x: int((x == "LINKED").sum())),
+            process_change_required=("impact_status", lambda x: int(x.isin(["IMPACTED", "POSSIBLE_IMPACT"]).sum()))
+        ).reset_index()
+        errs = pairs[pairs.final_decision == "ERROR"].groupby(["DOC_TYPE", "error_code"]).size().rename("pairs").reset_index()
+        with pd.ExcelWriter(os.path.join(out, "ia_pp_results_summary.xlsx")) as xl:
+            pd.DataFrame({"How to read": [
+                f"Run {s.run_id}: every policy read for every alert; procedures = search top {s.search['proc_top_k']} per "
+                "alert, each read in full. ONE model call per (alert, document).",
+                f"IMPACTED = model LINKED with link_score >= {s.rules['headline_min_score']} and both verbatim quotes "
+                "verified by code.",
+                f"POSSIBLE_IMPACT = model LINKED with link_score {s.rules['link_threshold']}-"
+                f"{s.rules['headline_min_score'] - 1}, quotes verified - SME review queue.",
+                f"SCOPE_REVIEW = linked to another country's LOCAL document: a {s.country['name']} alert should not "
+                "impact it unless that country adopts the requirement.",
+                "Framework / process documents count only when the alert requires the process itself to change.",
+                "no_answer / sheet 'pairs without answer': re-run the same command to retry them (see error codes)."]}
+            ).to_excel(xl, sheet_name="How to read", index=False)
+            summary.to_excel(xl, sheet_name="summary", index=False)
+            per_alert.to_excel(xl, sheet_name="per alert", index=False)
+            by_scope.to_excel(xl, sheet_name="by scope", index=False)
+            fw.to_excel(xl, sheet_name="framework documents", index=False)
+            errs.to_excel(xl, sheet_name="pairs without answer", index=False)
+            ctx.scope.to_excel(xl, sheet_name="document scope", index=False)
+    except Exception as e:
+        log.event("W-OUT-001", f"{type(e).__name__}: {e}")
+
+    # run record: exact prompts, schemas, exceptions and (masked) settings
+    prod = os.path.join(out, "production")
+    os.makedirs(prod, exist_ok=True)
+    for key, (ppath, spath) in prompts.files.items():
+        for src in (ppath, spath):
+            try:
+                shutil.copy2(src, os.path.join(prod, os.path.basename(src)))
+            except OSError as e:
+                log.event("E-OUT-001", f"copy {src}: {e}")
+    write_json({"run_id": s.run_id, "country": s.country_code, "country_name": s.country["name"],
+                "n_alerts": n_alerts, "rules": s.rules, "search": s.search, "model": {k: v for k, v in s.model.items()},
+                "framework_documents": ctx.framework_docs, "skipped_documents": ctx.skip_docs,
+                "sources": ctx.sources_used, "usage": usage_report,
+                "calls": "ONE per (alert, document) - no audit call in production"},
+               os.path.join(prod, "production_config.json"))
+    return summary
+
+#### END FILE ####
