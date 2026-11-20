@@ -1,0 +1,317 @@
+# IA policy / procedure package v1.1 - text bundle part 4 of 4 (RCAI&A)
+# Unpack: README section 6.
+#### FILE: ia_policy_procedure/tools/unpack_bundle.py | sha256=0af0b9d7b90a4c55aaddb4f5d4ac7a1e128949ae5e15991e2be7e31a83f20218 ####
+"""Re-create the project folder from the text bundle part(s) (the bank git / file transfer accepts text only).
+
+    python unpack_bundle.py IA_PP_BUNDLE_part1.txt IA_PP_BUNDLE_part2.txt [...] --dest .
+
+Each file in a bundle sits between '#### FILE: <path> | sha256=<hash> ####' and '#### END FILE ####'.
+The hash of every unpacked file is checked; a mismatch (damaged copy) is reported and the run stops.
+"""
+import os
+import re
+import sys
+import hashlib
+import argparse
+
+HEAD = re.compile(r"^#### FILE: (.+?) \| sha256=([0-9a-f]{64}) ####$")
+
+
+def unpack(parts, dest):
+    files, cur, buf, digest = {}, None, [], None
+    for part in parts:
+        with open(part, encoding="utf-8", newline="") as f:
+            for line in f.read().split("\n"):
+                m = HEAD.match(line)
+                if m:
+                    cur, digest, buf = m.group(1), m.group(2), []
+                elif line == "#### END FILE ####" and cur:
+                    files[cur] = ("\n".join(buf), digest)
+                    cur = None
+                elif cur is not None:
+                    buf.append(line)
+    bad = []
+    for path, (text, digest) in sorted(files.items()):
+        if ".." in path.split("/") or path.startswith("/"):
+            bad.append(path)
+            continue
+        if hashlib.sha256(text.encode("utf-8")).hexdigest() != digest:
+            bad.append(path)
+            continue
+        full = os.path.join(dest, path)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+    print(f"unpacked {len(files) - len(bad)} file(s) into {os.path.abspath(dest)}")
+    if bad:
+        print(f"DAMAGED or unsafe, not written: {bad}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("parts", nargs="+")
+    ap.add_argument("--dest", default=".")
+    a = ap.parse_args()
+    unpack(a.parts, a.dest)
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/tests/test_offline.py | sha256=f8c330d01a43975c8b4ba7a7d652a77634a32e75c4975467c96f6b6cc7834ee5 ####
+"""Offline self-tests (no bank data, no gateway, no cost). Run from the project folder:
+
+    python tests/test_offline.py
+
+1. live-gateway code path with a stub client: request parameters, retries, error classification, JSON parsing
+2. prompt rendering is exactly the validated notebook prompt (for country 'United States')
+3. answer validation / coercion rules
+4. quote check and decision rules
+"""
+import os
+import sys
+import json
+import types
+import asyncio
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJECT = os.path.dirname(HERE)
+sys.path.insert(0, PROJECT)
+
+from ia_pp.config import load_settings                       # noqa: E402
+from ia_pp.logs import RunLog                                 # noqa: E402
+from ia_pp.gateway import LiveGateway, Usage, classify, parse_json_answer   # noqa: E402
+from ia_pp.prompts import PromptStore                         # noqa: E402
+from ia_pp.rules import quote_found                           # noqa: E402
+
+FAILS = []
+
+
+def check(name, cond):
+    print(("PASS " if cond else "FAIL ") + name)
+    if not cond:
+        FAILS.append(name)
+
+
+class APIErr(Exception):
+    def __init__(self, status, msg="err"):
+        super().__init__(msg)
+        self.status_code = status
+
+
+class StubCompletions:
+    def __init__(self, script):
+        self.script, self.calls = list(script), []
+
+    async def create(self, extra_headers=None, **kw):
+        self.calls.append((extra_headers, kw))
+        step = self.script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        msg = types.SimpleNamespace(content=step)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg, finish_reason="stop")],
+                                     usage=types.SimpleNamespace(prompt_tokens=1000, completion_tokens=200))
+
+
+def settings():
+    cfg = os.path.join(PROJECT, "config", "config.yaml")
+    os.environ.setdefault("IA_GATEWAY_BASE_URL", "https://example.invalid")
+    os.environ.setdefault("IA_STAFF_ID", "test")
+    os.environ.setdefault("IA_USE_CASE", "UC-test")
+    return load_settings(cfg, {"sources.alert_scope": "/tmp/x.parquet", "execution.backoff_max_sec": 1})
+
+
+def test_live_stub():
+    s = settings()
+    log = RunLog(tempfile.mkdtemp(), "test")
+    good = json.dumps({"policy_id": "POL-1", "decision": "LINKED", "link_score": 8})
+    comp = StubCompletions([APIErr(429), APIErr(503), "```json\n" + good + "\n```"])
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=comp))
+    gw = LiveGateway(s, log, Usage(0.2, 1.2), client=client, token_fn=lambda: "TOKEN")
+    r = asyncio.run(gw.chat("system", {"a": 1}, ref={"alert": "1", "doc": "POL-1"}))
+    check("live: retries 429 + 503 then succeeds", r.ok and r.attempts == 3 and r.data["decision"] == "LINKED")
+    hdr, kw = comp.calls[-1]
+    check("live: bearer token sent", hdr == {"Authorization": "Bearer TOKEN"})
+    check("live: gpt family sends max_completion_tokens from config",
+          kw.get("max_completion_tokens") == s.model["max_tokens"] and "temperature" not in kw)
+    check("live: model and use case from config", kw["model"] == s.model["chat_model"] and kw["user"] == "UC-test")
+
+    comp2 = StubCompletions([APIErr(404, "no Route matched")])
+    gw2 = LiveGateway(s, log, Usage(0.2, 1.2), client=types.SimpleNamespace(chat=types.SimpleNamespace(completions=comp2)),
+                      token_fn=lambda: "T")
+    r2 = asyncio.run(gw2.chat("system", {}, ref={}))
+    check("live: 404 is not retried and coded E-GW-008", (not r2.ok) and r2.code == "E-GW-008" and len(comp2.calls) == 1)
+
+    s.model["family"] = "gemini"
+    gw3 = LiveGateway(s, log, Usage(0.2, 1.2), client=client, token_fn=lambda: "T")
+    kw3 = gw3._kwargs("sys", {})
+    check("live: gemini family sends temperature, seed, reasoning_effort, max_tokens",
+          kw3["temperature"] == s.model["temperature"] and kw3["seed"] == s.model["seed"]
+          and kw3["reasoning_effort"] == s.model["reasoning_effort"] and kw3["max_tokens"] == s.model["max_tokens"])
+    comp4 = StubCompletions(["not json at all", "still not", "no", "nope"])
+    gw4 = LiveGateway(settings(), log, Usage(0.2, 1.2),
+                      client=types.SimpleNamespace(chat=types.SimpleNamespace(completions=comp4)), token_fn=lambda: "T")
+    r4 = asyncio.run(gw4.chat("system", {}, ref={}))
+    check("live: invalid JSON retried then coded E-LLM-002", (not r4.ok) and r4.code == "E-LLM-002" and len(comp4.calls) == 4)
+    log.close()
+
+
+def test_classify_and_parse():
+    check("classify 401", classify(APIErr(401)) == "E-GW-003")
+    check("classify 429", classify(APIErr(429)) == "E-GW-004")
+    check("classify 500", classify(APIErr(502)) == "E-GW-005")
+    check("classify 400", classify(APIErr(400)) == "E-GW-009")
+    check("classify timeout", classify(type("ReadTimeout", (Exception,), {})("x")) == "E-GW-006")
+    check("parse items wrapper", parse_json_answer('{"items":[{"decision":"LINKED"}]}') == {"decision": "LINKED"})
+    check("parse text around json", parse_json_answer('Here: {"a": 1} done')["a"] == 1)
+
+
+def test_prompts_identical_to_notebook():
+    ref = os.path.join(HERE, "us_prompts_reference.json")
+    if not os.path.exists(ref):
+        print("SKIP prompt identity (tests/us_prompts_reference.json not shipped)")
+        return
+    s = settings()
+    p = PromptStore(s)
+    r = json.load(open(ref, encoding="utf-8"))
+    mapping = {"qp": "query_plan", "pb": "policy:BUSINESS", "qb": "procedure:BUSINESS", "pf": "policy:FRAMEWORK",
+               "qf": "procedure:FRAMEWORK"}
+    for k, key in mapping.items():
+        check(f"prompt {key} identical to the validated notebook prompt", p.get(key) == r[k])
+
+
+def test_validation():
+    s = settings()
+    p = PromptStore(s)
+    a, err, w = p.validate("policy:BUSINESS", {"decision": "linked", "link_score": "8", "impact_type": "maybe"})
+    check("validate: coerces decision / score, nulls bad optional field",
+          err is None and a["decision"] == "LINKED" and a["link_score"] == 8 and a["impact_type"] is None and w)
+    a, err, w = p.validate("policy:BUSINESS", {"link_score": 9})
+    check("validate: missing decision is an error", err is not None)
+    a, err, w = p.validate("policy:FRAMEWORK", {"decision": "NOT_LINKED", "framework_change": "yes - process"})
+    check("validate: framework_change coerced", err is None and a["framework_change"] == "YES")
+
+
+def test_quotes():
+    check("quote verbatim", quote_found("Licensed staff must complete 24 hours", "x. Licensed staff must complete 24 hours of CE"))
+    check("quote too short rejected", not quote_found("short", "short text"))
+    check("quote absent", not quote_found("this sentence is not in the text at all", "something else entirely here"))
+
+
+def test_country_tools():
+    from ia_pp.country import _set_yaml_value, init_country, hub_candidates
+    import pandas as pd
+    txt = "country:\n  code: \"US\"   # c\n  terms: [\"a\"]\nsources:\n  rapid2: \"x\"\n"
+    out = _set_yaml_value(txt, "country", "terms", '["b", "c"]')
+    check("config edit keeps comments and other lines", '  terms: ["b", "c"]' in out and '# c' in out and 'rapid2: "x"' in out)
+    tmp = tempfile.mkdtemp()
+    import shutil
+    shutil.copytree(os.path.join(PROJECT, "config"), os.path.join(tmp, "config"))
+    shutil.copytree(os.path.join(PROJECT, "exceptions"), os.path.join(tmp, "exceptions"))
+    cfg, exc = init_country(tmp, "uk", "United Kingdom")
+    t = open(cfg).read()
+    check("init-country writes code, empty lists, placeholders, exceptions dir",
+          'code: "UK"' in t and "terms: []" in t and "<UK rapid2 file>" in t and 'exceptions_dir: "exceptions/UK"' in t
+          and os.path.exists(os.path.join(exc, "framework_documents.csv")))
+    p = pd.DataFrame({"RECORD_ID": [str(i) for i in range(25)] * 2, "DOC_ID": ["POL-1"] * 25 + ["POL-2"] * 25,
+                      "DOC_TYPE": "policy", "model_decision": ["LINKED"] * 25 + ["LINKED"] * 5 + ["NOT_LINKED"] * 20})
+    h = hub_candidates(p, set(), 0.4)
+    check("hub check flags a document linked to most alerts", h.DOC_ID.tolist() == ["POL-1"])
+
+
+if __name__ == "__main__":
+    test_classify_and_parse()
+    test_live_stub()
+    test_prompts_identical_to_notebook()
+    test_validation()
+    test_quotes()
+    test_country_tools()
+    print(f"\n{'ALL PASSED' if not FAILS else f'{len(FAILS)} FAILED: {FAILS}'}")
+    sys.exit(1 if FAILS else 0)
+
+#### END FILE ####
+#### FILE: ia_policy_procedure/tests/us_prompts_reference.json | sha256=c3b7e3d977b7bbf7768ff42be88778421408d5360d6a29d12ae6b92af55b4ac7 ####
+{"qp": "ROLE:\nYou are a lead Regulatory Compliance & Policy Governance AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to turn ONE incoming regulatory development (alert_text) into SEARCH QUERIES that will find the internal policies and procedures (in the bank's GPPS) that the development may impact.\n\nWHAT THE INPUT CONTAINS:\n* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, taxonomy tag).\n\nCORE PRINCIPLES: COVER EVERY REQUIREMENT, USE BANK LANGUAGE\nAn alert often contains several distinct requirements (e.g. a notice, a deadline, a record, a licence, a prohibition). Each one may be governed by a different policy or procedure. List them separately. Alerts use statute / regulator language; GPPS documents use internal language (e.g. \"fair treatment of customers\", \"dormant accounts\", \"third-party risk\", \"records retention\", \"customer due diligence\", \"complaints handling\", \"regulatory reporting\"). Translate.\n\nINSTRUCTIONS:\n * \"core_mandate\": one sentence - what the bank must now do, for whom.\n * \"requirements\": 2-6 short sentences, ONE distinct requirement each (what must be done / prohibited / recorded / disclosed, by when, for whom). Do not invent requirements the alert does not state.\n * \"affected_activities\": 2-6 short phrases in internal bank language naming the products, customers, business activities or control areas affected.\n * \"policy_language\": 3-5 sentences written the way an internal POLICY would state the principle or minimum requirement that governs this.\n * \"procedure_language\": 3-5 sentences written the way an internal PROCEDURE step would carry it out.\n * \"keywords\": 5-15 search terms (regulatory and internal synonyms).\n * If the alert has no actionable requirement (e.g. a consultation or a speech), still describe the area it touches.\n\nFORMAT REQUIREMENTS:\nReturn ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).\n{\n\"alert_id\": \"string\",\n\"core_mandate\": \"string\",\n\"requirements\": [\"string\", ...],\n\"affected_activities\": [\"string\", ...],\n\"policy_language\": [\"string\", ...],\n\"procedure_language\": [\"string\", ...],\n\"keywords\": [\"string\", ...]\n}", "pb": "ROLE:\nYou are a lead Regulatory Compliance & Policy Governance AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate an incoming regulatory development (alert_text) against ONE internal POLICY from the bank's Global Policy & Procedure System, GPPS (document_text), and determine whether the development impacts that policy, i.e. whether the policy owner must review or update it, and which section(s) / sub-section(s).\n\nWHAT THE INPUT CONTAINS:\n* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, and the alert's OWN taxonomy tag L1 > L2 > L3, assigned upstream in RAPID2).\n* document_scope: GLOBAL or LOCAL (and which country) for this policy.\n* document_text: the FULL visible text of the policy, split into GPPS sections and sub-sections, each labelled [S<n> | <GPPS section number> <title> > <sub-section number> <title>]. Sections hidden in GPPS are already removed.\n\nCORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING\nYou must evaluate the ENTIRE policy text. Do not anchor solely on the policy title, on one section, or on a shared keyword.\nA policy sets principles and minimum control requirements for a perimeter (risk area, products, customers, businesses, activities). An alert IMPACTS a policy when the regulatory change creates, removes, tightens, re-scopes or re-interprets a requirement that a section of the policy governs - what must be done, permitted, prohibited, by when, for whom, or what must be recorded, disclosed or approved - within the policy's perimeter.\n\nSEMANTIC BRIDGING & BANK TAXONOMY:\nAlerts use statute / regulator language; policies use internal principle language. Human experts link specific regulatory mandates to the policy section that governs them. Apply these equivalency rules:\n * Consumer protection mandates (UDAAP, disclosures, complaint handling, fee / billing rules, fair lending) ARE LINKED to policy sections on fair treatment of customers, disclosures, complaints, product governance or customer outcomes.\n * Unclaimed property, escheatment and dormancy rules ARE LINKED to sections on dormant / inactive accounts, account closure, customer contact or client-asset protection.\n * Financial exploitation / vulnerable adult rules ARE LINKED to sections on vulnerable customers, customer protection, fraud against customers or account management.\n * Licensing, registration, qualification and continuing-education rules ARE LINKED to sections on licensing, registration, fit-and-proper, training or competence of staff.\n * Records, information-request and retention rules ARE LINKED to records management, data retention and information-request handling sections.\n * Reporting-field / data-standard rules (e.g. LEI, transaction reporting) ARE LINKED to regulatory reporting accuracy / data quality sections for THAT regime.\n * AML, sanctions, KYC, beneficial-ownership and fraud-reporting rules ARE LINKED to the matching financial-crime policy sections - not to generic compliance sections.\n\nTWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):\nThese guards remove a small number of clearly-wrong links. When a genuine perimeter overlap exists, still LINK.\nGUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING.\nIf your own reasoning concludes that no section of the policy governs the requirement the alert changes, decide NOT_LINKED. Never write \"the policy is about something else, but ... therefore LINKED.\" If you cannot name the concrete section and the requirement in it that the alert adds to or changes, it is NOT_LINKED.\nGUARD 2 - A GENERIC STATEMENT OR A DIFFERENT REGIME IS NOT A BRIDGE.\n(a) Generic statements (\"comply with all applicable laws and regulations\", \"this policy applies to all businesses\", \"report to regulators as required\") do not link merely because a new regulation exists. Link only if the alert changes a specific requirement a section governs.\n(b) A different regulatory regime, entity type, product or activity does not link: a state insurance producer rule does not link to a deposit-account policy, merely because both concern \"customers\" or \"training\". Require overlap in the actual activity, product or requirement.\n\nJURISDICTION RULE:\ndocument_scope says whether the policy is GLOBAL (applies in every country, including the United States) or LOCAL to one country. A United States alert can impact a GLOBAL policy and a United States LOCAL policy. It does NOT impact a policy that is LOCAL to another country, unless that policy itself states that it adopts or applies the United States requirement - in that case say so in \"reasoning\". For a GLOBAL policy, document_scope may also say which countries' legal entities GPPS lists as applicable; use it as context only - a GLOBAL policy applies group-wide unless its own text clearly excludes the United States.\nJudge the content first, then apply this rule.\n\nINSTRUCTIONS:\n * Read the alert_text. Identify the core regulatory mandate, who it applies to, and what it requires.\n * Read the document_text in full, every section and sub-section.\n * Formulate \"reasoning\":\n   * First sentence: identify the policy's perimeter and the section(s) closest to the alert's mandate (by S-id).\n   * Second sentence: explain how the alert concretely changes a requirement in that section (using the Semantic Bridging rules), OR state that it does not and therefore NOT_LINKED.\n * Assign \"decision\":\n   * \"LINKED\": the alert creates or changes a requirement that a named section of this policy governs, within its perimeter.\n   * \"NOT_LINKED\": no section governs the changed requirement (Guard 1), or only a generic statement / different regime overlaps (Guard 2).\n   * \"INSUFFICIENT_EVIDENCE\": the alert or policy text is truncated or empty.\n * Assign \"link_score\" (0-10): 8-10 the alert directly changes a specific requirement in a named section; 5-7 the alert falls within the perimeter / objective of a section; 1-4 tangential or thematic only; 0 completely unrelated.\n * Assign \"confidence_level\" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with textual gaps; 1 relies heavily on assumptions.\n * \"linked_sections\": the S-ids (the most specific sub-sections) the link rests on (empty if NOT_LINKED).\n * \"impact_type\": CHANGE_REQUIRED (the section conflicts with, or is missing, what the alert now requires), REVIEW_REQUIRED (the section governs the affected activity; a change may be needed after review), NONE (NOT_LINKED).\n * \"change_needed\": one sentence on what the policy owner should look at, or null.\n * Extract verbatim substrings for \"evidence_from_alert\" and \"evidence_from_policy\" (copy exactly, from one of the linked sections; if linking on a section's perimeter, extract the exact sentence of that section).\n\nEXAMPLE EVALUATION (valid link):\nalert_text: \"Pennsylvania amends insurance producer continuing education: producers must complete 30 hours every two years, including 3 hours of ethics.\"\ndocument_text: \"... [S4 | 3 Licensing > 3.2 Licensing and training of insurance staff] Licensed insurance staff must complete 24 hours of continuing education every two years ...\"\nreasoning: \"The policy covers insurance distribution, and S4 (3.2) sets continuing-education requirements for licensed insurance staff. The alert raises the required hours from 24 to 30 and adds an ethics component, so S4 no longer meets the new requirement.\"\ndecision: \"LINKED\"   link_score: 9   confidence_level: 5   linked_sections: [\"S4\"]   impact_type: \"CHANGE_REQUIRED\"\n\nEXAMPLE EVALUATION (Guard 2 - generic statement, different regime):\nalert_text: \"California amends the law on deferred compensation for public-sector reservists.\"\ndocument_text: \"... [S2 | 1 Policy statement > 1.1 Scope] All businesses must comply with applicable consumer protection laws ... [S6 | 4 Complaints > 4.1 Acknowledgement] Complaints must be acknowledged within 5 days ...\"\nreasoning: \"The policy covers customer complaints handling across retail businesses; the closest section is S2, a generic statement on complying with consumer laws. The alert changes public-sector reservist compensation, which no section of this policy governs; only a generic 'comply with applicable laws' statement overlaps.\"\ndecision: \"NOT_LINKED\"   link_score: 1   confidence_level: 4   linked_sections: []   impact_type: \"NONE\"\n\nFORMAT REQUIREMENTS:\nReturn ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).\n{\n\"policy_id\": \"string\",\n\"reasoning\": \"string\",\n\"decision\": \"LINKED | NOT_LINKED | INSUFFICIENT_EVIDENCE\",\n\"link_score\": integer,\n\"confidence_level\": integer,\n\"evidence_from_alert\": \"verbatim substring or null\",\n\"evidence_from_policy\": \"verbatim substring or null\",\n\"linked_sections\": [\"S<n>\", ...],\n\"impact_type\": \"CHANGE_REQUIRED | REVIEW_REQUIRED | NONE\",\n\"change_needed\": \"one sentence or null\"\n}", "qb": "ROLE:\nYou are a lead Operational Risk & Process Controls AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate an incoming regulatory development (alert_text) against ONE internal PROCEDURE from the bank's Global Policy & Procedure System, GPPS (document_text), and determine operational impact, i.e. whether the procedure owner must review or update its steps, and which section(s) / sub-section(s).\n\nWHAT THE INPUT CONTAINS:\n* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, and the alert's OWN taxonomy tag L1 > L2 > L3, assigned upstream in RAPID2).\n* document_scope: GLOBAL or LOCAL (and which country) for this procedure.\n* document_text: the FULL visible text of the procedure, split into GPPS sections and sub-sections, each labelled [S<n> | <GPPS section number> <title> > <sub-section number> <title>] (purpose, scope, steps, roles, timelines, records). Sections hidden in GPPS are already removed.\n\nCORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING\nYou must evaluate the ENTIRE procedure text. Do not anchor solely on the procedure title, on one step, or on a shared keyword.\nProcedures often state a broad purpose / scope and then specific steps. If the alert impacts the stated purpose or scope AND a step must change as a result, it is LINKED, even if the specific step wording seems unrelated. An alert impacts a procedure when it changes what a step must do, check, approve, record, disclose or notify, by when, how often, or for whom.\n\nSEMANTIC BRIDGING & BANK TAXONOMY:\nAlerts use statute / regulator language; procedures use internal process language. Apply these equivalency rules:\n * Consumer protection mandates (UDAAP, disclosures, complaints, fee / billing rules) ARE LINKED to steps for customer communications, disclosure checklists, complaint handling, billing disputes or product QA.\n * Unclaimed property, escheatment and dormancy rules ARE LINKED to steps for dormant accounts, account closure, owner notices or customer contact.\n * Financial exploitation / vulnerable adult rules ARE LINKED to steps for vulnerable-customer handling, holds on disbursements, escalation or account management.\n * Licensing, registration and continuing-education rules ARE LINKED to steps for staff registration, licence tracking, training assignment and attestation.\n * Records, information-request and retention rules ARE LINKED to steps for request intake, response timelines, record keeping and retention.\n * Data validation / reporting-field rules (e.g. LEI) ARE LINKED to steps for data capture, validation and regulatory report production for THAT regime.\n * AML, sanctions, KYC and beneficial-ownership rules ARE LINKED to the matching financial-crime steps (screening, CDD, EDD, SAR filing).\n\nTWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):\nThese guards remove a small number of clearly-wrong links. They are NOT a licence to reject genuine scope-level links - when a real activity overlap exists, still LINK.\nGUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING.\nIf your own reasoning concludes the procedure's steps AND its purpose / scope are both unrelated to the alert, decide NOT_LINKED. Never write \"the steps are unrelated, but ... therefore LINKED.\" If you cannot name a concrete step or section the alert adds to or changes, it is NOT_LINKED.\nGUARD 2 - A GENERIC STATEMENT OR A DIFFERENT REGIME IS NOT A BRIDGE.\n(a) Generic statements (\"comply with applicable regulations\", \"escalate regulatory matters to Compliance\") do not link merely because a new regulation exists. Link ONLY if the alert changes a specific step, timeline, check or record in this procedure.\n(b) A different regulatory regime, entity, product or activity does not link: a securities-settlement rule does NOT link to a deposit-statement procedure merely because both involve \"timely communications\". Require overlap in the actual activity, product or requirement.\n\nJURISDICTION RULE:\ndocument_scope says whether the procedure is GLOBAL (applies in every country, including the United States) or LOCAL to one country. A United States alert can impact a GLOBAL procedure and a United States LOCAL procedure. It does NOT impact a procedure that is LOCAL to another country, unless that procedure itself states that it adopts or applies the United States requirement - in that case say so in \"reasoning\". For a GLOBAL procedure, document_scope may also say which countries' legal entities GPPS lists as applicable; use it as context only - a GLOBAL procedure applies group-wide unless its own text clearly excludes the United States.\nJudge the content first, then apply this rule.\n\nINSTRUCTIONS:\n * Read the alert_text. Identify the core regulatory mandate.\n * Read the document_text in full, every section and sub-section, including purpose, scope, steps, timelines and records.\n * Formulate \"reasoning\":\n   * First sentence: identify the procedure's purpose / scope and the section(s) or step(s) closest to the alert's mandate (by S-id).\n   * Second sentence: explain how the alert concretely changes what that step must do (using the Semantic Bridging rules), OR state that it does not and therefore NOT_LINKED.\n * Assign \"decision\":\n   * \"LINKED\": the alert concretely changes a step, timeline, check, approval or record in a named section, within the procedure's scope.\n   * \"NOT_LINKED\": disjoint activity / business, OR only a generic statement / regime overlaps (Guard 2), OR no concrete step is changed (Guard 1).\n   * \"INSUFFICIENT_EVIDENCE\": the alert or procedure text is truncated or empty.\n * Assign \"link_score\" (0-10): 8-10 the alert changes a specific step in a named section; 5-7 the alert falls within the procedure's purpose / scope (the exact step may differ); 1-4 tangential / weak; 0 completely unrelated.\n * Assign \"confidence_level\" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with textual gaps; 1 relies heavily on assumptions.\n * \"linked_sections\": the S-ids (the most specific sub-sections) the link rests on (empty if NOT_LINKED).\n * \"impact_type\": CHANGE_REQUIRED (a step conflicts with, or is missing, what the alert now requires), REVIEW_REQUIRED (the procedure governs the affected activity; a change may be needed after review), NONE (NOT_LINKED).\n * \"change_needed\": one sentence on what the procedure owner should look at, or null.\n * Extract verbatim substrings for \"evidence_from_alert\" and \"evidence_from_procedure\" (from one of the linked sections). If linking on purpose / scope, extract the exact purpose or scope sentence.\n\nEXAMPLE EVALUATION (valid link):\nalert_text: \"Ohio amends its request-for-information rules: institutions must respond to consumer information requests within 10 business days.\"\ndocument_text: \"... [S5 | 3 Responding to customer information requests > 3.1 Response timeline] Log the request and send the response within 30 calendar days of receipt ...\"\nreasoning: \"The procedure covers handling of customer information requests, and S5 (3.1) sets the response timeline. The alert shortens the deadline to 10 business days for Ohio consumers, so the 30-day step in S5 no longer meets the requirement.\"\ndecision: \"LINKED\"   link_score: 9   confidence_level: 5   linked_sections: [\"S5\"]   impact_type: \"CHANGE_REQUIRED\"\n\nEXAMPLE EVALUATION (Guard 2 - generic statement is not a bridge):\nalert_text: \"CFTC extends no-action relief on swap data reporting for non-US swap dealers.\"\ndocument_text: \"... [S1 | Purpose] Ensure regulatory matters are escalated to Compliance ... [S3 | 2 Branch cash handling > 2.1 Daily count] Count and reconcile cash daily ...\"\nreasoning: \"The procedure covers branch cash handling; the closest section is S1, a generic escalation statement. The alert relaxes a CFTC swap-reporting deadline for non-US swap dealers and changes no step of this procedure; only a generic 'regulatory matters' phrase overlaps.\"\ndecision: \"NOT_LINKED\"   link_score: 1   confidence_level: 4   linked_sections: []   impact_type: \"NONE\"\n\nFORMAT REQUIREMENTS:\nReturn ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).\n{\n\"procedure_id\": \"string\",\n\"reasoning\": \"string\",\n\"decision\": \"LINKED | NOT_LINKED | INSUFFICIENT_EVIDENCE\",\n\"link_score\": integer,\n\"confidence_level\": integer,\n\"evidence_from_alert\": \"verbatim substring or null\",\n\"evidence_from_procedure\": \"verbatim substring or null\",\n\"linked_sections\": [\"S<n>\", ...],\n\"impact_type\": \"CHANGE_REQUIRED | REVIEW_REQUIRED | NONE\",\n\"change_needed\": \"one sentence or null\"\n}", "pf": "ROLE:\nYou are a lead Regulatory Compliance & Policy Governance AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate an incoming regulatory development (alert_text) against ONE internal POLICY from the bank's Global Policy & Procedure System, GPPS (document_text), and determine whether the development impacts that policy, i.e. whether the policy owner must review or update it, and which section(s) / sub-section(s).\n\nWHAT THE INPUT CONTAINS:\n* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, and the alert's OWN taxonomy tag L1 > L2 > L3, assigned upstream in RAPID2).\n* document_scope: GLOBAL or LOCAL (and which country) for this policy.\n* document_text: the FULL visible text of the policy, split into GPPS sections and sub-sections, each labelled [S<n> | <GPPS section number> <title> > <sub-section number> <title>]. Sections hidden in GPPS are already removed.\n\nCORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING\nYou must evaluate the ENTIRE policy text. Do not anchor solely on the policy title, on one section, or on a shared keyword.\nA policy sets principles and minimum control requirements for a perimeter (risk area, products, customers, businesses, activities). An alert IMPACTS a policy when the regulatory change creates, removes, tightens, re-scopes or re-interprets a requirement that a section of the policy governs - what must be done, permitted, prohibited, by when, for whom, or what must be recorded, disclosed or approved - within the policy's perimeter.\n\nSEMANTIC BRIDGING & BANK TAXONOMY:\nAlerts use statute / regulator language; policies use internal principle language. Human experts link specific regulatory mandates to the policy section that governs them. Apply these equivalency rules:\n * Consumer protection mandates (UDAAP, disclosures, complaint handling, fee / billing rules, fair lending) ARE LINKED to policy sections on fair treatment of customers, disclosures, complaints, product governance or customer outcomes.\n * Unclaimed property, escheatment and dormancy rules ARE LINKED to sections on dormant / inactive accounts, account closure, customer contact or client-asset protection.\n * Financial exploitation / vulnerable adult rules ARE LINKED to sections on vulnerable customers, customer protection, fraud against customers or account management.\n * Licensing, registration, qualification and continuing-education rules ARE LINKED to sections on licensing, registration, fit-and-proper, training or competence of staff.\n * Records, information-request and retention rules ARE LINKED to records management, data retention and information-request handling sections.\n * Reporting-field / data-standard rules (e.g. LEI, transaction reporting) ARE LINKED to regulatory reporting accuracy / data quality sections for THAT regime.\n * AML, sanctions, KYC, beneficial-ownership and fraud-reporting rules ARE LINKED to the matching financial-crime policy sections - not to generic compliance sections.\n\nTWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):\nThese guards remove a small number of clearly-wrong links. When a genuine perimeter overlap exists, still LINK.\nGUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING.\nIf your own reasoning concludes that no section of the policy governs the requirement the alert changes, decide NOT_LINKED. Never write \"the policy is about something else, but ... therefore LINKED.\" If you cannot name the concrete section and the requirement in it that the alert adds to or changes, it is NOT_LINKED.\nGUARD 2 - A GENERIC STATEMENT OR A DIFFERENT REGIME IS NOT A BRIDGE.\n(a) Generic statements (\"comply with all applicable laws and regulations\", \"this policy applies to all businesses\", \"report to regulators as required\") do not link merely because a new regulation exists. Link only if the alert changes a specific requirement a section governs.\n(b) A different regulatory regime, entity type, product or activity does not link: a state insurance producer rule does not link to a deposit-account policy, merely because both concern \"customers\" or \"training\". Require overlap in the actual activity, product or requirement.\n\nJURISDICTION RULE:\ndocument_scope says whether the policy is GLOBAL (applies in every country, including the United States) or LOCAL to one country. A United States alert can impact a GLOBAL policy and a United States LOCAL policy. It does NOT impact a policy that is LOCAL to another country, unless that policy itself states that it adopts or applies the United States requirement - in that case say so in \"reasoning\". For a GLOBAL policy, document_scope may also say which countries' legal entities GPPS lists as applicable; use it as context only - a GLOBAL policy applies group-wide unless its own text clearly excludes the United States.\nJudge the content first, then apply this rule.\n\n\nFRAMEWORK / PROCESS DOCUMENTS:\ndocument_role = FRAMEWORK means this policy governs HOW the bank handles regulatory change in general - identifying,\nassessing and implementing regulatory change, read-across, change execution, or the governance of regulatory reporting /\nnotifications. Every regulatory alert passes through such a policy, so that alone is NOT an impact.\n* Decide LINKED only if the alert text itself clearly requires the PROCESS to be updated, changed or rectified - for\n  example a new rule on how regulatory change or reporting must be governed, a new mandated step, timeline, approval,\n  control or record IN that process, or a regulator finding that the process itself must be fixed.\n* A new law, a new obligation or a new report that simply has to be handled THROUGH the process is NOT_LINKED.\n* When LINKED, evidence_from_alert must be the alert sentence that requires the process change, and\n  \"framework_change\" = YES. Otherwise \"framework_change\" = NO.\ndocument_role = BUSINESS: judge as usual and set \"framework_change\" = NOT_APPLICABLE.\n\nINSTRUCTIONS:\n * Read the alert_text. Identify the core regulatory mandate, who it applies to, and what it requires.\n * Read the document_text in full, every section and sub-section.\n * Formulate \"reasoning\":\n   * First sentence: identify the policy's perimeter and the section(s) closest to the alert's mandate (by S-id).\n   * Second sentence: explain how the alert concretely changes a requirement in that section (using the Semantic Bridging rules), OR state that it does not and therefore NOT_LINKED.\n * Assign \"decision\":\n   * \"LINKED\": the alert creates or changes a requirement that a named section of this policy governs, within its perimeter.\n   * \"NOT_LINKED\": no section governs the changed requirement (Guard 1), or only a generic statement / different regime overlaps (Guard 2).\n   * \"INSUFFICIENT_EVIDENCE\": the alert or policy text is truncated or empty.\n * Assign \"link_score\" (0-10): 8-10 the alert directly changes a specific requirement in a named section; 5-7 the alert falls within the perimeter / objective of a section; 1-4 tangential or thematic only; 0 completely unrelated.\n * Assign \"confidence_level\" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with textual gaps; 1 relies heavily on assumptions.\n * \"linked_sections\": the S-ids (the most specific sub-sections) the link rests on (empty if NOT_LINKED).\n * \"impact_type\": CHANGE_REQUIRED (the section conflicts with, or is missing, what the alert now requires), REVIEW_REQUIRED (the section governs the affected activity; a change may be needed after review), NONE (NOT_LINKED).\n * \"change_needed\": one sentence on what the policy owner should look at, or null.\n * Extract verbatim substrings for \"evidence_from_alert\" and \"evidence_from_policy\" (copy exactly, from one of the linked sections; if linking on a section's perimeter, extract the exact sentence of that section).\n\nEXAMPLE EVALUATION (valid link):\nalert_text: \"Pennsylvania amends insurance producer continuing education: producers must complete 30 hours every two years, including 3 hours of ethics.\"\ndocument_text: \"... [S4 | 3 Licensing > 3.2 Licensing and training of insurance staff] Licensed insurance staff must complete 24 hours of continuing education every two years ...\"\nreasoning: \"The policy covers insurance distribution, and S4 (3.2) sets continuing-education requirements for licensed insurance staff. The alert raises the required hours from 24 to 30 and adds an ethics component, so S4 no longer meets the new requirement.\"\ndecision: \"LINKED\"   link_score: 9   confidence_level: 5   linked_sections: [\"S4\"]   impact_type: \"CHANGE_REQUIRED\"\n\nEXAMPLE EVALUATION (Guard 2 - generic statement, different regime):\nalert_text: \"California amends the law on deferred compensation for public-sector reservists.\"\ndocument_text: \"... [S2 | 1 Policy statement > 1.1 Scope] All businesses must comply with applicable consumer protection laws ... [S6 | 4 Complaints > 4.1 Acknowledgement] Complaints must be acknowledged within 5 days ...\"\nreasoning: \"The policy covers customer complaints handling across retail businesses; the closest section is S2, a generic statement on complying with consumer laws. The alert changes public-sector reservist compensation, which no section of this policy governs; only a generic 'comply with applicable laws' statement overlaps.\"\ndecision: \"NOT_LINKED\"   link_score: 1   confidence_level: 4   linked_sections: []   impact_type: \"NONE\"\n\nFORMAT REQUIREMENTS:\nReturn ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).\n{\n\"policy_id\": \"string\",\n\"reasoning\": \"string\",\n\"decision\": \"LINKED | NOT_LINKED | INSUFFICIENT_EVIDENCE\",\n\"link_score\": integer,\n\"confidence_level\": integer,\n\"evidence_from_alert\": \"verbatim substring or null\",\n\"evidence_from_policy\": \"verbatim substring or null\",\n\"linked_sections\": [\"S<n>\", ...],\n\"impact_type\": \"CHANGE_REQUIRED | REVIEW_REQUIRED | NONE\",\n\"change_needed\": \"one sentence or null\",\n\"framework_change\": \"YES | NO | NOT_APPLICABLE\"\n}", "qf": "ROLE:\nYou are a lead Operational Risk & Process Controls AI Architect at a Tier-1 Global Bank - HSBC (United States). Your objective is to evaluate an incoming regulatory development (alert_text) against ONE internal PROCEDURE from the bank's Global Policy & Procedure System, GPPS (document_text), and determine operational impact, i.e. whether the procedure owner must review or update its steps, and which section(s) / sub-section(s).\n\nWHAT THE INPUT CONTAINS:\n* alert_text: the regulatory development (title, summary, update) plus alert_metadata (jurisdiction, regulator, and the alert's OWN taxonomy tag L1 > L2 > L3, assigned upstream in RAPID2).\n* document_scope: GLOBAL or LOCAL (and which country) for this procedure.\n* document_text: the FULL visible text of the procedure, split into GPPS sections and sub-sections, each labelled [S<n> | <GPPS section number> <title> > <sub-section number> <title>] (purpose, scope, steps, roles, timelines, records). Sections hidden in GPPS are already removed.\n\nCORE PRINCIPLES: ANTI-ANCHORING & HOLISTIC MAPPING\nYou must evaluate the ENTIRE procedure text. Do not anchor solely on the procedure title, on one step, or on a shared keyword.\nProcedures often state a broad purpose / scope and then specific steps. If the alert impacts the stated purpose or scope AND a step must change as a result, it is LINKED, even if the specific step wording seems unrelated. An alert impacts a procedure when it changes what a step must do, check, approve, record, disclose or notify, by when, how often, or for whom.\n\nSEMANTIC BRIDGING & BANK TAXONOMY:\nAlerts use statute / regulator language; procedures use internal process language. Apply these equivalency rules:\n * Consumer protection mandates (UDAAP, disclosures, complaints, fee / billing rules) ARE LINKED to steps for customer communications, disclosure checklists, complaint handling, billing disputes or product QA.\n * Unclaimed property, escheatment and dormancy rules ARE LINKED to steps for dormant accounts, account closure, owner notices or customer contact.\n * Financial exploitation / vulnerable adult rules ARE LINKED to steps for vulnerable-customer handling, holds on disbursements, escalation or account management.\n * Licensing, registration and continuing-education rules ARE LINKED to steps for staff registration, licence tracking, training assignment and attestation.\n * Records, information-request and retention rules ARE LINKED to steps for request intake, response timelines, record keeping and retention.\n * Data validation / reporting-field rules (e.g. LEI) ARE LINKED to steps for data capture, validation and regulatory report production for THAT regime.\n * AML, sanctions, KYC and beneficial-ownership rules ARE LINKED to the matching financial-crime steps (screening, CDD, EDD, SAR filing).\n\nTWO GUARDS AGAINST FALSE LINKS (apply these, but do NOT become reject-everything):\nThese guards remove a small number of clearly-wrong links. They are NOT a licence to reject genuine scope-level links - when a real activity overlap exists, still LINK.\nGUARD 1 - DO NOT LINK AGAINST YOUR OWN REASONING.\nIf your own reasoning concludes the procedure's steps AND its purpose / scope are both unrelated to the alert, decide NOT_LINKED. Never write \"the steps are unrelated, but ... therefore LINKED.\" If you cannot name a concrete step or section the alert adds to or changes, it is NOT_LINKED.\nGUARD 2 - A GENERIC STATEMENT OR A DIFFERENT REGIME IS NOT A BRIDGE.\n(a) Generic statements (\"comply with applicable regulations\", \"escalate regulatory matters to Compliance\") do not link merely because a new regulation exists. Link ONLY if the alert changes a specific step, timeline, check or record in this procedure.\n(b) A different regulatory regime, entity, product or activity does not link: a securities-settlement rule does NOT link to a deposit-statement procedure merely because both involve \"timely communications\". Require overlap in the actual activity, product or requirement.\n\nJURISDICTION RULE:\ndocument_scope says whether the procedure is GLOBAL (applies in every country, including the United States) or LOCAL to one country. A United States alert can impact a GLOBAL procedure and a United States LOCAL procedure. It does NOT impact a procedure that is LOCAL to another country, unless that procedure itself states that it adopts or applies the United States requirement - in that case say so in \"reasoning\". For a GLOBAL procedure, document_scope may also say which countries' legal entities GPPS lists as applicable; use it as context only - a GLOBAL procedure applies group-wide unless its own text clearly excludes the United States.\nJudge the content first, then apply this rule.\n\n\nFRAMEWORK / PROCESS DOCUMENTS:\ndocument_role = FRAMEWORK means this procedure governs HOW the bank handles regulatory change in general - identifying,\nassessing and implementing regulatory change, read-across, change execution, or the governance of regulatory reporting /\nnotifications. Every regulatory alert passes through such a procedure, so that alone is NOT an impact.\n* Decide LINKED only if the alert text itself clearly requires the PROCESS to be updated, changed or rectified - for\n  example a new rule on how regulatory change or reporting must be governed, a new mandated step, timeline, approval,\n  control or record IN that process, or a regulator finding that the process itself must be fixed.\n* A new law, a new obligation or a new report that simply has to be handled THROUGH the process is NOT_LINKED.\n* When LINKED, evidence_from_alert must be the alert sentence that requires the process change, and\n  \"framework_change\" = YES. Otherwise \"framework_change\" = NO.\ndocument_role = BUSINESS: judge as usual and set \"framework_change\" = NOT_APPLICABLE.\n\nINSTRUCTIONS:\n * Read the alert_text. Identify the core regulatory mandate.\n * Read the document_text in full, every section and sub-section, including purpose, scope, steps, timelines and records.\n * Formulate \"reasoning\":\n   * First sentence: identify the procedure's purpose / scope and the section(s) or step(s) closest to the alert's mandate (by S-id).\n   * Second sentence: explain how the alert concretely changes what that step must do (using the Semantic Bridging rules), OR state that it does not and therefore NOT_LINKED.\n * Assign \"decision\":\n   * \"LINKED\": the alert concretely changes a step, timeline, check, approval or record in a named section, within the procedure's scope.\n   * \"NOT_LINKED\": disjoint activity / business, OR only a generic statement / regime overlaps (Guard 2), OR no concrete step is changed (Guard 1).\n   * \"INSUFFICIENT_EVIDENCE\": the alert or procedure text is truncated or empty.\n * Assign \"link_score\" (0-10): 8-10 the alert changes a specific step in a named section; 5-7 the alert falls within the procedure's purpose / scope (the exact step may differ); 1-4 tangential / weak; 0 completely unrelated.\n * Assign \"confidence_level\" (1-5): 5 explicit textual support in both texts; 3 clear conceptual link with textual gaps; 1 relies heavily on assumptions.\n * \"linked_sections\": the S-ids (the most specific sub-sections) the link rests on (empty if NOT_LINKED).\n * \"impact_type\": CHANGE_REQUIRED (a step conflicts with, or is missing, what the alert now requires), REVIEW_REQUIRED (the procedure governs the affected activity; a change may be needed after review), NONE (NOT_LINKED).\n * \"change_needed\": one sentence on what the procedure owner should look at, or null.\n * Extract verbatim substrings for \"evidence_from_alert\" and \"evidence_from_procedure\" (from one of the linked sections). If linking on purpose / scope, extract the exact purpose or scope sentence.\n\nEXAMPLE EVALUATION (valid link):\nalert_text: \"Ohio amends its request-for-information rules: institutions must respond to consumer information requests within 10 business days.\"\ndocument_text: \"... [S5 | 3 Responding to customer information requests > 3.1 Response timeline] Log the request and send the response within 30 calendar days of receipt ...\"\nreasoning: \"The procedure covers handling of customer information requests, and S5 (3.1) sets the response timeline. The alert shortens the deadline to 10 business days for Ohio consumers, so the 30-day step in S5 no longer meets the requirement.\"\ndecision: \"LINKED\"   link_score: 9   confidence_level: 5   linked_sections: [\"S5\"]   impact_type: \"CHANGE_REQUIRED\"\n\nEXAMPLE EVALUATION (Guard 2 - generic statement is not a bridge):\nalert_text: \"CFTC extends no-action relief on swap data reporting for non-US swap dealers.\"\ndocument_text: \"... [S1 | Purpose] Ensure regulatory matters are escalated to Compliance ... [S3 | 2 Branch cash handling > 2.1 Daily count] Count and reconcile cash daily ...\"\nreasoning: \"The procedure covers branch cash handling; the closest section is S1, a generic escalation statement. The alert relaxes a CFTC swap-reporting deadline for non-US swap dealers and changes no step of this procedure; only a generic 'regulatory matters' phrase overlaps.\"\ndecision: \"NOT_LINKED\"   link_score: 1   confidence_level: 4   linked_sections: []   impact_type: \"NONE\"\n\nFORMAT REQUIREMENTS:\nReturn ONLY a valid JSON object matching the exact schema below. Do not use markdown formatting (like ```json).\n{\n\"procedure_id\": \"string\",\n\"reasoning\": \"string\",\n\"decision\": \"LINKED | NOT_LINKED | INSUFFICIENT_EVIDENCE\",\n\"link_score\": integer,\n\"confidence_level\": integer,\n\"evidence_from_alert\": \"verbatim substring or null\",\n\"evidence_from_procedure\": \"verbatim substring or null\",\n\"linked_sections\": [\"S<n>\", ...],\n\"impact_type\": \"CHANGE_REQUIRED | REVIEW_REQUIRED | NONE\",\n\"change_needed\": \"one sentence or null\",\n\"framework_change\": \"YES | NO | NOT_APPLICABLE\"\n}"}
+#### END FILE ####
+#### FILE: ia_policy_procedure/docs/ERROR_CODES.md | sha256=1c5f748198415772f747b82ae44e40e96576b359f7113f4c3d703054c53e1ae8 ####
+# Error codes
+
+Generated from `ia_pp/errors.py` (`python -m ia_pp errors`).
+
+| Code | Title | Stops | Likely cause | What to do |
+|---|---|---|---|---|
+| E-ENV-001 | Required Python package missing | RUN | A package in requirements.txt is not installed in this environment. | Install it (pip install -r requirements.txt) or ask the platform team. The message names the package. |
+| E-ENV-002 | Python version too old | RUN | The pipeline needs Python 3.9 or newer. | Run with a newer Python interpreter. |
+| E-CFG-001 | Config file not found | RUN | Wrong --config path. | Pass the right path, e.g. --config config/config.yaml. |
+| E-CFG-002 | Config file cannot be parsed | RUN | YAML syntax error (indentation, a missing colon, a tab character). | Open the file, fix the line named in the message. YAML uses spaces, never tabs. |
+| E-CFG-003 | Required config setting missing | RUN | A key was deleted or misspelt. | Add the key named in the message (see the shipped config.yaml). |
+| E-CFG-004 | Invalid config value | RUN | Wrong type or out of range (e.g. concurrency 0, headline score below link threshold). | Fix the value named in the message. |
+| E-CFG-005 | Placeholder or secret not filled | RUN | A value still looks like '<your ...>', or the environment variable for a gateway secret is not set. | Set the environment variable named in the message (preferred in production) or fill the config value. |
+| E-PRM-001 | Prompt file missing or unreadable | RUN | A file in prompts/ was renamed, moved or deleted. | Restore it; the five file names are fixed. |
+| E-PRM-002 | Unresolved placeholder in a prompt | RUN | A prompt contains {{...}} that the code does not fill (only {{COUNTRY_NAME}} is supported). | Remove or correct the placeholder in the prompt file. |
+| E-SCH-001 | Response schema missing or invalid | RUN | A file in schemas/ is missing or is not valid JSON. | Restore the schema file / fix its JSON. |
+| E-EXC-001 | Exceptions file malformed | RUN | A CSV in exceptions/ lacks the doc_id column or cannot be read. | Keep the header 'doc_id,title,reason'. Lines starting with # are comments. |
+| W-EXC-001 | Exception document not found in GPPS | NONE | An id in exceptions/ does not exist in the loaded GPPS files (typo, or retired document). | Check the id. The run continues; the entry has no effect. |
+| E-SRC-001 | Source file not found | RUN | Wrong path or glob in config 'sources', or the file has not been delivered yet. | Fix the path. A glob such as .../rsm_linkage_pairs_*.parquet takes the newest match. |
+| E-SRC-002 | Source file unreadable | RUN | Corrupt file, unsupported format, or a parquet written by an incompatible library version. | Re-export the file as parquet, csv or xlsx. |
+| E-SRC-003 | Required column missing in a source file | RUN | The extract layout changed (e.g. RECORD_ID, TITLE, json_data, policy_core_id). | Ask the data owner for the expected layout, or map the column in the source. |
+| E-SRC-004 | No alerts to assess | RUN | The alert-scope file has no RECORD_IDs found in Rapid2, or none of --alert-ids is in scope. | Check both files / the ids you passed. |
+| E-SRC-005 | No GPPS documents after parsing | RUN | Wrong GPPS files, json_data unparseable, or no published version. | Check the files; see W-SRC-001 counts in the log. |
+| W-SRC-001 | Some GPPS rows could not be parsed | NONE | json_data is empty or not valid JSON for some rows. | Those documents are skipped; report the count to the GPPS team if large. |
+| W-SRC-002 | Requested alert ids not in scope | NONE | Some ids passed with --alert-ids / run.alert_ids are not in the alert-scope file. | They are ignored. Check the ids. |
+| W-SRC-003 | Document without visible text | NONE | All segments are hidden or empty. | The document cannot be assessed and is left out. |
+| E-SCP-001 | Country settings do not match the local policy file | RUN | More than half of the documents in the LOCAL policy file come out as another country's documents: the country terms / codes / legal-entity codes belong to another country, or the wrong local file is set. | Run: python -m ia_pp discover --config <config> and fix the country section (or the policy_local path). Nothing was spent. |
+| W-SCP-002 | Country settings may be incomplete | NONE | Most LOCAL documents were scoped only by their file, not by their legal entities: country.entity_codes / terms probably miss this country's GPPS values. | Run: python -m ia_pp discover --config <config>. |
+| W-CFG-001 | Country lists are empty | NONE | country.terms, country.codes and country.entity_codes are all empty (a new country not set up yet). | Run: python -m ia_pp discover --config <config> --apply, then confirm the values. |
+| W-FWK-001 | Possible framework / process documents (hubs) | NONE | Some documents were linked by the model to a large share of the alerts, as POL-42 was in the US (93%). | SME to check hub_candidates.csv in the output folder. Confirmed ones go in framework_documents.csv; then python -m ia_pp forget --docs <ids> and re-run. |
+| W-SCP-001 | Document scope decided by its source file | NONE | GPPS has no level / country field for the document. | Scope = LOCAL if it came from the local file, else GLOBAL. Check if unexpected. |
+| E-GW-001 | Gateway client could not be created | RUN | py_group_ai_tools / openai / httpx / truststore missing or misconfigured; wrong staff id. | Check the packages and gateway settings; run: python -m ia_pp check-gateway --config ... |
+| E-GW-002 | Gateway token could not be obtained | RUN | No token method on GroupAIClient, or the login service is down. | Check the staff id / use case; retry later. |
+| E-GW-003 | Authentication rejected (401/403) | PAIR | Login expired (about 1 h) or the use case lacks access. The code re-logs in automatically. | If it persists: check staff id / use case access, then re-run (finished pairs are kept). |
+| E-GW-004 | Rate limited (429) | PAIR | Too many parallel calls for the shared gateway. | Retried automatically. If frequent, lower execution.concurrency. |
+| E-GW-005 | Gateway server error (5xx) | PAIR | Temporary gateway / model problem. | Retried automatically; re-run later for the remaining pairs. |
+| E-GW-006 | Gateway timeout | PAIR | Slow model or network; very long documents. | Retried automatically. Raise gateway.http_timeout_sec if frequent. |
+| E-GW-007 | Connection / TLS error | PAIR | Network, proxy or certificate problem. | Check network access to the base URL; retried automatically. |
+| E-GW-008 | No route (404): wrong model or base URL | RUN | The model name is not routed for this use case / URL. | Fix model.chat_model or gateway.base_url. The run stops early to avoid wasted calls. |
+| E-GW-009 | Bad request (400/413/422) | PAIR | Input too long for the model, or a parameter the model does not accept. | See error_detail. Not retried. If 'context length': the document is too long for the model. |
+| E-GW-010 | Circuit breaker: too many consecutive failures | STAGE | The gateway is down or rejecting every call. | The stage stops and saves progress. Fix the cause (see the codes before it in errors.jsonl), then re-run. |
+| E-GW-011 | Gateway check failed at start | RUN | The one-call connectivity check before the run failed. | See the detail; usually E-GW-003 / 008 / 007. |
+| E-GW-012 | Unknown gateway error | PAIR | An error type the code does not classify. | See error_detail and run.log; retried automatically. |
+| E-LLM-001 | Empty answer | PAIR | The model returned no content (often the answer budget was spent on thinking). | Retried. If frequent, raise model.max_tokens. |
+| E-LLM-002 | Answer is not valid JSON | PAIR | The model wrote text around the JSON or broke the format. | Retried automatically. |
+| E-LLM-003 | Answer misses a required field | PAIR | e.g. 'decision' missing or not LINKED / NOT_LINKED / INSUFFICIENT_EVIDENCE. | Retried automatically. |
+| E-LLM-004 | Answer cut off (max tokens reached) | PAIR | model.max_tokens too low for this answer. | Raise model.max_tokens (8000 covered 3x the longest US answer). |
+| W-LLM-001 | Optional answer field invalid | NONE | e.g. link_score 'eight', impact_type misspelt. | Value set to null (or coerced); the answer is kept. |
+| W-LLM-002 | Cited section ids not in the document | NONE | The model cited S-ids that do not exist. | Those ids are ignored; the link is still checked by its quotes. |
+| E-EMB-001 | Embedding batch failed after retries | STAGE | Gateway problem on the embedding model. | Re-run: finished embeddings are cached and not paid again. |
+| E-EMB-002 | Embedding size mismatch | STAGE | The cache was built with another embedding model. | Delete the emb_*.npz files in the output folder, or restore the model. |
+| W-EMB-001 | Embedding cache unreadable - rebuilt | NONE | Corrupt .npz file (e.g. disk full during a save). | Rebuilt automatically (costs under $1). |
+| E-SHL-001 | Query plans missing after retries | STAGE | The model failed for some alerts. | Re-run: finished plans are kept. |
+| W-SHL-001 | Saved shortlist does not match the current alerts | NONE | New alerts, new query plans or a different top-K. | Alerts already in the saved shortlist keep it; missing alerts get a fresh shortlist. |
+| E-RUN-001 | Cost cap reached | RUN | Estimated or measured spend reached run.max_cost_usd. | Progress is saved. Raise the cap if the spend is expected, then re-run the same command. |
+| E-RUN-002 | Interrupted | RUN | Ctrl+C, Kernel > Interrupt or SIGTERM from the scheduler. | Progress is saved; re-run the same command to continue. |
+| E-RUN-003 | Test gate failed | RUN | The 10-pair test before the full run had errors, unverifiable quotes or a cost above the cap. | Read the test table in run.log; fix the cause before the full run. |
+| E-RUN-004 | Unexpected error on one pair | PAIR | A bug or an unusual document. The traceback is in run.log. | The pair is marked ERROR and retried on the next run. Report the traceback. |
+| E-RUN-005 | Unexpected error in a stage | RUN | A bug or an unusual input. The traceback is in run.log. | Report run.log and errors.jsonl to RCAI&A. |
+| E-RUN-006 | Document text shorter than its source | RUN | The no-truncation check failed: a document would not be sent in full. | Report to RCAI&A; nothing was spent. |
+| W-RUN-001 | Pairs without an answer at the end of a stage | NONE | Their calls failed every retry (see their error_code). | Re-run the same command: only those pairs are retried. |
+| W-CKP-001 | Damaged checkpoint lines skipped | NONE | The process was killed while writing the last line. | Those pairs are simply read again. |
+| E-CKP-001 | Checkpoint unreadable | STAGE | The checkpoint file is damaged beyond line level. | Rename it (to keep a copy) and re-run; the stage restarts. |
+| E-OUT-001 | Cannot write output | RUN | Folder not writable, disk full, or a file open in another program. | Free space / fix permissions; re-run. |
+| W-OUT-001 | Excel summary not written | NONE | openpyxl missing or the file is open elsewhere. | Parquet, CSV and JSONL outputs are still written. |
+| E-OUT-002 | No pair results to report | RUN | The results stage ran before the policy / procedure stages. | Run --stage policies and procedures first (or --stage all). |
+
+## Exit codes
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Completed, every pair answered |
+| 1 | Completed, some pairs without answer: re-run the same command to retry only those |
+| 2 | Config / environment / prompt / schema / source problem (nothing spent) |
+| 3 | Gateway unusable (authentication, route, circuit breaker) |
+| 4 | Cost cap reached, progress saved |
+| 5 | Pre-run test gate failed |
+| 6 | Unexpected internal error (see run.log) |
+| 130 | Interrupted, progress saved |
+
+
+#### END FILE ####
